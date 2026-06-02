@@ -1,0 +1,30 @@
+[project]
+name = "industrial-ai-experiments"
+version = "0.1.0"
+description = "Detached experiment runtime for industrial AI training workloads"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "typer>=0.12.0",
+]
+keywords = ["experiments", "training", "ray", "mlops", "monitoring"]
+
+[project.optional-dependencies]
+ray = [
+  "ray[default]>=2.20.0",
+]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+iax = "industrial_ai_experiments.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["industrial_ai_experiments"]
