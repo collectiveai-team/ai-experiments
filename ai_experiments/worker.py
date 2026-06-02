@@ -6,9 +6,9 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from industrial_ai_experiments.monitoring.rules import event_from_log_line
-from industrial_ai_experiments.schemas import ExperimentManifest, RunEvent, utc_now
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.monitoring.rules import event_from_log_line
+from ai_experiments.schemas import ExperimentManifest, RunEvent, utc_now
+from ai_experiments.store import FilesystemRunStore
 
 
 def main() -> None:

@@ -6,9 +6,9 @@ from typing import Optional
 
 import typer
 
-from industrial_ai_experiments.backends.factory import get_backend
-from industrial_ai_experiments.schemas import ExperimentManifest
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.backends.factory import get_backend
+from ai_experiments.schemas import ExperimentManifest
+from ai_experiments.store import FilesystemRunStore
 
 app = typer.Typer(
     name="iax",

@@ -7,7 +7,7 @@ import time
 import yaml
 from typer.testing import CliRunner
 
-from industrial_ai_experiments.cli import app
+from ai_experiments.cli import app
 
 
 runner = CliRunner()

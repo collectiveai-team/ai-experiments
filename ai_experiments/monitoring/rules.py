@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from industrial_ai_experiments.schemas import (
+from ai_experiments.schemas import (
     DiagnosisReport,
     MonitorDecision,
     RunEvent,
 )
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.store import FilesystemRunStore
 
 
 def _age_minutes(value: datetime | None) -> float | None:

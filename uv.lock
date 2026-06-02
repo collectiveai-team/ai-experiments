@@ -767,7 +767,7 @@ wheels = [
 ]
 
 [[package]]
-name = "industrial-ai-experiments"
+name = "ai-experiments"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

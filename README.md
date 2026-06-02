@@ -2,7 +2,7 @@
 
 Detached experiment runtime for industrial AI training workloads.
 
-`industrial-ai-experiments` is intentionally separate from agent prompts and Workbench UI code. It provides a small manifest contract, pluggable execution backends, filesystem run state, and scheduler-friendly monitoring commands for arbitrary model-training experiments.
+`ai-experiments` is intentionally separate from agent prompts and Workbench UI code. It provides a small manifest contract, pluggable execution backends, filesystem run state, and scheduler-friendly monitoring commands for arbitrary model-training experiments.
 
 ## Responsibilities
 
@@ -23,16 +23,16 @@ Detached experiment runtime for industrial AI training workloads.
 ## Install
 
 ```bash
-uv pip install industrial-ai-experiments
+uv pip install ai-experiments
 ```
 
 For Ray Jobs API support:
 
 ```bash
-uv pip install "industrial-ai-experiments[ray]"
+uv pip install "ai-experiments[ray]"
 ```
 
-During in-repo development, Workbench uses the uv workspace member at `packages/industrial_ai_experiments`.
+During in-repo development, Workbench uses the uv workspace member at `packages/ai_experiments`.
 
 ## Manifest
 
@@ -82,7 +82,7 @@ When this package is extracted to its own repository, Workbench should depend on
 
 ```toml
 dependencies = [
-  "industrial-ai-experiments>=0.1.0",
+  "ai-experiments>=0.1.0",
 ]
 ```
 
@@ -90,7 +90,7 @@ and remove the local uv source override:
 
 ```toml
 [tool.uv.sources]
-industrial-ai-experiments = { workspace = true }
+ai-experiments = { workspace = true }
 ```
 
 ## Release Checklist

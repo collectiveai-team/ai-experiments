@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Iterable
 
-from industrial_ai_experiments.schemas import (
+from ai_experiments.schemas import (
     ExperimentManifest,
     RunEvent,
     RunHandle,

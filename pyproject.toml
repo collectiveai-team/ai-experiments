@@ -1,5 +1,5 @@
 [project]
-name = "industrial-ai-experiments"
+name = "ai-experiments"
 version = "0.1.0"
 description = "Detached experiment runtime for industrial AI training workloads"
 readme = "README.md"
@@ -20,11 +20,11 @@ dev = [
 ]
 
 [project.scripts]
-iax = "industrial_ai_experiments.cli:app"
+iax = "ai_experiments.cli:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["industrial_ai_experiments"]
+packages = ["ai_experiments"]

@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from industrial_ai_experiments.backends.base import ExperimentBackend
-from industrial_ai_experiments.monitoring.ray_rules import classify_ray_condition
-from industrial_ai_experiments.monitoring.rules import diagnose_run
-from industrial_ai_experiments.schemas import (
+from ai_experiments.backends.base import ExperimentBackend
+from ai_experiments.monitoring.ray_rules import classify_ray_condition
+from ai_experiments.monitoring.rules import diagnose_run
+from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
     RunEvent,
@@ -15,7 +15,7 @@ from industrial_ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.store import FilesystemRunStore
 
 
 class RayBackend(ExperimentBackend):
@@ -42,7 +42,7 @@ class RayBackend(ExperimentBackend):
             from ray.job_submission import JobSubmissionClient
         except ImportError as exc:  # pragma: no cover - depends on optional ray extra
             raise RuntimeError(
-                "Ray is not installed. Install industrial-ai-experiments[ray]."
+                "Ray is not installed. Install ai-experiments[ray]."
             ) from exc
         return JobSubmissionClient(self.address)
 
@@ -60,7 +60,7 @@ class RayBackend(ExperimentBackend):
                 status="failed",
                 status_uri=str(status_path),
                 run_dir=str(run_dir),
-                error="Ray is not installed. Install industrial-ai-experiments[ray].",
+                error="Ray is not installed. Install ai-experiments[ray].",
                 completed_at=utc_now(),
             )
             self.store.write_status(status)

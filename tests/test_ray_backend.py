@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from industrial_ai_experiments.backends.ray import RayBackend
-from industrial_ai_experiments.schemas import ExperimentManifest, WorkloadSpec
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.backends.ray import RayBackend
+from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
+from ai_experiments.store import FilesystemRunStore
 
 
 class FakeRayClient:

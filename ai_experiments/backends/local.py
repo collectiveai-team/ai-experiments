@@ -6,9 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from industrial_ai_experiments.backends.base import ExperimentBackend
-from industrial_ai_experiments.monitoring.rules import diagnose_run
-from industrial_ai_experiments.schemas import (
+from ai_experiments.backends.base import ExperimentBackend
+from ai_experiments.monitoring.rules import diagnose_run
+from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
     RunEvent,
@@ -16,7 +16,7 @@ from industrial_ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
-from industrial_ai_experiments.store import FilesystemRunStore
+from ai_experiments.store import FilesystemRunStore
 
 
 class LocalBackend(ExperimentBackend):
@@ -49,7 +49,7 @@ class LocalBackend(ExperimentBackend):
         cmd = [
             sys.executable,
             "-m",
-            "industrial_ai_experiments.worker",
+            "ai_experiments.worker",
             "--run-id",
             run_id,
             "--runs-dir",
