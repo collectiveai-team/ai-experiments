@@ -32,6 +32,13 @@ summarizes the fields; if it disagrees with the code, the code wins.
 | `gpus` | float | `0` |
 | `memory_gb` | float \| null | `null` |
 
+## `artifacts` (`ArtifactSpec`)
+
+| Field | Type | Default |
+|---|---|---|
+| `output_dir` | string | `outputs/training` |
+| `status_path` | string \| null | `null` |
+
 ## `monitoring` (`MonitorPolicy`)
 
 | Field | Type | Default |

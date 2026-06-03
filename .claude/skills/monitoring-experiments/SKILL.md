@@ -32,7 +32,7 @@ in `ai_experiments/monitoring/rules.py`.
 |---|---|---|
 | `continue_waiting` | Run active, no concern | Nothing. Stay quiet; keep the monitor job alive. |
 | `training_complete` | Status `completed` | Summarize results from `<run_dir>`, then tear down the monitor job. |
-| `training_failed` | Status `failed`/`cancelled` | Invoke **diagnosing-experiments**. |
+| `training_failed` | Status `failed`/`cancelled` | Invoke **diagnosing-experiments** — unless you just cancelled this run on purpose (an intentional `cancel` also reports `training_failed`), in which case no diagnosis is needed. |
 | `delegate_diagnosis` | Stuck / no progress / status error | Invoke **diagnosing-experiments**. |
 
 > `MonitorDecision` also defines `unknown`, but the current `diagnose_run` never emits

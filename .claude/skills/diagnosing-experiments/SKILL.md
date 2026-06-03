@@ -20,7 +20,7 @@ pointer to what tripped. Recognized reasons (`ai_experiments/monitoring/rules.py
 
 | Reason | Meaning |
 |---|---|
-| `status_error_present` | `status.json` carries an `error` (or is missing). |
+| `status_error_present` | `status.json` carries an `error`. A missing status file sets this same `error`, so both cases surface here. |
 | `ray_resource_starved` | Ray reports the job can't get resources. |
 | `ray_stuck_suspected` | Ray heuristics suspect a hang. |
 | `no_status_update_for_<N>m` | `status.updated_at` older than `stuck_after_minutes`. |
@@ -31,6 +31,7 @@ pointer to what tripped. Recognized reasons (`ai_experiments/monitoring/rules.py
 
 ```bash
 iax logs <run_id> --tail 200          # parsed events: "[<ts>] <level>: <msg>"
+iax logs <run_id> --tail 200 --json   # same events as JSON, for programmatic scanning
 iax status <run_id> --json            # exit_code, error, pid, details
 ```
 
