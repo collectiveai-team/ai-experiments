@@ -1,0 +1,13 @@
+experiment: stuck_resource_train
+backend: ray
+workload:
+  entrypoint: python
+  args:
+    - train_stuck.py
+  working_dir: /Users/lionelchamorro/Projects/collectiveai/workbench/ai-experiments/manual_test/workload
+monitoring:
+  interval_seconds: 5
+  stuck_after_minutes: 2
+metadata:
+  project_id: manual_test
+  scenario: stuck

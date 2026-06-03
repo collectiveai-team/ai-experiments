@@ -1,0 +1,13 @@
+experiment: ok_smoke_train
+backend: ray
+workload:
+  entrypoint: python
+  args:
+    - train_ok.py
+  working_dir: /Users/lionelchamorro/Projects/collectiveai/workbench/ai-experiments/manual_test/workload
+monitoring:
+  interval_seconds: 5
+  stuck_after_minutes: 30
+metadata:
+  project_id: manual_test
+  scenario: ok
