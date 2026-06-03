@@ -1,0 +1,21 @@
+{
+  "run_id": "run_4da75f61e40a",
+  "backend": "local",
+  "status": "submitted",
+  "status_uri": "manual_test/runs/run_4da75f61e40a/status.json",
+  "run_dir": "manual_test/runs/run_4da75f61e40a",
+  "external_id": null,
+  "pid": 17422,
+  "submitted_at": "2026-06-03T00:48:11.176164Z",
+  "started_at": null,
+  "updated_at": "2026-06-03T00:48:11.180119Z",
+  "completed_at": null,
+  "exit_code": null,
+  "error": null,
+  "details": {
+    "stuck_after_minutes": 30,
+    "timeout_seconds": null,
+    "experiment": "ok_smoke_train",
+    "log_path": "manual_test/runs/run_4da75f61e40a/worker.log"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "run_94cc353865e1",
+  "backend": "local",
+  "status": "completed",
+  "status_uri": "/Users/lionelchamorro/Projects/collectiveai/workbench/ai-experiments/manual_test/runs/run_94cc353865e1/status.json",
+  "run_dir": "/Users/lionelchamorro/Projects/collectiveai/workbench/ai-experiments/manual_test/runs/run_94cc353865e1",
+  "external_id": null,
+  "pid": 17645,
+  "submitted_at": "2026-06-03T00:51:11.415885Z",
+  "started_at": "2026-06-03T00:51:11.481451Z",
+  "updated_at": "2026-06-03T00:51:21.526957Z",
+  "completed_at": "2026-06-03T00:51:21.526656Z",
+  "exit_code": 0,
+  "error": null,
+  "details": {
+    "stuck_after_minutes": 30,
+    "timeout_seconds": null,
+    "experiment": "ok_smoke_train",
+    "log_path": "/Users/lionelchamorro/Projects/collectiveai/workbench/ai-experiments/manual_test/runs/run_94cc353865e1/worker.log",
+    "workload_pid": 17646
+  }
+}
