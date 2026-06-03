@@ -1,3 +1,0 @@
-{"timestamp": "2026-06-03T00:49:50.100954Z", "level": "info", "message": "local run submitted", "details": {}}
-{"timestamp": "2026-06-03T00:49:50.102683Z", "level": "info", "message": "local supervisor started", "details": {"pid": 17526}}
-{"timestamp": "2026-06-03T00:49:50.164667Z", "level": "info", "message": "workload started", "details": {"command": ["python", "train_ok.py"]}}
