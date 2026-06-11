@@ -28,7 +28,9 @@ def main() -> None:
     env["IAX_RUN_DIR"] = str(run_dir)
 
     store.update_status(args.run_id, status="running", started_at=utc_now())
-    store.append_event(args.run_id, RunEvent(message="workload started", details={"command": command}))
+    store.append_event(
+        args.run_id, RunEvent(message="workload started", details={"command": command})
+    )
 
     process = subprocess.Popen(
         command,
@@ -46,7 +48,9 @@ def main() -> None:
 
     exit_code = process.wait()
     if exit_code == 0:
-        store.update_status(args.run_id, status="completed", exit_code=exit_code, completed_at=utc_now())
+        store.update_status(
+            args.run_id, status="completed", exit_code=exit_code, completed_at=utc_now()
+        )
         store.append_event(args.run_id, RunEvent(message="workload completed"))
     else:
         store.update_status(

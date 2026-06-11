@@ -18,6 +18,21 @@ from ai_experiments.schemas import (
 from ai_experiments.store import FilesystemRunStore
 
 
+DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
+
+
+def resolve_ray_address(address: str | None = None) -> str:
+    if address is not None:
+        stripped = address.strip()
+        if not stripped:
+            raise ValueError("Ray address must not be empty")
+        return stripped
+    env_address = os.environ.get("RAY_ADDRESS")
+    if env_address and env_address.strip():
+        return env_address.strip()
+    return DEFAULT_RAY_ADDRESS
+
+
 class RayBackend(ExperimentBackend):
     """Detached Ray Jobs backend.
 
@@ -32,7 +47,7 @@ class RayBackend(ExperimentBackend):
         client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self.store = store or FilesystemRunStore()
-        self.address = address or os.environ.get("RAY_ADDRESS") or "http://127.0.0.1:8265"
+        self.address = resolve_ray_address(address)
         self._client_factory = client_factory
 
     def _client(self) -> Any:
@@ -49,7 +64,9 @@ class RayBackend(ExperimentBackend):
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
-        entrypoint = " ".join([manifest.workload.entrypoint, *manifest.workload.args]).strip()
+        entrypoint = " ".join(
+            [manifest.workload.entrypoint, *manifest.workload.args]
+        ).strip()
 
         try:
             client = self._client()
@@ -104,7 +121,10 @@ class RayBackend(ExperimentBackend):
             ray_status = client.get_job_status(status.external_id)
             mapped = _map_ray_status(ray_status)
             details = self._ray_details(client, status.external_id, ray_status)
-            if mapped in {"completed", "failed", "cancelled"} and status.completed_at is None:
+            if (
+                mapped in {"completed", "failed", "cancelled"}
+                and status.completed_at is None
+            ):
                 status = self.store.update_status(
                     run_id,
                     status=mapped,
@@ -112,15 +132,21 @@ class RayBackend(ExperimentBackend):
                     details=details,
                 )
             else:
-                status = self.store.update_status(run_id, status=mapped, details=details)
+                status = self.store.update_status(
+                    run_id, status=mapped, details=details
+                )
             if mapped == "failed" and not status.error:
                 message = details.get("ray_message") or details.get("ray_error_type")
-                status = self.store.update_status(run_id, error=str(message or "Ray job failed"))
+                status = self.store.update_status(
+                    run_id, error=str(message or "Ray job failed")
+                )
             return status
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
 
-    def _ray_details(self, client: Any, external_id: str, ray_status: Any) -> dict[str, Any]:
+    def _ray_details(
+        self, client: Any, external_id: str, ray_status: Any
+    ) -> dict[str, Any]:
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
             "ray_address": self.address,

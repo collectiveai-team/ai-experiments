@@ -19,7 +19,9 @@ class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
     def __init__(self, root: str | Path | None = None) -> None:
-        self.root = Path(root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs"))
+        self.root = Path(
+            root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs")
+        )
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
         run_id = f"run_{uuid.uuid4().hex[:12]}"

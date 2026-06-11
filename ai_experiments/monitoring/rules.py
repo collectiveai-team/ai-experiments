@@ -52,7 +52,9 @@ def diagnose_run(store: FilesystemRunStore, run_id: str) -> DiagnosisReport:
             status=status,
             decision=decision,
             events=events,
-            recommendations=["Delegate to a training monitor agent for failure diagnosis."],
+            recommendations=[
+                "Delegate to a training monitor agent for failure diagnosis."
+            ],
         )
 
     if status.error:
@@ -73,7 +75,10 @@ def diagnose_run(store: FilesystemRunStore, run_id: str) -> DiagnosisReport:
         event_age = _age_minutes(events[-1].timestamp)
         if event_age is not None and event_age > threshold:
             reasons.append(f"no_event_progress_for_{int(event_age)}m")
-    elif status.status in {"submitted", "running"} and ray_condition not in {"queued", "running"}:
+    elif status.status in {"submitted", "running"} and ray_condition not in {
+        "queued",
+        "running",
+    }:
         reasons.append("no_run_events")
 
     if reasons:
@@ -83,7 +88,9 @@ def diagnose_run(store: FilesystemRunStore, run_id: str) -> DiagnosisReport:
             severity="warning",
             reasons=reasons,
         )
-        recommendations.append("Ask the training monitor agent to inspect logs and backend state.")
+        recommendations.append(
+            "Ask the training monitor agent to inspect logs and backend state."
+        )
     else:
         decision = MonitorDecision(
             run_id=run_id,
@@ -103,5 +110,7 @@ def diagnose_run(store: FilesystemRunStore, run_id: str) -> DiagnosisReport:
 
 
 def event_from_log_line(line: str) -> RunEvent:
-    level = "error" if "error" in line.lower() or "traceback" in line.lower() else "info"
+    level = (
+        "error" if "error" in line.lower() or "traceback" in line.lower() else "info"
+    )
     return RunEvent(level=level, message=line.rstrip())

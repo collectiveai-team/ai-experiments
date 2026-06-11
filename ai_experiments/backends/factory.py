@@ -7,9 +7,13 @@ from ai_experiments.schemas import BackendName
 from ai_experiments.store import FilesystemRunStore
 
 
-def get_backend(name: BackendName, store: FilesystemRunStore | None = None) -> ExperimentBackend:
+def get_backend(
+    name: BackendName,
+    store: FilesystemRunStore | None = None,
+    address: str | None = None,
+) -> ExperimentBackend:
     if name == "local":
         return LocalBackend(store=store)
     if name == "ray":
-        return RayBackend(store=store)
+        return RayBackend(store=store, address=address)
     raise ValueError(f"Unsupported experiment backend: {name}")

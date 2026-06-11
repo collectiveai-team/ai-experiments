@@ -48,7 +48,12 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `manifest.yaml` | The submitted manifest. |
 | `status.json` | Current `RunStatus` (status, exit_code, error, details, timestamps). |
 | `events.jsonl` | One JSON `RunEvent` per line; what `iax logs` reads. |
-| `worker.log` | Raw stdout/stderr from the workload. |
+| `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs have only `manifest.yaml`, `status.json`, and `events.jsonl`. |
 
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs`.
+
+On Ray, `iax logs` returns harness events only. Worker stdout and tracebacks surface
+through `status.error` and `status.details.ray_log_tail`; Ray condition hints live in
+`status.details.ray_condition`. `exit_code` is local-backend-only and remains `None`
+for Ray runs.

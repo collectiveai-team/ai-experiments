@@ -68,7 +68,9 @@ class LocalBackend(ExperimentBackend):
             env=env,
             start_new_session=True,
         )
-        self.store.update_status(run_id, pid=process.pid, details={"log_path": str(log_path)})
+        self.store.update_status(
+            run_id, pid=process.pid, details={"log_path": str(log_path)}
+        )
         self.store.append_event(
             run_id,
             RunEvent(message="local supervisor started", details={"pid": process.pid}),

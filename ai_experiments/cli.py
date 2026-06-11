@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from pydantic import BaseModel
 
 from ai_experiments.backends.factory import get_backend
-from ai_experiments.schemas import ExperimentManifest
+from ai_experiments.schemas import BackendName, ExperimentManifest
 from ai_experiments.store import FilesystemRunStore
 
 app = typer.Typer(
@@ -18,14 +19,38 @@ app = typer.Typer(
 
 
 def _echo_json(payload: object) -> None:
-    if hasattr(payload, "model_dump"):
+    if isinstance(payload, BaseModel):
         typer.echo(json.dumps(payload.model_dump(mode="json"), indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _backend_for_run(run_id: str, store: FilesystemRunStore):
+    status = store.read_status(run_id)
+    return get_backend(
+        status.backend,
+        store=store,
+        address=_backend_address_for_run(status.backend, store, run_id),
+    )
+
+
+def _backend_address_for_run(
+    backend: BackendName,
+    store: FilesystemRunStore,
+    run_id: str,
+) -> str | None:
+    if backend != "ray":
+        return None
+    manifest_path = store.run_dir(run_id) / "manifest.yaml"
+    if not manifest_path.exists():
+        return None
+    return ExperimentManifest.from_yaml(manifest_path).backend_address
+
+
 @app.command()
-def validate(config: Path = typer.Argument(..., help="Path to experiment manifest YAML")) -> None:
+def validate(
+    config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
+) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
     except Exception as exc:
@@ -40,13 +65,19 @@ def validate(config: Path = typer.Argument(..., help="Path to experiment manifes
 @app.command()
 def submit(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
         store = FilesystemRunStore(runs_dir)
-        handle = get_backend(manifest.backend, store=store).submit(manifest)
+        handle = get_backend(
+            manifest.backend,
+            store=store,
+            address=manifest.backend_address,
+        ).submit(manifest)
     except Exception as exc:
         typer.echo(f"Error: submit failed: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -61,11 +92,13 @@ def submit(
 @app.command()
 def status(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
-    run_status = store.read_status(run_id)
+    run_status = _backend_for_run(run_id, store).inspect(run_id)
     if output_json:
         _echo_json(run_status)
     else:
@@ -78,25 +111,32 @@ def status(
 def logs(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(200, "--tail", help="Number of recent events"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
-    events = FilesystemRunStore(runs_dir).read_events(run_id, tail=tail)
+    store = FilesystemRunStore(runs_dir)
+    events = _backend_for_run(run_id, store).logs(run_id, tail=tail)
     if output_json:
         _echo_json([event.model_dump(mode="json") for event in events])
     else:
         for event in events:
-            typer.echo(f"[{event.timestamp.isoformat()}] {event.level}: {event.message}")
+            typer.echo(
+                f"[{event.timestamp.isoformat()}] {event.level}: {event.message}"
+            )
 
 
 @app.command()
 def diagnose(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
-    report = get_backend(store.read_status(run_id).backend, store=store).diagnose(run_id)
+    report = _backend_for_run(run_id, store).diagnose(run_id)
     if output_json:
         _echo_json(report)
     else:
@@ -108,7 +148,9 @@ def diagnose(
 @app.command()
 def monitor(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
     quiet_when_waiting: bool = typer.Option(
         False,
@@ -118,7 +160,7 @@ def monitor(
 ) -> None:
     """Scheduler-friendly diagnosis that can stay quiet while a run is healthy."""
     store = FilesystemRunStore(runs_dir)
-    report = get_backend(store.read_status(run_id).backend, store=store).diagnose(run_id)
+    report = _backend_for_run(run_id, store).diagnose(run_id)
     if quiet_when_waiting and report.decision.decision == "continue_waiting":
         return
     if output_json:
@@ -134,8 +176,10 @@ def monitor(
 @app.command()
 def cancel(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
-    get_backend(store.read_status(run_id).backend, store=store).cancel(run_id)
+    _backend_for_run(run_id, store).cancel(run_id)
     typer.echo(f"Cancelled {run_id}")

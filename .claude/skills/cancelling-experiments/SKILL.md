@@ -37,4 +37,5 @@ done
 workload and lose its state). Cancel them first, confirm `cancelled`, then delete.
 
 Deleting a `run_dir` removes its `manifest.yaml`, `status.json`, `events.jsonl`, and
-`worker.log` — i.e. all record of the run. Archive anything you need first.
+for local runs `worker.log` — i.e. all record of the run. Ray run stores do not have
+`worker.log`. Archive anything you need first.

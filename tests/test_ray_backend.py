@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ai_experiments.backends.ray import RayBackend
 from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
@@ -97,3 +99,47 @@ def test_ray_failed_status_records_error(tmp_path):
 
     report = backend.diagnose(handle.run_id)
     assert report.decision.decision == "training_failed"
+
+
+@pytest.mark.parametrize(
+    ("explicit_address", "env_address", "expected_address"),
+    [
+        (
+            "https://manifest.example.com",
+            "https://env.example.com",
+            "https://manifest.example.com",
+        ),
+        (None, "https://env.example.com", "https://env.example.com"),
+        (None, None, "http://127.0.0.1:8265"),
+    ],
+)
+def test_ray_backend_resolves_address_precedence(
+    tmp_path,
+    monkeypatch,
+    explicit_address,
+    env_address,
+    expected_address,
+):
+    if env_address is None:
+        monkeypatch.delenv("RAY_ADDRESS", raising=False)
+    else:
+        monkeypatch.setenv("RAY_ADDRESS", env_address)
+
+    captured_addresses: list[str] = []
+    client = FakeRayClient(status="RUNNING")
+
+    def client_factory(address: str) -> FakeRayClient:
+        captured_addresses.append(address)
+        return client
+
+    backend = RayBackend(
+        store=FilesystemRunStore(tmp_path / "runs"),
+        address=explicit_address,
+        client_factory=client_factory,
+    )
+    handle = backend.submit(_manifest(tmp_path))
+    status = backend.inspect(handle.run_id)
+
+    assert captured_addresses == [expected_address, expected_address]
+    assert handle.dashboard_url == expected_address
+    assert status.details["ray_address"] == expected_address

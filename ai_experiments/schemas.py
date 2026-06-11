@@ -63,6 +63,7 @@ class ExperimentManifest(BaseModel):
 
     experiment: str
     backend: BackendName = "local"
+    backend_address: str | None = None
     workload: WorkloadSpec
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     artifacts: ArtifactSpec = Field(default_factory=ArtifactSpec)
@@ -75,6 +76,18 @@ class ExperimentManifest(BaseModel):
         if not value.strip():
             raise ValueError("experiment must not be empty")
         return value
+
+    @field_validator("backend_address")
+    @classmethod
+    def backend_address_urlish(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("backend_address must not be empty")
+        if not stripped.startswith(("http://", "https://")):
+            raise ValueError("backend_address must start with http:// or https://")
+        return stripped
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentManifest:
