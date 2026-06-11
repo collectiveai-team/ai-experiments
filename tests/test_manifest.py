@@ -44,6 +44,15 @@ def test_missing_run_manifest_falls_back_to_environment_resolution(tmp_path):
     assert store.read_manifest("run_missing") is None
 
 
+def test_list_runs_skips_internal_directories(tmp_path):
+    store = FilesystemRunStore(tmp_path / "runs")
+    run_id, _ = store.create_run(_manifest(backend="local", backend_address=None))
+    (store.root / "_campaigns").mkdir()
+    (store.root / "_escalations").mkdir()
+
+    assert list(store.list_runs()) == [run_id]
+
+
 @pytest.mark.parametrize("backend_address", ["", "   ", "ray://cluster"])
 def test_backend_address_rejects_malformed_values(backend_address):
     with pytest.raises(ValidationError):

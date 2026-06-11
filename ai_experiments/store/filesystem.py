@@ -125,4 +125,10 @@ class FilesystemRunStore:
     def list_runs(self) -> Iterable[str]:
         if not self.root.exists():
             return []
-        return (path.name for path in self.root.iterdir() if path.is_dir())
+        # Underscore-prefixed dirs (_campaigns, _escalations) share the root
+        # but are not runs.
+        return (
+            path.name
+            for path in self.root.iterdir()
+            if path.is_dir() and not path.name.startswith("_")
+        )

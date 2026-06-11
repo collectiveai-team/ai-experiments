@@ -34,6 +34,7 @@ in `ai_experiments/monitoring/rules.py`.
 | `training_complete` | Status `completed` | Summarize results from `<run_dir>`, then tear down the monitor job. |
 | `training_failed` | Status `failed`/`cancelled` | Invoke **diagnosing-experiments** — unless you just cancelled this run on purpose (an intentional `cancel` also reports `training_failed`), in which case no diagnosis is needed. |
 | `delegate_diagnosis` | Stuck / no progress / status error | Invoke **diagnosing-experiments**. |
+| `kill` | Fatal & unrecoverable: NaN/inf metric, `timeout_exceeded`, or `process_dead` | If `iax daemon` is running it already acts (auto-kill or escalate). Otherwise `iax cancel <run_id>` — except `process_dead`, where the worker is already gone and the daemon reaps it as `failed`. |
 
 > `MonitorDecision` also defines `unknown`, but the current `diagnose_run` never emits
 > it — a missing status file surfaces as `delegate_diagnosis` with reason
@@ -48,7 +49,9 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `manifest.yaml` | The submitted manifest. |
 | `status.json` | Current `RunStatus` (status, exit_code, error, details, timestamps). |
 | `events.jsonl` | One JSON `RunEvent` per line; what `iax logs` reads. |
-| `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs have only `manifest.yaml`, `status.json`, and `events.jsonl`. |
+| `metrics.jsonl` | `MetricPoint`s parsed from the workload's `IAX_METRIC` stdout lines; what `iax metrics` reads. Present on both backends once the workload reports. |
+| `escalation.json` | Escalation-ladder state (suspicious tick count, agent-call budget) written by the daemon. |
+| `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs lack it. |
 
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs`.

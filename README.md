@@ -1,24 +1,131 @@
 # Industrial AI Experiments
 
-Detached experiment runtime for industrial AI training workloads.
+Autonomous experiment harness for industrial AI training workloads.
 
-`ai-experiments` is intentionally separate from agent prompts and Workbench UI code. It provides a small manifest contract, pluggable execution backends, filesystem run state, and scheduler-friendly monitoring commands for arbitrary model-training experiments.
+`ai-experiments` turns a research **goal** into a self-driving campaign: it
+plans experiments over a search space, submits them to a local or Ray backend
+(any cloud Ray runs on), watches them with cheap programmatic checks — killing
+runs that diverge, freeze, or time out — escalates to an agent only when the
+free checks can't decide, and when trials finish it analyzes results and
+schedules better ones until the target is reached or the budget is spent.
+
+```
+goal.yaml ──> planner ──> trials ──> backend (local | ray @ aws/gcp/azure)
+                ▲                        │
+                │   analysis             ▼
+            orchestrator <── metrics ── runs   <── monitor daemon
+                                                    (kill / escalate)
+```
 
 ## Responsibilities
 
-- Validate an experiment manifest before a run starts.
-- Submit a detached workload to a backend (`local` or `ray`).
-- Persist a portable run handle, status, logs, and diagnosis state.
-- Emit quiet monitor results so an external scheduler can wake an agent only when intervention is useful.
-- Keep Ray-specific behavior behind the Ray backend and Ray monitoring rules.
+- Understand a goal manifest: objective metric, search space, budget, strategy.
+- Plan trials (grid / random / adaptive) and orchestrate them on `local` or `ray`.
+- Persist portable run + campaign state on the filesystem (greppable, agent-friendly).
+- Monitor every run: heartbeats, metric staleness, NaN/divergence, plateaus,
+  hard timeouts, dead workers — programmatic first, agent escalation second,
+  with cooldowns and per-run agent-call budgets so tokens are spent only when needed.
+- Auto-experiment loop: analyze finished trials, plan improvements, submit more.
+- Serve a web dashboard (`iax serve`) and a JSON REST API over all of it.
 
 ## Non-responsibilities
 
-- Agent orchestration and prompt design.
-- Workbench project/session persistence.
-- UI rendering.
-- Model-specific training logic.
-- Cloud provisioning for Ray clusters.
+- Model-specific training logic (workloads are arbitrary commands).
+- Reimplementing cloud APIs — cluster provisioning delegates to Ray's own
+  cluster launcher (`ray up` via `iax cluster up`).
+- Workbench project/session persistence and UI rendering.
+
+## Quick start: an autonomous campaign
+
+```bash
+# 1. Describe the goal (objective, search space, budget, strategy)
+iax campaign validate examples/goal_toy.yaml
+
+# 2. Launch the first batch of trials
+iax campaign start examples/goal_toy.yaml
+
+# 3. Drive the loop: monitors runs, kills stuck ones, plans + submits next trials
+iax daemon --interval 30
+
+# 4. Watch it live
+iax serve            # dashboard at http://127.0.0.1:8585
+iax campaign list
+iax campaign status <campaign_id>
+```
+
+The workload contract is one line of stdout per observation:
+
+```python
+print('IAX_METRIC {"step": 12, "loss": 0.0734}')   # or:
+from ai_experiments.report import report_metric
+report_metric(step=12, loss=0.0734)
+```
+
+This works identically on the local backend (the worker tails stdout) and on
+remote Ray clusters with no shared filesystem (metrics are extracted from job
+logs).
+
+## Monitoring: programmatic first, agent second
+
+Every daemon tick runs free checks per active run:
+
+| Check | Verdict |
+|---|---|
+| NaN/inf in reported metrics (`fatal_on_nan`) | `kill` |
+| `timeout_seconds` exceeded | `kill` |
+| Local worker process dead | `kill` (reaped as failed) |
+| Heartbeat stale (worker alive-ness, 15s cadence) | suspicious |
+| No metric progress for `stuck_after_minutes` | suspicious |
+| Objective plateau over `plateau_patience_points` | suspicious |
+
+`kill` verdicts are handled inline: cancelled when the run's policy sets
+`auto_kill: true`, escalated otherwise. Suspicious runs climb an escalation
+ladder — only after `after_suspicious_ticks` consecutive suspicious ticks does
+the daemon involve an agent, subject to `cooldown_minutes` and
+`max_agent_calls`. With no `agent_command` configured the escalation is just a
+file under `<runs>/_escalations/` plus `iax escalations` — an external agent
+session picks it up and zero tokens are spent by the daemon.
+
+```yaml
+monitoring:
+  auto_kill: true
+  timeout_seconds: 14400
+  escalation:
+    after_suspicious_ticks: 3
+    cooldown_minutes: 30
+    max_agent_calls: 3
+    agent_command: >-
+      claude -p 'Diagnose iax run {run_id} in {run_dir}; reply JSON
+      {"verdict": "kill"|"continue", "reason": "..."}' --output-format json
+```
+
+## Clusters (local, AWS, GCP, Azure)
+
+Ray is the execution substrate everywhere; clouds differ only in how the
+cluster comes up. Name your clusters once (see `examples/clusters.yaml`):
+
+```bash
+iax cluster list
+iax cluster status vader        # pings the Ray dashboard
+iax cluster up aws-gpu          # ray up <cluster_config> -y
+iax cluster down aws-gpu
+```
+
+Goal manifests select a cluster by name (`cluster: aws-gpu`) or address
+(`backend_address: http://head:8265`).
+
+## Agent integration
+
+The daemon and the planner are fully programmatic. Agents plug in at three
+opt-in points:
+
+- **Escalations** — `iax escalations` lists runs the free checks flagged;
+  the `diagnosing-experiments` skill drives the triage.
+- **Agent verdicts** — set `monitoring.escalation.agent_command` and the
+  daemon itself invokes an agent and acts on a JSON `kill`/`continue` verdict.
+- **Campaign review** — set `analysis.agent_review: true` and each round drops
+  a review request with the trial history; the agent queues better trials with
+  `iax campaign suggest <campaign_id> --params '{"lr": 3e-4}'`.
 
 ## Install
 
@@ -86,13 +193,27 @@ metadata:
 ## CLI
 
 ```bash
+# single runs
 iax validate experiment.yaml
 iax submit experiment.yaml --json
+iax runs
 iax status <run_id> --json
 iax logs <run_id> --tail 200
+iax metrics <run_id> --tail 50
 iax diagnose <run_id> --json
 iax monitor <run_id> --json --quiet-when-waiting
 iax cancel <run_id>
+iax escalations
+
+# campaigns (goal-driven auto-experiment loop)
+iax campaign validate goal.yaml
+iax campaign start goal.yaml
+iax campaign list / status / advance / suggest / stop
+
+# infrastructure
+iax daemon --interval 30        # monitor + loop driver (foreground)
+iax serve --port 8585           # dashboard + REST API  (needs [server] extra)
+iax cluster list / status / up / down
 ```
 
 `iax monitor --quiet-when-waiting` is the Workbench scheduler integration point. It prints nothing while the run should keep waiting. It emits JSON only when the run has completed, failed, looks stuck, or needs delegated review.

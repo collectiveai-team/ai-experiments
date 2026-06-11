@@ -9,33 +9,69 @@ daemon (programmatic checks first, agent escalation second) → post-run analysi
 
 ## Stages
 
-- [ ] 1. Metrics layer: `MetricPoint`, `ai_experiments.report` helper for
+- [x] 1. Metrics layer: `MetricPoint`, `ai_experiments.report` helper for
       workloads, worker parses `IAX_METRIC` lines + heartbeat thread, store
       read/write `metrics.jsonl`, Ray backend parses metrics from job logs.
-- [ ] 2. Monitoring v2: extended programmatic checks (NaN/inf objective,
+- [x] 2. Monitoring v2: extended programmatic checks (NaN/inf objective,
       metric staleness, heartbeat loss, dead PID reaper, hard timeout,
       plateau), `kill` decision, escalation ladder (consecutive suspicious
       ticks, cooldown, max agent calls, optional agent command hook).
-- [ ] 3. Goal layer + planner: `GoalSpec` (objective, budget, search space,
+- [x] 3. Goal layer + planner: `GoalSpec` (objective, budget, search space,
       workload template), search-space sampling (choice/int/uniform/
       loguniform), strategies: grid, random, adaptive (explore→exploit around
       best), param substitution into trial manifests.
-- [ ] 4. Campaign store + orchestrator: `campaigns/<id>/` state, trial
+- [x] 4. Campaign store + orchestrator: `_campaigns/<id>/` state, trial
       records, `CampaignOrchestrator.advance()` — collect results, analyze,
       check stopping (target/budget), plan + submit next batch.
-- [ ] 5. Daemon + CLI: `iax daemon` (tick loop: check runs → act/escalate/
-      kill; advance campaigns), `iax campaign start|status|list|stop`,
-      `iax runs` listing.
-- [ ] 6. Cluster profiles: `clusters.yaml` (local/aws/gcp/azure via Ray
+- [x] 5. Daemon + CLI: `iax daemon` (tick loop: check runs → act/escalate/
+      kill; advance campaigns), `iax campaign start|status|list|advance|
+      suggest|stop`, `iax runs|metrics|escalations`.
+- [x] 6. Cluster profiles: `clusters.yaml` (local/aws/gcp/azure via Ray
       cluster launcher), `iax cluster list|status|up|down`, goal manifests
-      reference clusters by name.
-- [ ] 7. Web dashboard: `iax serve` — FastAPI REST API + self-contained
-      HTML/JS dashboard (campaigns, runs, live metrics charts, decisions).
-- [ ] 8. Docs + examples + skills: example goal/toy workload, README,
-      update `.claude/skills/*` for the new flow.
-- [ ] 9. Verification: full pytest, ruff, end-to-end campaign smoke test on
-      local backend (toy objective converges, daemon kills a stuck run).
+      reference clusters by name (`cluster:`).
+- [x] 7. Web dashboard: `iax serve` — FastAPI REST API + self-contained
+      HTML/JS dashboard (campaigns, runs, live metrics charts, escalations,
+      cancel/stop actions).
+- [x] 8. Docs + examples + skills: `examples/{goal_toy.yaml,toy_train.py,
+      clusters.yaml}`, README rewrite, new `running-campaigns` skill,
+      `monitoring-experiments` updated for `kill` + metrics + escalations.
+- [x] 9. Verification: 70 tests + ruff clean. Live smoke: example campaign
+      reached its target (loss 1.6e-06 < 0.01) after 2 trials driven by the
+      real daemon; dashboard API served it; a frozen workload with
+      `timeout_seconds: 5, auto_kill: true` was auto-killed by one daemon
+      tick (process verified gone). Found+fixed: `list_runs` leaked
+      `_campaigns`/`_escalations` as phantom runs (regression test added).
 
 ## Review
 
-(filled in at the end)
+**What was built** — the harness now covers the four production requirements:
+
+1. *Goal understanding*: `GoalSpec` YAML (objective metric/mode/target,
+   typed search space, budget, strategy, backend, monitoring policy).
+2. *Plan + orchestrate on Ray*: planner strategies (grid/random/adaptive)
+   generate trial manifests; orchestrator submits to local or any Ray
+   cluster; named cluster profiles for aws/gcp/azure delegate provisioning
+   to Ray's own launcher (`iax cluster up/down`).
+3. *Monitor daemon*: `iax daemon` runs free programmatic checks every tick
+   (NaN/inf, timeout, dead worker → kill; heartbeat/metric staleness,
+   plateau → suspicious) and only involves an agent after the escalation
+   ladder (consecutive ticks, cooldown, per-run call budget). Zero-token
+   default: escalation files + `iax escalations`.
+4. *Auto-experiment loop*: on trial completion the orchestrator extracts the
+   objective, updates the best, checks stopping conditions, and plans +
+   submits the next batch; opt-in agent review can inject trials via
+   `iax campaign suggest`.
+
+Interface: web dashboard (`iax serve`, FastAPI + dependency-free dark UI
+with canvas metric charts) — chosen over TUI/VS Code extension because it
+works from any machine that sees the run store and is the natural base for
+a future VS Code webview.
+
+**Key design decisions**
+- Metrics travel as `IAX_METRIC` stdout lines: one contract that works on
+  local subprocesses and remote Ray clusters without a shared filesystem.
+- Everything stays on the filesystem (runs + `_campaigns` + `_escalations`
+  under one root): greppable, agent-friendly, no DB dependency.
+- Strategies are deterministic given (seed, trial history) so a crashed
+  loop replans identically.
+- `fastapi`/`uvicorn` are a `[server]` extra; the core CLI stays light.
