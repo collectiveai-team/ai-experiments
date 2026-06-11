@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ai_experiments.cli import _backend_address_for_run
 from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
@@ -34,13 +33,15 @@ def test_backend_address_is_persisted_in_run_manifest(tmp_path):
 
     run_id, _run_dir = store.create_run(manifest)
 
-    assert _backend_address_for_run("ray", store, run_id) == "https://ray.example.com"
+    persisted = store.read_manifest(run_id)
+    assert persisted is not None
+    assert persisted.backend_address == "https://ray.example.com"
 
 
 def test_missing_run_manifest_falls_back_to_environment_resolution(tmp_path):
     store = FilesystemRunStore(tmp_path / "runs")
 
-    assert _backend_address_for_run("ray", store, "run_missing") is None
+    assert store.read_manifest("run_missing") is None
 
 
 @pytest.mark.parametrize("backend_address", ["", "   ", "ray://cluster"])

@@ -7,9 +7,11 @@ from typing import Any, Callable
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
 from ai_experiments.monitoring.rules import diagnose_run
+from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
+    MetricPoint,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -120,7 +122,7 @@ class RayBackend(ExperimentBackend):
             client = self._client()
             ray_status = client.get_job_status(status.external_id)
             mapped = _map_ray_status(ray_status)
-            details = self._ray_details(client, status.external_id, ray_status)
+            details = self._ray_details(run_id, client, status.external_id, ray_status)
             if (
                 mapped in {"completed", "failed", "cancelled"}
                 and status.completed_at is None
@@ -145,7 +147,7 @@ class RayBackend(ExperimentBackend):
             return self.store.update_status(run_id, error=str(exc))
 
     def _ray_details(
-        self, client: Any, external_id: str, ray_status: Any
+        self, run_id: str, client: Any, external_id: str, ray_status: Any
     ) -> dict[str, Any]:
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
@@ -166,9 +168,31 @@ class RayBackend(ExperimentBackend):
             lines = logs.splitlines()
             details["ray_log_tail"] = "\n".join(lines[-50:])
             details["ray_log_line_count"] = len(lines)
+            last_point = self._sync_metrics_from_logs(run_id, lines)
+            if last_point is not None:
+                details["last_metric_at"] = last_point.timestamp.isoformat()
+                details["last_step"] = last_point.step
+                details["last_metrics"] = last_point.values
 
         details["ray_condition"] = classify_ray_condition(details)
         return details
+
+    def _sync_metrics_from_logs(
+        self, run_id: str, lines: list[str]
+    ) -> MetricPoint | None:
+        """Append metric points newly seen in the job logs to the run store.
+
+        Ray job logs carry no timestamps, so only points beyond the count
+        already persisted are appended (stamped at observation time). This
+        keeps metric-staleness checks honest across repeated inspects.
+        """
+        parsed = [m for m in (parse_metric_line(line) for line in lines) if m]
+        existing = self.store.read_metrics(run_id)
+        last: MetricPoint | None = existing[-1] if existing else None
+        for metric in parsed[len(existing) :]:
+            last = MetricPoint(step=metric["step"], values=metric["values"])
+            self.store.append_metric(run_id, last)
+        return last
 
     def logs(self, run_id: str, tail: int = 200) -> list[RunEvent]:
         return self.store.read_events(run_id, tail=tail)

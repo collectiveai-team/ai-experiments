@@ -8,6 +8,7 @@ from typing import Iterable
 
 from ai_experiments.schemas import (
     ExperimentManifest,
+    MetricPoint,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -94,6 +95,32 @@ class FilesystemRunStore:
         if tail is not None:
             lines = lines[-tail:]
         return [RunEvent(**json.loads(line)) for line in lines if line.strip()]
+
+    def metrics_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "metrics.jsonl"
+
+    def append_metric(self, run_id: str, point: MetricPoint) -> None:
+        with self.metrics_path(run_id).open("a") as fh:
+            fh.write(json.dumps(point.model_dump(mode="json")) + "\n")
+
+    def write_metrics(self, run_id: str, points: list[MetricPoint]) -> None:
+        lines = [json.dumps(point.model_dump(mode="json")) for point in points]
+        self.metrics_path(run_id).write_text("\n".join(lines) + ("\n" if lines else ""))
+
+    def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
+        path = self.metrics_path(run_id)
+        if not path.exists():
+            return []
+        lines = path.read_text().splitlines()
+        if tail is not None:
+            lines = lines[-tail:]
+        return [MetricPoint(**json.loads(line)) for line in lines if line.strip()]
+
+    def read_manifest(self, run_id: str) -> ExperimentManifest | None:
+        path = self.run_dir(run_id) / "manifest.yaml"
+        if not path.exists():
+            return None
+        return ExperimentManifest.from_yaml(path)
 
     def list_runs(self) -> Iterable[str]:
         if not self.root.exists():
