@@ -49,7 +49,9 @@ def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
         span = spec.high - spec.low
         if span < resolution:
             return list(range(spec.low, spec.high + 1))
-        return sorted({spec.low + round(i * span / (resolution - 1)) for i in range(resolution)})
+        return sorted(
+            {spec.low + round(i * span / (resolution - 1)) for i in range(resolution)}
+        )
     if isinstance(spec, UniformParam):
         step = (spec.high - spec.low) / (resolution - 1)
         return [spec.low + i * step for i in range(resolution)]
@@ -78,7 +80,9 @@ def perturb(
     return result
 
 
-def _perturb_param(spec: ParamSpec, value: Any, rng: random.Random, scale: float) -> Any:
+def _perturb_param(
+    spec: ParamSpec, value: Any, rng: random.Random, scale: float
+) -> Any:
     if isinstance(spec, ChoiceParam):
         if len(spec.values) > 1 and rng.random() < scale:
             return rng.choice([v for v in spec.values if v != value])

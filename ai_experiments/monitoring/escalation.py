@@ -170,10 +170,12 @@ def _run_agent_command(
     store: FilesystemRunStore, run_id: str, policy: EscalationPolicy
 ) -> AgentVerdict:
     assert policy.agent_command is not None
-    command = [
-        part.format(run_id=run_id, run_dir=str(store.run_dir(run_id)))
-        for part in shlex.split(policy.agent_command)
-    ]
+    # Plain token replacement, not str.format: agent prompts legitimately
+    # contain literal braces (JSON examples) that format() would reject.
+    rendered = policy.agent_command.replace("{run_id}", run_id).replace(
+        "{run_dir}", str(store.run_dir(run_id))
+    )
+    command = shlex.split(rendered)
     try:
         result = subprocess.run(
             command,
@@ -182,7 +184,9 @@ def _run_agent_command(
             timeout=policy.agent_timeout_seconds,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return AgentVerdict(verdict="inconclusive", reason=f"agent command failed: {exc}")
+        return AgentVerdict(
+            verdict="inconclusive", reason=f"agent command failed: {exc}"
+        )
 
     output = result.stdout.strip()
     try:

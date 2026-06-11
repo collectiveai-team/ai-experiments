@@ -195,7 +195,9 @@ def runs(
         return
     for status in statuses:
         experiment = status.details.get("experiment", "")
-        typer.echo(f"{status.run_id}  {status.status:<10} {status.backend:<6} {experiment}")
+        typer.echo(
+            f"{status.run_id}  {status.status:<10} {status.backend:<6} {experiment}"
+        )
 
 
 @app.command()
@@ -297,9 +299,17 @@ def campaign_validate(
         raise typer.Exit(code=1)
     typer.echo(f"Goal valid: {config}")
     typer.echo(f"  Goal:      {goal.goal}")
-    typer.echo(f"  Objective: {goal.objective.mode} {goal.objective.metric}"
-               + (f" (target {goal.objective.target})" if goal.objective.target is not None else ""))
-    typer.echo(f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel")
+    typer.echo(
+        f"  Objective: {goal.objective.mode} {goal.objective.metric}"
+        + (
+            f" (target {goal.objective.target})"
+            if goal.objective.target is not None
+            else ""
+        )
+    )
+    typer.echo(
+        f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel"
+    )
     typer.echo(f"  Strategy:  {goal.strategy.name}")
     typer.echo(f"  Backend:   {goal.backend}")
 
@@ -364,8 +374,10 @@ def campaign_status(
     if output_json:
         _echo_json(summary)
         return
-    typer.echo(f"{state.campaign_id}: {state.status}"
-               + (f" ({state.stop_reason})" if state.stop_reason else ""))
+    typer.echo(
+        f"{state.campaign_id}: {state.status}"
+        + (f" ({state.stop_reason})" if state.stop_reason else "")
+    )
     typer.echo(f"  Goal:   {state.goal}")
     typer.echo(f"  Trials: {summary['trials_by_status']}")
     if summary["best"]:
@@ -402,7 +414,9 @@ def campaign_stop(
 @campaign_app.command("suggest")
 def campaign_suggest(
     campaign_id: str = typer.Argument(...),
-    params: str = typer.Option(..., "--params", help='Trial params as JSON, e.g. \'{"lr": 0.001}\''),
+    params: str = typer.Option(
+        ..., "--params", help="Trial params as JSON, e.g. '{\"lr\": 0.001}'"
+    ),
     note: str = typer.Option("", "--note", help="Why this trial is worth running"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
 ) -> None:
@@ -432,9 +446,7 @@ def cluster_list(
         typer.echo("No clusters configured (create clusters.yaml).")
         return
     for profile in profiles.values():
-        typer.echo(
-            f"{profile.name:<16} {profile.provider:<6} {profile.address or '-'}"
-        )
+        typer.echo(f"{profile.name:<16} {profile.provider:<6} {profile.address or '-'}")
 
 
 @cluster_app.command("status")

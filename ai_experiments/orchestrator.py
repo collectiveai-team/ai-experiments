@@ -18,7 +18,6 @@ from ai_experiments.backends.factory import get_backend
 from ai_experiments.planner.analysis import (
     best_trial,
     extract_objective,
-    is_improvement,
     summarize_campaign,
 )
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
@@ -87,7 +86,9 @@ class CampaignOrchestrator:
         self.campaign_store.write_state(state)
         self.campaign_store.append_event(
             campaign_id,
-            RunEvent(level="warning", message="campaign stopped", details={"reason": reason}),
+            RunEvent(
+                level="warning", message="campaign stopped", details={"reason": reason}
+            ),
         )
         return state
 
@@ -238,9 +239,7 @@ class CampaignOrchestrator:
         want_new = min(capacity - len(queue), remaining_budget, batch_limit)
         if want_new > 0:
             for params in plan_next_params(goal, state.trials, want_new):
-                trial = TrialRecord(
-                    trial_id=f"t{len(state.trials):03d}", params=params
-                )
+                trial = TrialRecord(trial_id=f"t{len(state.trials):03d}", params=params)
                 state.trials.append(trial)
                 queue.append(trial)
 

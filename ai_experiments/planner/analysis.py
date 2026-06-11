@@ -41,7 +41,11 @@ def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     ]
     if not scored:
         return None
-    key = (lambda t: -t.objective_value) if mode == "max" else (lambda t: t.objective_value)  # type: ignore[operator]
+    key = (
+        (lambda t: -t.objective_value)
+        if mode == "max"
+        else (lambda t: t.objective_value)
+    )  # type: ignore[operator]
     return min(scored, key=key)  # type: ignore[arg-type]
 
 
@@ -51,7 +55,11 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         by_status[trial.status] = by_status.get(trial.status, 0) + 1
     best = best_trial(state, goal.objective.mode)
     history = [
-        {"trial_id": t.trial_id, "objective_value": t.objective_value, "params": t.params}
+        {
+            "trial_id": t.trial_id,
+            "objective_value": t.objective_value,
+            "params": t.params,
+        }
         for t in state.trials
         if t.objective_value is not None
     ]

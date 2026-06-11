@@ -40,7 +40,7 @@ def _seen_keys(trials: list[TrialRecord]) -> set[str]:
 
 
 def _rng(goal: GoalSpec, trials: list[TrialRecord]) -> random.Random:
-    return random.Random((goal.strategy.seed, len(trials)))
+    return random.Random(f"{goal.strategy.seed}:{len(trials)}")
 
 
 def _fresh_samples(
@@ -69,7 +69,9 @@ class RandomStrategy:
         self, goal: GoalSpec, trials: list[TrialRecord], count: int
     ) -> list[dict[str, Any]]:
         rng = _rng(goal, trials)
-        return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
+        return _fresh_samples(
+            goal, trials, count, lambda: sample(goal.search_space, rng)
+        )
 
 
 class GridStrategy:
@@ -112,7 +114,9 @@ class AdaptiveStrategy:
 
         reverse = goal.objective.mode == "max"
         ranked = sorted(
-            scored, key=lambda t: t.objective_value, reverse=reverse  # type: ignore[arg-type, return-value]
+            scored,
+            key=lambda t: t.objective_value,
+            reverse=reverse,  # type: ignore[arg-type, return-value]
         )
         top = ranked[: max(goal.strategy.top_k, 1)]
 

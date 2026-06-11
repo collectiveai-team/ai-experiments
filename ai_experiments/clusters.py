@@ -102,7 +102,11 @@ def resolve_cluster_address(name: str, path: str | Path | None = None) -> str:
 def cluster_status(profile: ClusterProfile, timeout: float = 5.0) -> dict[str, Any]:
     """Ping the Ray dashboard. Network-only; no Ray dependency needed."""
     if not profile.address:
-        return {"name": profile.name, "reachable": False, "error": "no address configured"}
+        return {
+            "name": profile.name,
+            "reachable": False,
+            "error": "no address configured",
+        }
     url = profile.address.rstrip("/") + "/api/version"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
