@@ -69,6 +69,12 @@
         font-size: 13px; margin: 10px 0; }
   .kv .k { color: var(--muted); }
   .escalation { border-left: 3px solid var(--warn); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .dot-ok { background: var(--ok); }
+  .dot-err { background: var(--err); }
 </style>
 </head>
 <body>
@@ -84,6 +90,12 @@
       <th>best</th><th>goal</th><th></th></tr></thead>
     <tbody></tbody>
   </table><div class="empty" id="campaigns-empty" hidden>No campaigns yet — start one with <span class="muted">iax campaign start goal.yaml</span></div></div>
+
+  <h2 id="clusters-title" hidden>Ray clusters</h2>
+  <div class="panel" id="clusters-panel" hidden><table id="clusters">
+    <thead><tr><th>cluster</th><th>provider</th><th>dashboard</th><th>status</th><th>ray</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
 
   <h2>Escalations <span class="muted" style="text-transform:none">(awaiting agent diagnosis)</span></h2>
   <div class="panel" id="escalations-panel"><table id="escalations">
@@ -180,6 +192,30 @@ function renderRuns(items) {
   }).join("");
 }
 
+async function refreshClusters() {
+  try {
+    const items = await getJSON("/api/clusters");
+    const show = items.length > 0;
+    document.getElementById("clusters-title").hidden = !show;
+    document.getElementById("clusters-panel").hidden = !show;
+    if (!show) return;
+    document.querySelector("#clusters tbody").innerHTML = items.map(c => `<tr>
+      <td>${esc(c.name)}</td>
+      <td class="muted">${esc(c.provider || "—")}</td>
+      <td>${c.address ? `<a href="${esc(c.address)}" target="_blank">${esc(c.address)}</a>` : "—"}</td>
+      <td><span class="dot ${c.reachable ? "dot-ok" : "dot-err"}"></span>${
+        c.reachable ? "reachable" : `unreachable <span class="muted">${esc(c.error || "")}</span>`}</td>
+      <td class="muted">${esc(c.ray_version || "—")}</td>
+    </tr>`).join("");
+  } catch (e) { /* cluster panel is best-effort */ }
+}
+
+function rayJobUrl(status) {
+  const address = status.details?.ray_address || status.dashboard_url;
+  if (!address || !status.external_id) return null;
+  return `${address.replace(/\/$/, "")}/#/jobs/${status.external_id}`;
+}
+
 function renderEscalations(items) {
   const tbody = document.querySelector("#escalations tbody");
   document.getElementById("escalations-empty").hidden = items.length > 0;
@@ -214,11 +250,20 @@ async function openRun(id) {
   ]);
   const body = document.getElementById("detail-body");
   const series = seriesFromMetrics(metrics);
+  const jobUrl = rayJobUrl(status);
+  const rayRows = status.backend !== "ray" ? "" : `
+      <span class="k">ray job</span><span>${jobUrl
+        ? `<a href="${esc(jobUrl)}" target="_blank">${esc(status.external_id)} ↗</a>`
+        : esc(status.external_id || "—")}</span>
+      <span class="k">ray status</span><span>${esc(status.details?.ray_status || "—")}
+        ${status.details?.ray_condition ? `<span class="muted">(${esc(status.details.ray_condition)})</span>` : ""}</span>`;
+  const rayLogTail = status.backend === "ray" && status.details?.ray_log_tail
+    ? `<div class="muted">ray log tail</div><pre>${esc(status.details.ray_log_tail)}</pre>` : "";
   body.innerHTML = `
     <h3>${esc(id)} ${badge(status.status)}</h3>
     <div class="kv">
       <span class="k">experiment</span><span>${esc(status.details?.experiment || "—")}</span>
-      <span class="k">backend</span><span>${esc(status.backend)}</span>
+      <span class="k">backend</span><span>${esc(status.backend)}</span>${rayRows}
       <span class="k">submitted</span><span>${fmtTime(status.submitted_at)}</span>
       <span class="k">completed</span><span>${fmtTime(status.completed_at)}</span>
       <span class="k">error</span><span>${esc(status.error || "—")}</span>
@@ -226,7 +271,8 @@ async function openRun(id) {
     ${Object.keys(series).map(name =>
       `<div class="muted">${esc(name)}</div><canvas data-metric="${esc(name)}"></canvas>`).join("")}
     <div class="muted">recent events</div>
-    <pre>${events.map(ev => `[${esc(ev.timestamp)}] ${esc(ev.level)}: ${esc(ev.message)}`).join("\n") || "(none)"}</pre>`;
+    <pre>${events.map(ev => `[${esc(ev.timestamp)}] ${esc(ev.level)}: ${esc(ev.message)}`).join("\n") || "(none)"}</pre>
+    ${rayLogTail}`;
   document.getElementById("detail").classList.add("open");
   for (const canvas of body.querySelectorAll("canvas"))
     drawSeries(canvas, series[canvas.dataset.metric]);
@@ -297,7 +343,9 @@ function drawSeries(canvas, points) {
 }
 
 refresh();
+refreshClusters();
 setInterval(refresh, 5000);
+setInterval(refreshClusters, 30000);
 </script>
 </body>
 </html>

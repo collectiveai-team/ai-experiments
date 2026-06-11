@@ -37,19 +37,22 @@ goal.yaml ──> planner ──> trials ──> backend (local | ray @ aws/gcp/
 
 ## Quick start: an autonomous campaign
 
+One command — starts the campaign, serves the dashboard, and drives the
+monitor/experiment loop until the goal is reached or the budget is spent:
+
 ```bash
-# 1. Describe the goal (objective, search space, budget, strategy)
-iax campaign validate examples/goal_toy.yaml
+iax run examples/goal_toy.yaml --open     # dashboard at http://127.0.0.1:8585
+```
 
-# 2. Launch the first batch of trials
-iax campaign start examples/goal_toy.yaml
+Ctrl+C detaches without killing the trials; resume the loop any time with
+`iax daemon`. The same pieces are also available separately for long-lived /
+multi-campaign setups:
 
-# 3. Drive the loop: monitors runs, kills stuck ones, plans + submits next trials
-iax daemon --interval 30
-
-# 4. Watch it live
-iax serve            # dashboard at http://127.0.0.1:8585
-iax campaign list
+```bash
+iax campaign validate examples/goal_toy.yaml   # check the goal
+iax campaign start examples/goal_toy.yaml      # submit the first batch
+iax daemon --interval 30                       # the loop driver (supervised service)
+iax serve                                      # dashboard for everything in the store
 iax campaign status <campaign_id>
 ```
 

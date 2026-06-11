@@ -94,3 +94,29 @@ def test_campaigns_empty(client):
 
 def test_escalations_empty(client):
     assert client.get("/api/escalations").json() == []
+
+
+def test_clusters_endpoint(client, tmp_path, monkeypatch):
+    config = tmp_path / "clusters.yaml"
+    config.write_text(
+        "clusters:\n"
+        "  dead:\n"
+        "    provider: aws\n"
+        "    address: http://127.0.0.1:1\n"  # connection refused, fast
+    )
+    monkeypatch.setenv("IAX_CLUSTERS", str(config))
+
+    payload = client.get("/api/clusters").json()
+
+    assert len(payload) == 1
+    assert payload[0]["name"] == "dead"
+    assert payload[0]["provider"] == "aws"
+    assert payload[0]["reachable"] is False
+
+
+def test_clusters_endpoint_without_config(client, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no ./clusters.yaml
+    monkeypatch.delenv("IAX_CLUSTERS", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.config/iax/clusters.yaml
+
+    assert client.get("/api/clusters").json() == []

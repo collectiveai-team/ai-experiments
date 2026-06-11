@@ -107,6 +107,28 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             request.model_dump(mode="json") for request in list_escalations(run_store)
         ]
 
+    @app.get("/api/clusters")
+    def clusters() -> list[dict[str, Any]]:
+        """Configured Ray cluster profiles with live reachability."""
+        from ai_experiments.clusters import (
+            ClusterConfigError,
+            cluster_status,
+            load_clusters,
+        )
+
+        try:
+            profiles = load_clusters()
+        except ClusterConfigError as exc:
+            return [{"name": "(config error)", "reachable": False, "error": str(exc)}]
+        return [
+            {
+                **cluster_status(profile, timeout=2.0),
+                "provider": profile.provider,
+                "description": profile.description,
+            }
+            for profile in profiles.values()
+        ]
+
     return app
 
 

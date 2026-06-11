@@ -47,13 +47,20 @@ Constraints that matter:
 
 ```bash
 iax campaign validate goal.yaml
+iax run goal.yaml                     # all-in-one: campaign + dashboard + loop;
+                                      # blocks until done; Ctrl+C detaches safely
+```
+
+For long-lived or multi-campaign setups, split the pieces:
+
+```bash
 iax campaign start goal.yaml          # submits the first batch, prints campaign_id
 iax daemon --interval 30              # REQUIRED: drives the loop; keep it running
                                       # (tmux/systemd/launchd; or `--once` per tick)
 ```
 
-Without a running daemon the campaign does not advance. `iax campaign advance
-<campaign_id>` performs a single step manually.
+Without `iax run` or a running daemon the campaign does not advance.
+`iax campaign advance <campaign_id>` performs a single step manually.
 
 ## Observe
 
