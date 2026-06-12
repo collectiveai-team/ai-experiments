@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iax — experiments</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922;
+    --err: #f85149; --violet: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .right { margin-left: auto; color: var(--muted); font-size: 12px; }
+  main { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em;
+       color: var(--muted); margin: 26px 0 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+           border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border);
+           font-size: 13px; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .08em; }
+  tr:last-child td { border-bottom: none; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: rgba(88,166,255,.06); }
+  .badge { display: inline-block; padding: 1px 9px; border-radius: 10px;
+           font-size: 11px; border: 1px solid; }
+  .b-running, .b-submitted { color: var(--accent); border-color: var(--accent); }
+  .b-completed { color: var(--ok); border-color: var(--ok); }
+  .b-failed { color: var(--err); border-color: var(--err); }
+  .b-cancelled, .b-stopped, .b-unknown { color: var(--muted); border-color: var(--muted); }
+  .b-planned { color: var(--violet); border-color: var(--violet); }
+  .b-stopping, .b-paused { color: var(--warn); border-color: var(--warn); }
+  .muted { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
+  .empty { padding: 18px 14px; color: var(--muted); }
+  button {
+    background: none; border: 1px solid var(--border); color: var(--err);
+    border-radius: 6px; padding: 2px 10px; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--err); }
+  button.neutral { color: var(--accent); }
+  button.neutral:hover { border-color: var(--accent); }
+  button:disabled { color: var(--muted); cursor: default; }
+  button:disabled:hover { border-color: var(--border); }
+  .legend { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+            margin-right: 6px; vertical-align: middle; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  #detail { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+            display: none; align-items: flex-start; justify-content: center;
+            padding: 6vh 16px; z-index: 10; }
+  #detail.open { display: flex; }
+  #detail .card { background: var(--panel); border: 1px solid var(--border);
+                  border-radius: 10px; width: min(900px, 100%);
+                  max-height: 86vh; overflow: auto; padding: 20px 24px; }
+  #detail h3 { margin: 0 0 4px; font-size: 15px; }
+  #detail .close { float: right; color: var(--muted); cursor: pointer;
+                   border: none; font-size: 16px; }
+  canvas { width: 100%; height: 180px; display: block; margin: 10px 0; }
+  pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        padding: 10px; overflow: auto; font-size: 12px; max-height: 260px; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 2px 14px;
+        font-size: 13px; margin: 10px 0; }
+  .kv .k { color: var(--muted); }
+  .escalation { border-left: 3px solid var(--warn); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .dot-ok { background: var(--ok); }
+  .dot-err { background: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>iax</h1>
+  <span class="sub">autonomous experiment harness</span>
+  <span class="right" id="updated"></span>
+</header>
+<main>
+  <h2>Campaigns</h2>
+  <div class="panel"><table id="campaigns">
+    <thead><tr><th>campaign</th><th>name</th><th>status</th><th>trials</th>
+      <th>best</th><th>gpu·h</th><th>goal</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table><div class="empty" id="campaigns-empty" hidden>No campaigns yet — start one with <span class="muted">iax run goal.yaml</span></div></div>
+
+  <h2 id="leaderboard-title" hidden>Leaderboard <span class="muted" style="text-transform:none">(best per campaign, ranked)</span></h2>
+  <div class="panel" id="leaderboard-panel" hidden><table id="leaderboard">
+    <thead><tr><th>#</th><th>metric</th><th>best</th><th>campaign</th>
+      <th>params</th><th>trials</th><th>gpu·h</th><th>cost</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+
+  <h2 id="clusters-title" hidden>Ray clusters</h2>
+  <div class="panel" id="clusters-panel" hidden><table id="clusters">
+    <thead><tr><th>cluster</th><th>provider</th><th>dashboard</th><th>status</th><th>ray</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+
+  <h2>Escalations <span class="muted" style="text-transform:none">(awaiting agent diagnosis)</span></h2>
+  <div class="panel" id="escalations-panel"><table id="escalations">
+    <thead><tr><th>run</th><th>since</th><th>reasons</th></tr></thead>
+    <tbody></tbody>
+  </table><div class="empty" id="escalations-empty" hidden>None — all runs look healthy.</div></div>
+
+  <h2>Runs <button class="neutral" id="compare-btn" disabled
+      onclick="openCompare()" style="margin-left:10px">compare selected</button></h2>
+  <div class="panel"><table id="runs">
+    <thead><tr><th></th><th>run</th><th>experiment</th><th>status</th><th>backend</th>
+      <th>last metric</th><th>updated</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table><div class="empty" id="runs-empty" hidden>No runs in the store.</div></div>
+</main>
+
+<div id="detail"><div class="card">
+  <button class="close" onclick="closeDetail()">✕</button>
+  <div id="detail-body"></div>
+</div></div>
+
+<script>
+"use strict";
+const fmtTime = iso => iso ? new Date(iso).toLocaleString() : "—";
+const ago = iso => {
+  if (!iso) return "—";
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  return Math.round(s / 3600) + "h ago";
+};
+const badge = s => `<span class="badge b-${s}">${s}</span>`;
+const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = v => v == null ? "—" : (Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-3)) ? v.toExponential(3) : +v.toPrecision(5);
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const [campaigns, runs, escalations, leaderboard] = await Promise.all([
+      getJSON("/api/campaigns"), getJSON("/api/runs"), getJSON("/api/escalations"),
+      getJSON("/api/leaderboard"),
+    ]);
+    renderCampaigns(campaigns);
+    renderRuns(runs);
+    renderEscalations(escalations);
+    renderLeaderboard(leaderboard);
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("updated").textContent = "refresh failed: " + e.message;
+  }
+}
+
+function renderLeaderboard(rows) {
+  const show = rows.length > 0;
+  document.getElementById("leaderboard-title").hidden = !show;
+  document.getElementById("leaderboard-panel").hidden = !show;
+  if (!show) return;
+  let rank = 0, lastMetric = null;
+  document.querySelector("#leaderboard tbody").innerHTML = rows.map(r => {
+    rank = r.metric === lastMetric ? rank + 1 : 1;
+    lastMetric = r.metric;
+    return `<tr class="clickable" onclick="openCampaign('${esc(r.campaign_id)}')">
+      <td class="muted">${rank}</td>
+      <td>${esc(r.mode)} ${esc(r.metric)}</td>
+      <td class="num">${num(r.best_value)}</td>
+      <td>${esc(r.name)} ${badge(r.status)}</td>
+      <td class="num" style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${esc(JSON.stringify(r.best_params))}</td>
+      <td class="num">${r.trials}</td>
+      <td class="num">${num(r.gpu_hours)}</td>
+      <td class="num">${r.estimated_cost != null ? "$" + num(r.estimated_cost) : "—"}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderCampaigns(items) {
+  const tbody = document.querySelector("#campaigns tbody");
+  document.getElementById("campaigns-empty").hidden = items.length > 0;
+  tbody.innerHTML = items.map(c => {
+    const best = c.trials.find(t => t.trial_id === c.best_trial_id);
+    const counts = {};
+    c.trials.forEach(t => counts[t.status] = (counts[t.status] || 0) + 1);
+    const trials = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ") || "0";
+    const gpuHours = c.trials.reduce((s, t) => s + (t.gpu_hours || 0), 0);
+    const buttons = [];
+    if (c.status === "running")
+      buttons.push(`<button class="neutral" onclick="event.stopPropagation();campaignAction('${esc(c.campaign_id)}','pause')">pause</button>`);
+    if (c.status === "paused")
+      buttons.push(`<button class="neutral" onclick="event.stopPropagation();campaignAction('${esc(c.campaign_id)}','resume')">resume</button>`);
+    if (["running","paused","stopping"].includes(c.status))
+      buttons.push(`<button onclick="event.stopPropagation();stopCampaign('${esc(c.campaign_id)}')">stop</button>`);
+    return `<tr class="clickable" onclick="openCampaign('${esc(c.campaign_id)}')">
+      <td class="muted">${esc(c.campaign_id)}</td>
+      <td>${esc(c.name)}</td>
+      <td>${badge(c.status)}${c.stop_reason ? ` <span class="muted">${esc(c.stop_reason)}</span>` : ""}</td>
+      <td>${esc(trials)}</td>
+      <td class="num">${best ? num(best.objective_value) : "—"}</td>
+      <td class="num">${gpuHours ? num(gpuHours) : "—"}</td>
+      <td class="muted" style="max-width:240px;overflow:hidden;text-overflow:ellipsis">${esc(c.goal)}</td>
+      <td>${buttons.join(" ")}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function campaignAction(id, action) {
+  await fetch(`/api/campaigns/${id}/${action}`, { method: "POST" });
+  refresh();
+}
+
+const selectedRuns = new Set();
+
+function toggleRunSelection(id, checked) {
+  if (checked) selectedRuns.add(id); else selectedRuns.delete(id);
+  document.getElementById("compare-btn").disabled = selectedRuns.size < 2;
+}
+
+function renderRuns(items) {
+  const tbody = document.querySelector("#runs tbody");
+  document.getElementById("runs-empty").hidden = items.length > 0;
+  items.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  const known = new Set(items.map(r => r.run_id));
+  [...selectedRuns].forEach(id => { if (!known.has(id)) selectedRuns.delete(id); });
+  tbody.innerHTML = items.map(r => {
+    const last = r.details?.last_metrics
+      ? Object.entries(r.details.last_metrics).map(([k, v]) => `${esc(k)}=${num(v)}`).join(" ")
+      : "—";
+    return `<tr class="clickable" onclick="openRun('${esc(r.run_id)}')">
+      <td onclick="event.stopPropagation()"><input type="checkbox"
+        ${selectedRuns.has(r.run_id) ? "checked" : ""}
+        onchange="toggleRunSelection('${esc(r.run_id)}', this.checked)"></td>
+      <td class="muted">${esc(r.run_id)}</td>
+      <td>${esc(r.details?.experiment || "")}</td>
+      <td>${badge(r.status)}</td>
+      <td>${esc(r.backend)}</td>
+      <td class="num">${last}</td>
+      <td class="muted">${ago(r.updated_at)}</td>
+      <td>${["submitted","running"].includes(r.status)
+        ? `<button onclick="event.stopPropagation();cancelRun('${esc(r.run_id)}')">cancel</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("compare-btn").disabled = selectedRuns.size < 2;
+}
+
+async function refreshClusters() {
+  try {
+    const items = await getJSON("/api/clusters");
+    const show = items.length > 0;
+    document.getElementById("clusters-title").hidden = !show;
+    document.getElementById("clusters-panel").hidden = !show;
+    if (!show) return;
+    document.querySelector("#clusters tbody").innerHTML = items.map(c => `<tr>
+      <td>${esc(c.name)}</td>
+      <td class="muted">${esc(c.provider || "—")}</td>
+      <td>${c.address ? `<a href="${esc(c.address)}" target="_blank">${esc(c.address)}</a>` : "—"}</td>
+      <td><span class="dot ${c.reachable ? "dot-ok" : "dot-err"}"></span>${
+        c.reachable ? "reachable" : `unreachable <span class="muted">${esc(c.error || "")}</span>`}</td>
+      <td class="muted">${esc(c.ray_version || "—")}</td>
+    </tr>`).join("");
+  } catch (e) { /* cluster panel is best-effort */ }
+}
+
+function rayJobUrl(status) {
+  const address = status.details?.ray_address || status.dashboard_url;
+  if (!address || !status.external_id) return null;
+  return `${address.replace(/\/$/, "")}/#/jobs/${status.external_id}`;
+}
+
+function renderEscalations(items) {
+  const tbody = document.querySelector("#escalations tbody");
+  document.getElementById("escalations-empty").hidden = items.length > 0;
+  tbody.innerHTML = items.map(e => `<tr class="escalation">
+    <td class="muted">${esc(e.run_id)}</td>
+    <td class="muted">${ago(e.created_at)}</td>
+    <td>${(e.decision?.reasons || []).map(esc).join(", ")}</td>
+  </tr>`).join("");
+}
+
+async function cancelRun(id) {
+  if (!confirm("Cancel " + id + "?")) return;
+  await fetch(`/api/runs/${id}/cancel`, { method: "POST" });
+  refresh();
+}
+async function stopCampaign(id) {
+  if (!confirm("Stop campaign " + id + "? Active trials will be cancelled.")) return;
+  await fetch(`/api/campaigns/${id}/stop`, { method: "POST" });
+  refresh();
+}
+
+function closeDetail() { document.getElementById("detail").classList.remove("open"); }
+document.getElementById("detail").addEventListener("click", e => {
+  if (e.target.id === "detail") closeDetail();
+});
+
+async function openRun(id) {
+  const [status, metrics, events, artifacts, repro] = await Promise.all([
+    getJSON(`/api/runs/${id}`),
+    getJSON(`/api/runs/${id}/metrics?tail=500`),
+    getJSON(`/api/runs/${id}/events?tail=40`),
+    getJSON(`/api/runs/${id}/artifacts`).catch(() => []),
+    getJSON(`/api/runs/${id}/repro`).catch(() => null),
+  ]);
+  const body = document.getElementById("detail-body");
+  const series = seriesFromMetrics(metrics);
+  const jobUrl = rayJobUrl(status);
+  const rayRows = status.backend !== "ray" ? "" : `
+      <span class="k">ray job</span><span>${jobUrl
+        ? `<a href="${esc(jobUrl)}" target="_blank">${esc(status.external_id)} ↗</a>`
+        : esc(status.external_id || "—")}</span>
+      <span class="k">ray status</span><span>${esc(status.details?.ray_status || "—")}
+        ${status.details?.ray_condition ? `<span class="muted">(${esc(status.details.ray_condition)})</span>` : ""}</span>`;
+  const rayLogTail = status.backend === "ray" && status.details?.ray_log_tail
+    ? `<div class="muted">ray log tail</div><pre>${esc(status.details.ray_log_tail)}</pre>` : "";
+  const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB"
+    : b >= 1024 ? (b / 1024).toFixed(1) + " KB" : b + " B";
+  const artifactsHtml = artifacts.length ? `
+    <div class="muted">artifacts</div>
+    <table><tbody>${artifacts.map(a => `<tr>
+      <td><a href="/api/runs/${esc(id)}/artifacts/${encodeURIComponent(a.path).replace(/%2F/g, "/")}" download>${esc(a.path)}</a></td>
+      <td class="num muted">${fmtSize(a.size_bytes)}</td>
+      <td class="muted">${ago(a.modified_at)}</td>
+    </tr>`).join("")}</tbody></table>` : "";
+  const reproHtml = repro ? `
+    <div class="muted">reproducibility</div>
+    <div class="kv">
+      <span class="k">git</span><span>${esc(repro.git_sha ? repro.git_sha.slice(0, 12) : "not a git repo")}
+        ${repro.git_branch ? `<span class="muted">(${esc(repro.git_branch)})</span>` : ""}
+        ${repro.git_dirty ? `<span style="color:var(--warn)">dirty${repro.has_diff ? " — diff.patch captured" : ""}</span>` : ""}</span>
+      <span class="k">python</span><span>${esc(repro.python || "—")} <span class="muted">${esc(repro.platform || "")}</span></span>
+      <span class="k">re-run</span><span class="muted">iax rerun ${esc(id)}</span>
+    </div>` : "";
+  body.innerHTML = `
+    <h3>${esc(id)} ${badge(status.status)}</h3>
+    <div class="kv">
+      <span class="k">experiment</span><span>${esc(status.details?.experiment || "—")}</span>
+      <span class="k">backend</span><span>${esc(status.backend)}</span>${rayRows}
+      <span class="k">submitted</span><span>${fmtTime(status.submitted_at)}</span>
+      <span class="k">completed</span><span>${fmtTime(status.completed_at)}</span>
+      <span class="k">error</span><span>${esc(status.error || "—")}</span>
+    </div>
+    ${Object.keys(series).map(name =>
+      `<div class="muted">${esc(name)}</div><canvas data-metric="${esc(name)}"></canvas>`).join("")}
+    ${artifactsHtml}
+    ${reproHtml}
+    <div class="muted">recent events</div>
+    <pre>${events.map(ev => `[${esc(ev.timestamp)}] ${esc(ev.level)}: ${esc(ev.message)}`).join("\n") || "(none)"}</pre>
+    ${rayLogTail}`;
+  document.getElementById("detail").classList.add("open");
+  for (const canvas of body.querySelectorAll("canvas"))
+    drawSeries(canvas, series[canvas.dataset.metric]);
+}
+
+async function openCampaign(id) {
+  const detail = await getJSON(`/api/campaigns/${id}`);
+  const { state, summary } = detail;
+  const body = document.getElementById("detail-body");
+  const rows = state.trials.map(t => `<tr ${t.run_id ? `class="clickable" onclick="openRun('${esc(t.run_id)}')"` : ""}>
+    <td class="muted">${esc(t.trial_id)}${t.source === "agent" ? " 🤖" : ""}</td>
+    <td>${badge(t.status)}</td>
+    <td class="num">${num(t.objective_value)}</td>
+    <td class="num">${esc(JSON.stringify(t.params))}</td>
+  </tr>`).join("");
+  const curve = state.trials.filter(t => t.objective_value != null).map(t => t.objective_value);
+  body.innerHTML = `
+    <h3>${esc(state.name)} ${badge(state.status)}</h3>
+    <div class="kv">
+      <span class="k">goal</span><span>${esc(state.goal)}</span>
+      <span class="k">objective</span><span>${esc(summary.objective.mode)} ${esc(summary.objective.metric)}${summary.objective.target != null ? " → target " + num(summary.objective.target) : ""}</span>
+      <span class="k">best</span><span>${summary.best ? `${num(summary.best.objective_value)} @ ${esc(summary.best.trial_id)} ${esc(JSON.stringify(summary.best.params))}` : "—"}</span>
+      <span class="k">stop reason</span><span>${esc(state.stop_reason || "—")}</span>
+    </div>
+    ${curve.length > 1 ? `<div class="muted">objective by trial</div><canvas id="curve"></canvas>` : ""}
+    <table><thead><tr><th>trial</th><th>status</th><th>objective</th><th>params</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  document.getElementById("detail").classList.add("open");
+  const canvas = document.getElementById("curve");
+  if (canvas) drawSeries(canvas, curve.map((v, i) => [i, v]));
+}
+
+function seriesFromMetrics(metrics) {
+  const series = {};
+  metrics.forEach((p, i) => {
+    const x = p.step ?? i;
+    for (const [name, value] of Object.entries(p.values || {})) {
+      if (!Number.isFinite(value)) continue;
+      (series[name] = series[name] || []).push([x, value]);
+    }
+  });
+  for (const name of Object.keys(series)) if (series[name].length < 2) delete series[name];
+  return series;
+}
+
+const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff",
+                 "#39c5cf", "#ff7b72", "#7ee787"];
+
+function drawChart(canvas, seriesList) {
+  const drawable = (seriesList || []).filter(s => s.points && s.points.length >= 2);
+  if (!drawable.length) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const all = drawable.flatMap(s => s.points);
+  const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const ymin = Math.min(...ys), ymax = Math.max(...ys);
+  const pad = 28, yspan = (ymax - ymin) || 1, xspan = (xmax - xmin) || 1;
+  const X = x => pad + (x - xmin) / xspan * (w - pad * 2);
+  const Y = y => h - pad - (y - ymin) / yspan * (h - pad * 2);
+  ctx.strokeStyle = "#30363d";
+  ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, h - pad); ctx.lineTo(w - pad, h - pad); ctx.stroke();
+  ctx.fillStyle = "#8b949e"; ctx.font = "10px ui-monospace, monospace";
+  ctx.fillText(num(ymax), 2, pad + 4);
+  ctx.fillText(num(ymin), 2, h - pad + 4);
+  drawable.forEach((s, i) => {
+    ctx.strokeStyle = s.color || PALETTE[i % PALETTE.length];
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    s.points.forEach(([x, y], j) => j ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)));
+    ctx.stroke();
+  });
+}
+
+function drawSeries(canvas, points) {
+  drawChart(canvas, [{ points }]);
+}
+
+async function openCompare() {
+  const ids = [...selectedRuns];
+  if (ids.length < 2) return;
+  const metricLists = await Promise.all(
+    ids.map(id => getJSON(`/api/runs/${id}/metrics?tail=500`)));
+  // metric name -> [{label, color, points}]
+  const byMetric = {};
+  ids.forEach((id, i) => {
+    const series = seriesFromMetrics(metricLists[i]);
+    for (const [name, points] of Object.entries(series)) {
+      (byMetric[name] = byMetric[name] || []).push({
+        label: id, color: PALETTE[i % PALETTE.length], points,
+      });
+    }
+  });
+  const shared = Object.entries(byMetric).filter(([, list]) => list.length >= 2);
+  const body = document.getElementById("detail-body");
+  const legend = ids.map((id, i) =>
+    `<span class="legend" style="background:${PALETTE[i % PALETTE.length]}"></span>${esc(id)}`
+  ).join(" &nbsp; ");
+  body.innerHTML = `
+    <h3>Compare ${ids.length} runs</h3>
+    <div style="margin:6px 0 2px">${legend}</div>
+    ${shared.length
+      ? shared.map(([name]) =>
+          `<div class="muted">${esc(name)}</div><canvas data-compare="${esc(name)}"></canvas>`).join("")
+      : `<div class="empty">Selected runs share no metric reported by 2+ runs.</div>`}`;
+  document.getElementById("detail").classList.add("open");
+  for (const canvas of body.querySelectorAll("canvas[data-compare]"))
+    drawChart(canvas, byMetric[canvas.dataset.compare]);
+}
+
+refresh();
+refreshClusters();
+setInterval(refresh, 5000);
+setInterval(refreshClusters, 30000);
+</script>
+</body>
+</html>

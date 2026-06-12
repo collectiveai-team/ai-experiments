@@ -20,6 +20,10 @@ pointer to what tripped. Recognized reasons (`ai_experiments/monitoring/rules.py
 
 | Reason | Meaning |
 |---|---|
+| `run_completed` | Run reached `completed`. |
+| `failed` | Run reached `failed`. |
+| `cancelled` | Run reached `cancelled`. |
+| `run_active` | Run is active and no concern is currently detected. |
 | `status_error_present` | `status.json` carries an `error`. A missing status file sets this same `error`, so both cases surface here. |
 | `ray_resource_starved` | Ray reports the job can't get resources. |
 | `ray_stuck_suspected` | Ray heuristics suspect a hang. |
@@ -36,8 +40,11 @@ iax status <run_id> --json            # exit_code, error, pid, details
 ```
 
 Then read the files directly under `<run_dir>/`:
-`worker.log` (raw stdout/stderr — the real stack traces live here),
-`status.json`, `events.jsonl`. Use the same `--runs-dir`/`IAX_RUNS_DIR` as the run.
+`status.json`, `events.jsonl`, and for local runs `worker.log` (raw stdout/stderr,
+where local stack traces live). For Ray runs, do not expect `worker.log`; read
+`status.error`, `status.details.ray_log_tail`, and `status.details.ray_condition`.
+`exit_code` is local-backend-only. On Ray, use `status`, `error`, and `details.ray_*`
+fields instead. Use the same `--runs-dir`/`IAX_RUNS_DIR` as the run.
 
 ## 3. Hand off to the root-cause loop
 

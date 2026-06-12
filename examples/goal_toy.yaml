@@ -1,0 +1,62 @@
+# A complete goal manifest: the harness pursues this autonomously.
+# Start with:  iax campaign start examples/goal_toy.yaml
+# Then run:    iax daemon          (drives the loop + watches the runs)
+# Dashboard:   iax serve           (http://127.0.0.1:8585)
+
+goal: "Find the learning rate that minimizes toy quadratic loss below 0.01"
+name: toy-quadratic
+
+objective:
+  metric: loss
+  mode: min
+  target: 0.01          # stop early when reached (optional)
+
+search_space:
+  lr: { type: loguniform, low: 0.001, high: 0.5 }
+  x0: { type: uniform, low: -5.0, high: 5.0 }
+
+workload:
+  entrypoint: "python examples/toy_train.py"
+  args: ["--steps", "20", "--sleep", "0.2"]
+  working_dir: "."
+
+budget:
+  max_trials: 8
+  max_parallel: 2
+  max_hours: 1.0
+  # max_gpu_hours: 100     # stop when GPU spend (gpus x runtime) is exhausted
+  # gpu_hour_rate: 2.50    # $/GPU-hour, for cost display only
+
+strategy:
+  name: adaptive        # grid | random | adaptive
+  seed: 7
+  exploration: 0.3      # adaptive: fraction of fresh random samples
+  top_k: 2              # adaptive: perturb around one of the best k trials
+
+backend: local          # or `ray` (+ backend_address / cluster)
+# cluster: vader        # named profile from clusters.yaml
+# backend_address: http://vader:8265
+
+monitoring:
+  interval_seconds: 30
+  stuck_after_minutes: 10
+  timeout_seconds: 1800
+  auto_kill: true       # daemon kills NaN/timeout/frozen runs itself
+  fatal_on_nan: true
+  plateau_patience_points: 10
+  escalation:
+    after_suspicious_ticks: 3
+    cooldown_minutes: 30
+    max_agent_calls: 3
+    # agent_command: "claude -p 'Diagnose iax run {run_id} in {run_dir}; reply with JSON {\"verdict\": ..., \"reason\": ...}' --output-format json"
+
+analysis:
+  agent_review: false   # true: drop a review request file for an agent
+                        # between rounds (suggest trials via `iax campaign suggest`)
+
+tracking:
+  mlflow: false         # true: mirror every trial to MLflow (params, metrics,
+                        # artifacts, git sha) and inject MLFLOW_RUN_ID into the
+                        # workload so remote Ray jobs log artifacts to the server
+  # tracking_uri: http://mlflow.internal:5000   # default: MLFLOW_TRACKING_URI env
+  # experiment: my-project                      # default: the campaign name

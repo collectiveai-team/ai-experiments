@@ -33,7 +33,9 @@ def _manifest(tmp_path):
 
 def _sleep_manifest(tmp_path):
     script = tmp_path / "sleep_train.py"
-    script.write_text("import time\nprint('started', flush=True)\ntime.sleep(2)\nprint('done')\n")
+    script.write_text(
+        "import time\nprint('started', flush=True)\ntime.sleep(2)\nprint('done')\n"
+    )
     manifest = {
         "experiment": "sleep",
         "backend": "local",
@@ -53,6 +55,22 @@ def test_validate_manifest(tmp_path):
     result = runner.invoke(app, ["validate", str(_manifest(tmp_path))])
     assert result.exit_code == 0
     assert "Manifest valid" in result.stdout
+
+
+def test_validate_rejects_malformed_backend_address(tmp_path):
+    manifest = {
+        "experiment": "bad-address",
+        "backend": "ray",
+        "backend_address": "ray://cluster",
+        "workload": {"entrypoint": sys.executable},
+    }
+    path = tmp_path / "experiment.yaml"
+    path.write_text(yaml.safe_dump(manifest))
+
+    result = runner.invoke(app, ["validate", str(path)])
+
+    assert result.exit_code == 1
+    assert "invalid manifest" in result.stderr
 
 
 def test_submit_status_and_diagnose_local_run(tmp_path):
@@ -92,7 +110,13 @@ def test_monitor_is_quiet_while_waiting(tmp_path):
     runs_dir = tmp_path / "runs"
     result = runner.invoke(
         app,
-        ["submit", str(_sleep_manifest(tmp_path)), "--runs-dir", str(runs_dir), "--json"],
+        [
+            "submit",
+            str(_sleep_manifest(tmp_path)),
+            "--runs-dir",
+            str(runs_dir),
+            "--json",
+        ],
     )
     assert result.exit_code == 0
     handle = json.loads(result.stdout)

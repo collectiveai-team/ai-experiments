@@ -7,15 +7,32 @@ from typing import Any, Callable
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
 from ai_experiments.monitoring.rules import diagnose_run
+from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
+    MetricPoint,
     RunEvent,
     RunHandle,
     RunStatus,
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
+
+
+DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
+
+
+def resolve_ray_address(address: str | None = None) -> str:
+    if address is not None:
+        stripped = address.strip()
+        if not stripped:
+            raise ValueError("Ray address must not be empty")
+        return stripped
+    env_address = os.environ.get("RAY_ADDRESS")
+    if env_address and env_address.strip():
+        return env_address.strip()
+    return DEFAULT_RAY_ADDRESS
 
 
 class RayBackend(ExperimentBackend):
@@ -32,7 +49,7 @@ class RayBackend(ExperimentBackend):
         client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self.store = store or FilesystemRunStore()
-        self.address = address or os.environ.get("RAY_ADDRESS") or "http://127.0.0.1:8265"
+        self.address = resolve_ray_address(address)
         self._client_factory = client_factory
 
     def _client(self) -> Any:
@@ -49,7 +66,9 @@ class RayBackend(ExperimentBackend):
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
-        entrypoint = " ".join([manifest.workload.entrypoint, *manifest.workload.args]).strip()
+        entrypoint = " ".join(
+            [manifest.workload.entrypoint, *manifest.workload.args]
+        ).strip()
 
         try:
             client = self._client()
@@ -66,9 +85,12 @@ class RayBackend(ExperimentBackend):
             self.store.write_status(status)
             raise RuntimeError(status.error) from exc
 
+        from ai_experiments.tracking import begin_tracking
+
+        tracking_env = begin_tracking(self.store, run_id, manifest)
         runtime_env = {
             "working_dir": str(Path(manifest.workload.working_dir).resolve()),
-            "env_vars": manifest.workload.env,
+            "env_vars": {**manifest.workload.env, **tracking_env},
         }
         external_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
         handle = RunHandle(
@@ -103,8 +125,11 @@ class RayBackend(ExperimentBackend):
             client = self._client()
             ray_status = client.get_job_status(status.external_id)
             mapped = _map_ray_status(ray_status)
-            details = self._ray_details(client, status.external_id, ray_status)
-            if mapped in {"completed", "failed", "cancelled"} and status.completed_at is None:
+            details = self._ray_details(run_id, client, status.external_id, ray_status)
+            if (
+                mapped in {"completed", "failed", "cancelled"}
+                and status.completed_at is None
+            ):
                 status = self.store.update_status(
                     run_id,
                     status=mapped,
@@ -112,15 +137,21 @@ class RayBackend(ExperimentBackend):
                     details=details,
                 )
             else:
-                status = self.store.update_status(run_id, status=mapped, details=details)
+                status = self.store.update_status(
+                    run_id, status=mapped, details=details
+                )
             if mapped == "failed" and not status.error:
                 message = details.get("ray_message") or details.get("ray_error_type")
-                status = self.store.update_status(run_id, error=str(message or "Ray job failed"))
+                status = self.store.update_status(
+                    run_id, error=str(message or "Ray job failed")
+                )
             return status
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
 
-    def _ray_details(self, client: Any, external_id: str, ray_status: Any) -> dict[str, Any]:
+    def _ray_details(
+        self, run_id: str, client: Any, external_id: str, ray_status: Any
+    ) -> dict[str, Any]:
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
             "ray_address": self.address,
@@ -140,9 +171,31 @@ class RayBackend(ExperimentBackend):
             lines = logs.splitlines()
             details["ray_log_tail"] = "\n".join(lines[-50:])
             details["ray_log_line_count"] = len(lines)
+            last_point = self._sync_metrics_from_logs(run_id, lines)
+            if last_point is not None:
+                details["last_metric_at"] = last_point.timestamp.isoformat()
+                details["last_step"] = last_point.step
+                details["last_metrics"] = last_point.values
 
         details["ray_condition"] = classify_ray_condition(details)
         return details
+
+    def _sync_metrics_from_logs(
+        self, run_id: str, lines: list[str]
+    ) -> MetricPoint | None:
+        """Append metric points newly seen in the job logs to the run store.
+
+        Ray job logs carry no timestamps, so only points beyond the count
+        already persisted are appended (stamped at observation time). This
+        keeps metric-staleness checks honest across repeated inspects.
+        """
+        parsed = [m for m in (parse_metric_line(line) for line in lines) if m]
+        existing = self.store.read_metrics(run_id)
+        last: MetricPoint | None = existing[-1] if existing else None
+        for metric in parsed[len(existing) :]:
+            last = MetricPoint(step=metric["step"], values=metric["values"])
+            self.store.append_metric(run_id, last)
+        return last
 
     def logs(self, run_id: str, tail: int = 200) -> list[RunEvent]:
         return self.store.read_events(run_id, tail=tail)

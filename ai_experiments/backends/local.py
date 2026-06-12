@@ -46,6 +46,10 @@ class LocalBackend(ExperimentBackend):
         )
         self.store.append_event(run_id, RunEvent(message="local run submitted"))
 
+        from ai_experiments.tracking import begin_tracking
+
+        begin_tracking(self.store, run_id, manifest)
+
         cmd = [
             sys.executable,
             "-m",
@@ -68,7 +72,9 @@ class LocalBackend(ExperimentBackend):
             env=env,
             start_new_session=True,
         )
-        self.store.update_status(run_id, pid=process.pid, details={"log_path": str(log_path)})
+        self.store.update_status(
+            run_id, pid=process.pid, details={"log_path": str(log_path)}
+        )
         self.store.append_event(
             run_id,
             RunEvent(message="local supervisor started", details={"pid": process.pid}),

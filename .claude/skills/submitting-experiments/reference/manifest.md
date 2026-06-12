@@ -9,6 +9,7 @@ summarizes the fields; if it disagrees with the code, the code wins.
 |---|---|---|---|
 | `experiment` | string | — (required) | Must be non-empty. |
 | `backend` | `local` \| `ray` | `local` | `ray` needs the `ai-experiments[ray]` extra. |
+| `backend_address` | string \| null | `null` | Ray-only Jobs API/dashboard URL. Resolution order: manifest `backend_address`, then `RAY_ADDRESS`, then `http://127.0.0.1:8265`. Must start with `http://` or `https://`. |
 | `workload` | object | — (required) | See below. |
 | `resources` | object | all defaults | See below. |
 | `artifacts` | object | all defaults | `output_dir` (default `outputs/training`), `status_path`. |
@@ -48,3 +49,10 @@ summarizes the fields; if it disagrees with the code, the code wins.
 | `no_event_after_minutes` | int \| null | `null` |
 | `timeout_seconds` | int \| null | `null` |
 | `checks` | list[string] | `["no_status_update", "no_log_progress", "process_exit"]` |
+
+## Ray backend address
+
+For `backend: ray`, the dashboard / Jobs API must be reachable from the machine
+running `iax`. Remote clusters should start Ray with `--dashboard-host 0.0.0.0`.
+`iax submit` uploads `workload.working_dir` through the Ray SDK for every run; SDK
+upload progress logs go to stderr so `--json` output stays parseable on stdout.
