@@ -77,6 +77,13 @@ Workloads should save checkpoints/plots into `$IAX_ARTIFACTS_DIR`. Every run
 also gets a repro bundle (git SHA, dirty diff, environment) — `iax repro
 <run_id>` shows it, `iax rerun <run_id>` repeats the run exactly.
 
+For MLflow mirroring add `tracking: {mlflow: true}` to the goal (needs the
+`[mlflow]` extra). The harness creates the MLflow run, logs params/metrics/
+artifacts/git-sha, and injects `MLFLOW_RUN_ID` into the workload env — on Ray
+clusters the workload should `mlflow.log_artifact(...)` so checkpoints reach
+the central artifact store (the local `artifacts/` dir is not visible across
+machines).
+
 ## Refine mid-flight
 
 When results cluster in a region, narrow the space without losing history:

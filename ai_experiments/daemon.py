@@ -91,9 +91,22 @@ class MonitorDaemon:
         return report
 
     def _check_runs(self, report: TickReport) -> None:
+        from ai_experiments.tracking import finalize_tracking
+
         for run_id in sorted(self.run_store.list_runs()):
             status = self.run_store.read_status(run_id)
             if status.status not in ACTIVE_RUN_STATES:
+                try:
+                    if finalize_tracking(self.run_store, status):
+                        report.actions.append(
+                            RunAction(
+                                run_id=run_id,
+                                decision=status.status,
+                                action="mlflow_synced",
+                            )
+                        )
+                except Exception as exc:
+                    report.errors.append(f"{run_id}: mlflow finalize: {exc}")
                 continue
             report.runs_checked += 1
             try:

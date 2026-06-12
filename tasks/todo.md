@@ -67,6 +67,22 @@ daemon (programmatic checks first, agent escalation second) → post-run analysi
       condition (`gpu_hours_exhausted`), `gpu_hour_rate` → estimated cost in
       status/leaderboard/dashboard.
 
+## Round 4 (MLflow integration)
+
+- [x] `TrackingSpec` on manifests + goals (`tracking: {mlflow, tracking_uri,
+      experiment}`), passed through to trials; `[mlflow]` extra
+      (mlflow-skinny).
+- [x] `tracking.py`: harness creates the MLflow run at submit (params, iax/
+      git tags), backends inject MLFLOW_RUN_ID + MLFLOW_TRACKING_URI into
+      the workload env — incl. Ray runtime_env, which routes remote-cluster
+      artifacts to the central MLflow store.
+- [x] Daemon finalizes terminal tracked runs: metric history with steps,
+      local artifacts upload, FINISHED/FAILED/KILLED status; idempotent via
+      `mlflow_synced` detail. All best-effort (missing mlflow / dead server
+      → warning event, never blocks).
+- [x] Unit tests against a fake mlflow module + live smoke against real
+      mlflow-skinny on a file store.
+
 ## Review
 
 **What was built** — the harness now covers the four production requirements:

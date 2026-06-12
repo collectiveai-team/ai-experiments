@@ -85,9 +85,12 @@ class RayBackend(ExperimentBackend):
             self.store.write_status(status)
             raise RuntimeError(status.error) from exc
 
+        from ai_experiments.tracking import begin_tracking
+
+        tracking_env = begin_tracking(self.store, run_id, manifest)
         runtime_env = {
             "working_dir": str(Path(manifest.workload.working_dir).resolve()),
-            "env_vars": manifest.workload.env,
+            "env_vars": {**manifest.workload.env, **tracking_env},
         }
         external_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
         handle = RunHandle(

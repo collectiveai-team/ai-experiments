@@ -56,6 +56,7 @@ def build_trial_manifest(
         workload=workload,
         resources=goal.resources,
         monitoring=goal.monitoring,
+        tracking=goal.tracking,
         metadata={
             **goal.metadata,
             "campaign": goal.name,

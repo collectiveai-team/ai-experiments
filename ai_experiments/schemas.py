@@ -78,6 +78,22 @@ class MonitorPolicy(BaseModel):
     )
 
 
+class TrackingSpec(BaseModel):
+    """Optional MLflow experiment tracking.
+
+    When enabled, the harness creates the MLflow run at submit time, injects
+    ``MLFLOW_RUN_ID``/``MLFLOW_TRACKING_URI`` into the workload env (so
+    workloads on remote Ray nodes can log artifacts straight to the tracking
+    server), and mirrors params, IAX_METRIC points, tags, terminal status,
+    and local artifacts — so runs appear in MLflow even when the workload
+    never imports mlflow.
+    """
+
+    mlflow: bool = False
+    tracking_uri: str | None = None  # falls back to MLFLOW_TRACKING_URI env
+    experiment: str | None = None  # defaults to the iax experiment name
+
+
 class ExperimentManifest(BaseModel):
     """Generic detached training experiment manifest."""
 
@@ -88,6 +104,7 @@ class ExperimentManifest(BaseModel):
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     artifacts: ArtifactSpec = Field(default_factory=ArtifactSpec)
     monitoring: MonitorPolicy = Field(default_factory=MonitorPolicy)
+    tracking: TrackingSpec = Field(default_factory=TrackingSpec)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("experiment")
@@ -298,6 +315,7 @@ class GoalSpec(BaseModel):
     cluster: str | None = None
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     monitoring: MonitorPolicy = Field(default_factory=MonitorPolicy)
+    tracking: TrackingSpec = Field(default_factory=TrackingSpec)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("goal", "name")

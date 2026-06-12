@@ -86,6 +86,34 @@ iax rerun <run_id>     # resubmit the exact persisted manifest;
                        # warns when your git state differs from the recorded one
 ```
 
+## MLflow integration
+
+Enable per manifest/goal (needs `pip install 'ai-experiments[mlflow]'` — or
+full `mlflow` if you also run the tracking server):
+
+```yaml
+tracking:
+  mlflow: true
+  tracking_uri: http://mlflow.internal:5000   # default: MLFLOW_TRACKING_URI env
+  experiment: my-project                      # default: the campaign name
+```
+
+Two halves:
+
+- **Harness mirroring (zero workload changes)**: iax creates the MLflow run
+  at submit (tagged `iax.run_id`, campaign, trial, git commit from the repro
+  bundle, with trial params logged), and the daemon finalizes it at terminal
+  state — all `IAX_METRIC` points with steps, the local `artifacts/` dir,
+  and the matching terminal status (`FINISHED`/`FAILED`/`KILLED`).
+- **Workload handoff (solves remote artifacts)**: the workload env gets
+  `MLFLOW_RUN_ID` + `MLFLOW_TRACKING_URI` — on the local backend and inside
+  Ray `runtime_env`. A workload on a remote cluster node that calls
+  `mlflow.log_artifact("ckpt.pt")` ships checkpoints straight to the central
+  MLflow artifact store; both halves write into the *same* MLflow run.
+
+Tracking is best-effort: missing mlflow or an unreachable server records a
+warning event and never blocks a submit or a daemon tick.
+
 ## Comparison and cost
 
 ```bash

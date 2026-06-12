@@ -52,6 +52,13 @@ class _Supervisor:
         artifacts_dir.mkdir(exist_ok=True)
         env["IAX_ARTIFACTS_DIR"] = str(artifacts_dir)
 
+        # MLflow handoff: workloads that import mlflow attach to the run the
+        # harness created at submit time.
+        details = self.store.read_status(self.run_id).details
+        if details.get("mlflow_run_id"):
+            env["MLFLOW_RUN_ID"] = str(details["mlflow_run_id"])
+            env["MLFLOW_TRACKING_URI"] = str(details.get("mlflow_tracking_uri", ""))
+
         self._update_status(
             status="running",
             started_at=utc_now(),

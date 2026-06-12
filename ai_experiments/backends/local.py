@@ -46,6 +46,10 @@ class LocalBackend(ExperimentBackend):
         )
         self.store.append_event(run_id, RunEvent(message="local run submitted"))
 
+        from ai_experiments.tracking import begin_tracking
+
+        begin_tracking(self.store, run_id, manifest)
+
         cmd = [
             sys.executable,
             "-m",

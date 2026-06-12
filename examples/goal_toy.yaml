@@ -53,3 +53,10 @@ monitoring:
 analysis:
   agent_review: false   # true: drop a review request file for an agent
                         # between rounds (suggest trials via `iax campaign suggest`)
+
+tracking:
+  mlflow: false         # true: mirror every trial to MLflow (params, metrics,
+                        # artifacts, git sha) and inject MLFLOW_RUN_ID into the
+                        # workload so remote Ray jobs log artifacts to the server
+  # tracking_uri: http://mlflow.internal:5000   # default: MLFLOW_TRACKING_URI env
+  # experiment: my-project                      # default: the campaign name
