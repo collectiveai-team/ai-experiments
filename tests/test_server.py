@@ -15,7 +15,7 @@ from ai_experiments.store import FilesystemRunStore
 
 @pytest.fixture()
 def store(tmp_path) -> FilesystemRunStore:
-    return FilesystemRunStore(tmp_path / "runs")
+    return FilesystemRunStore(tmp_path / "runs", capture_repro=False)
 
 
 @pytest.fixture()
@@ -94,6 +94,119 @@ def test_campaigns_empty(client):
 
 def test_escalations_empty(client):
     assert client.get("/api/escalations").json() == []
+
+
+def test_artifacts_listing_and_download(client, store):
+    run_id = _seed_run(store)
+    artifacts = store.artifacts_dir(run_id)
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "model.bin").write_bytes(b"weights")
+
+    listing = client.get(f"/api/runs/{run_id}/artifacts").json()
+    assert [a["path"] for a in listing] == ["model.bin"]
+
+    download = client.get(f"/api/runs/{run_id}/artifacts/model.bin")
+    assert download.status_code == 200
+    assert download.content == b"weights"
+
+
+def test_artifact_path_traversal_blocked(client, store):
+    run_id = _seed_run(store)
+
+    response = client.get(f"/api/runs/{run_id}/artifacts/../status.json")
+
+    assert response.status_code == 404
+
+
+def test_repro_endpoint(client, store):
+    run_id = _seed_run(store)
+    repro_dir = store.run_dir(run_id) / "repro"
+    repro_dir.mkdir(exist_ok=True)
+    (repro_dir / "context.json").write_text('{"git_sha": "abc123", "git_dirty": false}')
+
+    payload = client.get(f"/api/runs/{run_id}/repro").json()
+    assert payload["git_sha"] == "abc123"
+    assert payload["has_diff"] is False
+
+    missing = _seed_run(store)
+    import shutil
+
+    shutil.rmtree(store.run_dir(missing) / "repro", ignore_errors=True)
+    assert client.get(f"/api/runs/{missing}/repro").status_code == 404
+
+
+def test_leaderboard_ranks_campaigns(client, store):
+    import json
+
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+        TrialRecord,
+        WorkloadSpec,
+    )
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    for name, best in [("worse", 0.9), ("better", 0.1)]:
+        goal = GoalSpec(
+            goal=f"campaign {name}",
+            name=name,
+            objective=ObjectiveSpec(metric="loss", mode="min"),
+            search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+            workload=WorkloadSpec(entrypoint="python t.py"),
+            budget=BudgetSpec(max_trials=1, gpu_hour_rate=2.5),
+        )
+        state = campaign_store.create_campaign(goal)
+        state.trials.append(
+            TrialRecord(
+                trial_id="t000",
+                params={"x": best},
+                status="completed",
+                objective_value=best,
+                gpu_hours=1.0,
+            )
+        )
+        state.best_trial_id = "t000"
+        state.status = "completed"
+        campaign_store.write_state(state)
+
+    rows = client.get("/api/leaderboard").json()
+    assert [r["name"] for r in rows] == ["better", "worse"]
+    assert rows[0]["best_value"] == 0.1
+    assert rows[0]["estimated_cost"] == 2.5
+    assert json.loads(json.dumps(rows[0]["best_params"])) == {"x": 0.1}
+
+
+def test_campaign_pause_resume_endpoints(client, store):
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+        WorkloadSpec,
+    )
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec(
+        goal="pausable",
+        name="pausable",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload=WorkloadSpec(entrypoint="python t.py"),
+        budget=BudgetSpec(max_trials=1),
+    )
+    state = campaign_store.create_campaign(goal)
+
+    paused = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+
+    again = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+    assert again.status_code == 409
+
+    resumed = client.post(f"/api/campaigns/{state.campaign_id}/resume")
+    assert resumed.status_code == 200
 
 
 def test_clusters_endpoint(client, tmp_path, monkeypatch):

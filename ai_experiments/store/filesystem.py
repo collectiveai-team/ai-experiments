@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -19,10 +20,13 @@ from ai_experiments.schemas import (
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self, root: str | Path | None = None, capture_repro: bool = True
+    ) -> None:
         self.root = Path(
             root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs")
         )
+        self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
         run_id = f"run_{uuid.uuid4().hex[:12]}"
@@ -30,6 +34,14 @@ class FilesystemRunStore:
         run_dir.mkdir(parents=True, exist_ok=False)
         (run_dir / "manifest.yaml").write_text(manifest.to_yaml())
         (run_dir / "events.jsonl").touch()
+        (run_dir / "artifacts").mkdir()
+        if self.capture_repro:
+            from ai_experiments.repro import capture_repro
+
+            try:
+                capture_repro(run_dir, manifest.workload.working_dir)
+            except Exception:
+                pass  # reproducibility capture must never block a submit
         return run_id, run_dir
 
     def run_dir(self, run_id: str) -> Path:
@@ -115,6 +127,30 @@ class FilesystemRunStore:
         if tail is not None:
             lines = lines[-tail:]
         return [MetricPoint(**json.loads(line)) for line in lines if line.strip()]
+
+    def artifacts_dir(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "artifacts"
+
+    def list_artifacts(self, run_id: str) -> list[dict[str, object]]:
+        """Relative path, size, and mtime for every file under artifacts/."""
+        root = self.artifacts_dir(run_id)
+        if not root.exists():
+            return []
+        entries: list[dict[str, object]] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            entries.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "size_bytes": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+            )
+        return entries
 
     def read_manifest(self, run_id: str) -> ExperimentManifest | None:
         path = self.run_dir(run_id) / "manifest.yaml"

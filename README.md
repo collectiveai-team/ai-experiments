@@ -68,6 +68,63 @@ This works identically on the local backend (the worker tails stdout) and on
 remote Ray clusters with no shared filesystem (metrics are extracted from job
 logs).
 
+## Artifacts and reproducibility
+
+Workloads write checkpoints/plots/models to `$IAX_ARTIFACTS_DIR` (or use
+`ai_experiments.report.artifacts_dir()`); the harness lists them with
+`iax artifacts <run_id>` and serves them as download links in the run's
+dashboard view. (Local backend; on remote Ray clusters artifacts stay on the
+cluster's storage.)
+
+Every submit also captures a repro bundle under `<run_dir>/repro/` — git SHA,
+branch, dirty flag + `diff.patch` of uncommitted changes, python/platform,
+and the installed package list. Then:
+
+```bash
+iax repro <run_id>     # show the captured context
+iax rerun <run_id>     # resubmit the exact persisted manifest;
+                       # warns when your git state differs from the recorded one
+```
+
+## Comparison and cost
+
+```bash
+iax leaderboard        # campaigns ranked by best objective (+ gpu-hours, cost)
+```
+
+The dashboard adds a leaderboard panel and **run comparison**: select runs
+with checkboxes and overlay their metric curves on one chart.
+
+GPU spend is first-class budget: trials record `gpu_hours`
+(`resources.gpus` × runtime), and a campaign stops with
+`gpu_hours_exhausted` when `budget.max_gpu_hours` is spent. Set
+`budget.gpu_hour_rate` to see estimated cost in `campaign status`, the
+leaderboard, and the dashboard.
+
+## Notifications
+
+The daemon pushes alerts when a campaign finishes or a run is killed/
+escalated. Sinks (all best-effort, always also logged to
+`<runs>/_notifications.jsonl`):
+
+```bash
+iax daemon --notify-webhook https://hooks.slack.com/services/...   # Slack-ready
+iax daemon --notify-command "./send_email.sh"                      # JSON on stdin
+# or env: IAX_NOTIFY_WEBHOOK / IAX_NOTIFY_COMMAND
+```
+
+## Mid-flight goal editing
+
+Narrow the search space around the best region without losing trial history:
+
+```bash
+iax campaign pause <campaign_id>            # stop scheduling (active runs finish)
+iax campaign edit <campaign_id> goal2.yaml  # new space/budget/strategy; same metric
+iax campaign resume <campaign_id>           # strategy replans from full history
+```
+
+Pause/resume are also one click in the dashboard.
+
 ## Monitoring: programmatic first, agent second
 
 Every daemon tick runs free checks per active run:
@@ -203,15 +260,19 @@ iax runs
 iax status <run_id> --json
 iax logs <run_id> --tail 200
 iax metrics <run_id> --tail 50
+iax artifacts <run_id>
+iax repro <run_id>
+iax rerun <run_id>
 iax diagnose <run_id> --json
 iax monitor <run_id> --json --quiet-when-waiting
 iax cancel <run_id>
 iax escalations
+iax leaderboard
 
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
 iax campaign start goal.yaml
-iax campaign list / status / advance / suggest / stop
+iax campaign list / status / advance / suggest / pause / edit / resume / stop
 
 # infrastructure
 iax daemon --interval 30        # monitor + loop driver (foreground)

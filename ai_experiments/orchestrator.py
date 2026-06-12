@@ -10,7 +10,7 @@ launch the first batch.
 from __future__ import annotations
 
 import json
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ai_experiments.backends.base import ExperimentBackend
@@ -92,6 +92,62 @@ class CampaignOrchestrator:
         )
         return state
 
+    def pause(self, campaign_id: str) -> CampaignState:
+        """Stop scheduling new trials; active trials keep running and stay
+        monitored by the daemon. Resume with `resume()`."""
+        state = self.campaign_store.read_state(campaign_id)
+        if state.status != "running":
+            raise ValueError(f"cannot pause a campaign in status '{state.status}'")
+        state.status = "paused"
+        self.campaign_store.write_state(state)
+        self.campaign_store.append_event(
+            campaign_id, RunEvent(message="campaign paused")
+        )
+        return state
+
+    def resume(self, campaign_id: str) -> CampaignState:
+        state = self.campaign_store.read_state(campaign_id)
+        if state.status != "paused":
+            raise ValueError(f"cannot resume a campaign in status '{state.status}'")
+        state.status = "running"
+        self.campaign_store.write_state(state)
+        self.campaign_store.append_event(
+            campaign_id, RunEvent(message="campaign resumed")
+        )
+        return self.advance(campaign_id)
+
+    def edit_goal(self, campaign_id: str, new_goal: GoalSpec) -> GoalSpec:
+        """Replace the campaign's goal (search space, budget, strategy, ...).
+
+        Existing trial history is kept and feeds the strategy under the new
+        goal. Changing the objective metric is rejected — recorded objective
+        values would no longer be comparable; start a new campaign instead.
+        """
+        current = self.campaign_store.read_goal(campaign_id)
+        if new_goal.objective.metric != current.objective.metric:
+            raise ValueError(
+                "editing the objective metric is not supported "
+                f"('{current.objective.metric}' -> '{new_goal.objective.metric}'); "
+                "start a new campaign instead"
+            )
+        campaign_dir = self.campaign_store.campaign_dir(campaign_id)
+        (campaign_dir / "goal.yaml").write_text(new_goal.to_yaml())
+        self.campaign_store.append_event(
+            campaign_id,
+            RunEvent(
+                message="goal edited",
+                details={
+                    "search_space": {
+                        name: spec.model_dump()
+                        for name, spec in new_goal.search_space.items()
+                    },
+                    "budget": new_goal.budget.model_dump(),
+                    "strategy": new_goal.strategy.model_dump(),
+                },
+            ),
+        )
+        return new_goal
+
     def suggest(
         self, campaign_id: str, params: dict[str, Any], note: str = ""
     ) -> TrialRecord:
@@ -117,7 +173,7 @@ class CampaignOrchestrator:
 
     def advance(self, campaign_id: str) -> CampaignState:
         state = self.campaign_store.read_state(campaign_id)
-        if state.status in {"completed", "stopped", "failed"}:
+        if state.status in {"completed", "stopped", "failed", "paused"}:
             return state
         goal = self.campaign_store.read_goal(campaign_id)
         backend = self._backend_factory(goal)
@@ -175,6 +231,11 @@ class CampaignOrchestrator:
             if mapped in {"completed", "failed", "cancelled"}:
                 trial.completed_at = run_status.completed_at or utc_now()
                 trial.error = run_status.error
+                trial.gpu_hours = _trial_gpu_hours(
+                    goal,
+                    run_status.started_at or run_status.submitted_at,
+                    trial.completed_at,
+                )
                 value, final = extract_objective(
                     self.run_store, trial.run_id, goal.objective
                 )
@@ -219,11 +280,28 @@ class CampaignOrchestrator:
             if age_hours > goal.budget.max_hours:
                 return "max_hours_exceeded"
 
+        if goal.budget.max_gpu_hours is not None:
+            if self.gpu_hours_spent(state, goal) >= goal.budget.max_gpu_hours:
+                return "gpu_hours_exhausted"
+
         active = [t for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
         planned = [t for t in state.trials if t.status == "planned"]
         if len(state.trials) >= goal.budget.max_trials and not active and not planned:
             return "budget_exhausted"
         return None
+
+    def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
+        """GPU-hours consumed so far: recorded for finished trials, a live
+        estimate (started -> now) for trials still running."""
+        total = sum(t.gpu_hours or 0.0 for t in state.trials)
+        for trial in state.trials:
+            if trial.status in ACTIVE_TRIAL_STATES and trial.run_id:
+                status = self.run_store.read_status(trial.run_id)
+                live = _trial_gpu_hours(
+                    goal, status.started_at or status.submitted_at, utc_now()
+                )
+                total += live or 0.0
+        return total
 
     def _fill_capacity(
         self, state: CampaignState, goal: GoalSpec, backend: ExperimentBackend
@@ -319,6 +397,19 @@ class CampaignOrchestrator:
         (escalations / f"campaign_{state.campaign_id}.json").write_text(
             json.dumps(payload, indent=2)
         )
+
+
+def _trial_gpu_hours(
+    goal: GoalSpec, started: datetime | None, completed: datetime | None
+) -> float | None:
+    if goal.resources.gpus <= 0 or started is None or completed is None:
+        return 0.0 if goal.resources.gpus <= 0 else None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=timezone.utc)
+    hours = max((completed - started).total_seconds(), 0.0) / 3600
+    return hours * goal.resources.gpus
 
 
 def _default_address_resolver(goal: GoalSpec) -> str | None:

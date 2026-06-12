@@ -33,10 +33,19 @@ from ai_experiments.monitoring.escalation import (
     clear_escalation,
     escalate,
 )
+from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+
+NOTIFY_ACTIONS = {
+    "auto_killed",
+    "escalated",
+    "escalated_fatal",
+    "killed_by_agent_verdict",
+    "reaped_dead_process",
+}
 
 ACTIVE_RUN_STATES = {"submitted", "running"}
 
@@ -62,6 +71,7 @@ class MonitorDaemon:
         run_store: FilesystemRunStore,
         campaign_store: CampaignStore | None = None,
         orchestrator: CampaignOrchestrator | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.run_store = run_store
         self.campaign_store = campaign_store or CampaignStore(run_store.root)
@@ -69,6 +79,7 @@ class MonitorDaemon:
             run_store, self.campaign_store
         )
         self.ladder = EscalationLadder(run_store)
+        self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
 
     # -- one tick --------------------------------------------------------------
@@ -92,6 +103,14 @@ class MonitorDaemon:
                 continue
             if action is not None:
                 report.actions.append(action)
+                if action.action in NOTIFY_ACTIONS:
+                    self.notifier.send(
+                        f"run {action.action}",
+                        f"{action.run_id}: {', '.join(action.reasons)}",
+                        run_id=action.run_id,
+                        action=action.action,
+                        reasons=action.reasons,
+                    )
 
     def _check_run(self, run_id: str) -> RunAction | None:
         backend = backend_for_run(self.run_store, run_id)
@@ -203,10 +222,30 @@ class MonitorDaemon:
         for campaign_id in self.campaign_store.list_campaigns():
             try:
                 state = self.campaign_store.read_state(campaign_id)
-                if state.status in {"completed", "stopped", "failed"}:
+                if state.status in {"completed", "stopped", "failed", "paused"}:
                     continue
-                self.orchestrator.advance(campaign_id)
+                after = self.orchestrator.advance(campaign_id)
                 report.campaigns_advanced += 1
+                if after.status in {"completed", "stopped", "failed"}:
+                    best = next(
+                        (t for t in after.trials if t.trial_id == after.best_trial_id),
+                        None,
+                    )
+                    self.notifier.send(
+                        f"campaign {after.status}",
+                        f"{after.name} ({campaign_id}): {after.stop_reason}",
+                        campaign_id=campaign_id,
+                        stop_reason=after.stop_reason,
+                        best_trial=(
+                            {
+                                "trial_id": best.trial_id,
+                                "objective_value": best.objective_value,
+                                "params": best.params,
+                            }
+                            if best
+                            else None
+                        ),
+                    )
             except Exception as exc:
                 report.errors.append(f"{campaign_id}: {exc}")
 

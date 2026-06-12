@@ -27,7 +27,8 @@ workload:
   entrypoint: "python train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
   working_dir: .                # params without placeholders appended as --name value
-budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0 }
+budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0,
+          max_gpu_hours: 100, gpu_hour_rate: 2.5 }   # gpu budget + $/gpu-h optional
 strategy: { name: adaptive, seed: 7 }     # grid | random | adaptive
 backend: local                            # or ray + cluster/backend_address
 monitoring:
@@ -66,8 +67,25 @@ Without `iax run` or a running daemon the campaign does not advance.
 
 ```bash
 iax campaign list
-iax campaign status <campaign_id> --json   # summary: best trial, history, counts
+iax campaign status <campaign_id> --json   # best trial, history, gpu-hours, cost
+iax leaderboard                             # rank all campaigns by best objective
+iax artifacts <run_id>                      # checkpoints the workload saved
 iax serve                                   # dashboard at http://127.0.0.1:8585
+```
+
+Workloads should save checkpoints/plots into `$IAX_ARTIFACTS_DIR`. Every run
+also gets a repro bundle (git SHA, dirty diff, environment) — `iax repro
+<run_id>` shows it, `iax rerun <run_id>` repeats the run exactly.
+
+## Refine mid-flight
+
+When results cluster in a region, narrow the space without losing history:
+
+```bash
+iax campaign pause <campaign_id>             # active trials finish; no new ones
+iax campaign edit <campaign_id> goal2.yaml   # tighter search_space / new budget;
+                                             # the objective metric must not change
+iax campaign resume <campaign_id>            # replans from the full trial history
 ```
 
 A finished campaign writes `summary.json` in

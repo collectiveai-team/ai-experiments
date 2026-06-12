@@ -42,6 +42,31 @@ daemon (programmatic checks first, agent escalation second) → post-run analysi
       tick (process verified gone). Found+fixed: `list_runs` leaked
       `_campaigns`/`_escalations` as phantom runs (regression test added).
 
+## Round 2 (user feedback)
+
+- [x] `iax run goal.yaml` — single command: campaign + dashboard + loop.
+- [x] Ray in the web UI: clusters panel with reachability, deep links to the
+      Ray dashboard job page, ray condition + log tail in run details.
+
+## Round 3 (user request: production gaps)
+
+- [x] Artifacts: `$IAX_ARTIFACTS_DIR` convention, `iax artifacts`, API list +
+      download with traversal protection, links in the run modal.
+- [x] Reproducibility: `repro/` bundle (git SHA/branch/dirty + diff.patch,
+      python/platform, environment.txt) captured on every submit;
+      `iax repro`, `iax rerun` (exact resubmit with git-drift warnings).
+- [x] Cross-campaign comparison: `/api/leaderboard` + `iax leaderboard`,
+      dashboard leaderboard panel, multi-run metric overlay (checkbox
+      select → compare) via a multi-series canvas chart.
+- [x] Notifications: `Notifier` (webhook Slack-compatible, command sink,
+      always-on `_notifications.jsonl`), daemon alerts on kills/escalations/
+      campaign finish, `--notify-webhook/--notify-command` + env vars.
+- [x] Mid-flight editing: campaign `pause`/`resume`/`edit` (CLI + API + UI
+      buttons); objective metric locked, history preserved for replanning.
+- [x] Cost accounting: `gpu_hours` per trial, `budget.max_gpu_hours` stop
+      condition (`gpu_hours_exhausted`), `gpu_hour_rate` → estimated cost in
+      status/leaderboard/dashboard.
+
 ## Review
 
 **What was built** — the harness now covers the four production requirements:

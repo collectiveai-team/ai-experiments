@@ -18,10 +18,28 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 METRIC_PREFIX = "IAX_METRIC "
+
+
+def artifacts_dir() -> Path | None:
+    """Directory where the workload should write checkpoints/plots/models.
+
+    Set by the harness (``IAX_ARTIFACTS_DIR``); files written here are listed
+    by ``iax artifacts <run_id>`` and downloadable from the dashboard. Returns
+    None when running outside the harness (local backend sets it; on remote
+    Ray clusters artifacts stay on the cluster's own storage).
+    """
+    value = os.environ.get("IAX_ARTIFACTS_DIR")
+    if not value:
+        return None
+    path = Path(value)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def report_metric(step: int | None = None, **values: float) -> None:

@@ -252,6 +252,8 @@ class BudgetSpec(BaseModel):
     max_trials: int = 10
     max_parallel: int = 1
     max_hours: float | None = None
+    max_gpu_hours: float | None = None
+    gpu_hour_rate: float | None = None  # currency per GPU-hour, for cost display
 
     @model_validator(mode="after")
     def positive_budget(self) -> BudgetSpec:
@@ -338,7 +340,9 @@ TrialState = Literal[
     "cancelled",
 ]
 
-CampaignStatus = Literal["running", "stopping", "completed", "stopped", "failed"]
+CampaignStatus = Literal[
+    "running", "paused", "stopping", "completed", "stopped", "failed"
+]
 
 
 class TrialRecord(BaseModel):
@@ -349,6 +353,7 @@ class TrialRecord(BaseModel):
     status: TrialState = "planned"
     objective_value: float | None = None
     final_metrics: dict[str, float] = Field(default_factory=dict)
+    gpu_hours: float | None = None
     created_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     error: str | None = None

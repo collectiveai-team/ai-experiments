@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -31,6 +32,13 @@ def main() -> None:
         print("IAX_METRIC " + json.dumps({"step": step, "loss": loss, "x": x}))
         sys.stdout.flush()
         time.sleep(args.sleep)
+
+    # "Checkpoint": anything written to $IAX_ARTIFACTS_DIR is listed by
+    # `iax artifacts <run_id>` and downloadable from the dashboard.
+    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
+    if artifacts:
+        with open(os.path.join(artifacts, "model.json"), "w") as fh:
+            json.dump({"x": x, "loss": loss}, fh)
 
     print(f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}")
 

@@ -234,18 +234,165 @@ def escalations(
 
 
 @app.command()
+def artifacts(
+    run_id: str = typer.Argument(...),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+) -> None:
+    """List files a run's workload wrote to $IAX_ARTIFACTS_DIR."""
+    store = FilesystemRunStore(runs_dir)
+    entries = store.list_artifacts(run_id)
+    if output_json:
+        _echo_json(entries)
+        return
+    if not entries:
+        typer.echo(f"No artifacts for {run_id} ({store.artifacts_dir(run_id)})")
+        return
+    typer.echo(f"Artifacts in {store.artifacts_dir(run_id)}:")
+    for entry in entries:
+        typer.echo(f"  {entry['path']}  ({entry['size_bytes']} bytes)")
+
+
+@app.command()
+def repro(
+    run_id: str = typer.Argument(...),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+) -> None:
+    """Show the reproducibility bundle captured at submit time (always JSON)."""
+    from ai_experiments.repro import read_repro
+
+    store = FilesystemRunStore(runs_dir)
+    context = read_repro(store.run_dir(run_id))
+    if context is None:
+        typer.echo(f"Error: no repro bundle for {run_id}", err=True)
+        raise typer.Exit(code=1)
+    context["bundle_dir"] = str(store.run_dir(run_id) / "repro")
+    _echo_json(context)
+
+
+@app.command()
+def rerun(
+    run_id: str = typer.Argument(..., help="Run to repeat exactly"),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+) -> None:
+    """Resubmit a run's persisted manifest (params are baked in), warning when
+    the current git state differs from the one recorded at submit time."""
+    from ai_experiments.repro import current_git_sha, read_repro
+
+    store = FilesystemRunStore(runs_dir)
+    manifest = store.read_manifest(run_id)
+    if manifest is None:
+        typer.echo(f"Error: no persisted manifest for {run_id}", err=True)
+        raise typer.Exit(code=1)
+
+    recorded = read_repro(store.run_dir(run_id)) or {}
+    recorded_sha = recorded.get("git_sha")
+    now_sha = current_git_sha(manifest.workload.working_dir)
+    if recorded_sha and now_sha and recorded_sha != now_sha:
+        typer.echo(
+            f"Warning: working dir is at {now_sha[:12]} but the run was submitted "
+            f"from {recorded_sha[:12]} — check out that commit for an exact rerun "
+            f"(diff of uncommitted changes, if any: "
+            f"{store.run_dir(run_id) / 'repro' / 'diff.patch'})",
+            err=True,
+        )
+    if recorded.get("git_dirty"):
+        typer.echo(
+            "Warning: the original submit had uncommitted changes "
+            f"(see {store.run_dir(run_id) / 'repro' / 'diff.patch'})",
+            err=True,
+        )
+
+    handle = get_backend(
+        manifest.backend, store=store, address=manifest.backend_address
+    ).submit(manifest)
+    if output_json:
+        _echo_json(handle)
+    else:
+        typer.echo(f"Resubmitted as {handle.run_id} (from {run_id})")
+
+
+@app.command()
+def leaderboard(
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+) -> None:
+    """Campaigns ranked by their best objective value."""
+    from ai_experiments.planner.analysis import summarize_campaign
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = FilesystemRunStore(runs_dir)
+    campaign_store = CampaignStore(store.root)
+    rows = []
+    for campaign_id in campaign_store.list_campaigns():
+        state = campaign_store.read_state(campaign_id)
+        goal = campaign_store.read_goal(campaign_id)
+        summary = summarize_campaign(state, goal)
+        if summary["best"] is None:
+            continue
+        rows.append(
+            {
+                "campaign_id": campaign_id,
+                "name": state.name,
+                "metric": goal.objective.metric,
+                "mode": goal.objective.mode,
+                "best_value": summary["best"]["objective_value"],
+                "best_params": summary["best"]["params"],
+                "trials": len(state.trials),
+                "gpu_hours": summary["gpu_hours"],
+                "estimated_cost": summary["estimated_cost"],
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            r["metric"],
+            -r["best_value"] if r["mode"] == "max" else r["best_value"],
+        )
+    )
+    if output_json:
+        _echo_json(rows)
+        return
+    for row in rows:
+        cost = (
+            f" ~${row['estimated_cost']}" if row["estimated_cost"] is not None else ""
+        )
+        typer.echo(
+            f"{row['mode']} {row['metric']}={row['best_value']:.6g}  "
+            f"{row['name']} ({row['campaign_id']}, {row['trials']} trials, "
+            f"{row['gpu_hours']:g} gpu-h{cost})  params={row['best_params']}"
+        )
+
+
+@app.command()
 def daemon(
     interval: int = typer.Option(30, "--interval", help="Seconds between ticks"),
     once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
+    notify_webhook: Optional[str] = typer.Option(
+        None, "--notify-webhook", help="Webhook URL (Slack-compatible) for alerts"
+    ),
+    notify_command: Optional[str] = typer.Option(
+        None, "--notify-command", help="Command run with the alert JSON on stdin"
+    ),
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
 ) -> None:
     """Monitor daemon: check runs, kill/escalate stuck ones, advance campaigns."""
     from ai_experiments.daemon import MonitorDaemon
+    from ai_experiments.notify import Notifier
 
     store = FilesystemRunStore(runs_dir)
-    monitor_daemon = MonitorDaemon(store)
+    notifier = Notifier(store.root, webhook_url=notify_webhook, command=notify_command)
+    monitor_daemon = MonitorDaemon(store, notifier=notifier)
     if once:
         _echo_json(monitor_daemon.tick())
         return
@@ -481,6 +628,16 @@ def campaign_status(
     )
     typer.echo(f"  Goal:   {state.goal}")
     typer.echo(f"  Trials: {summary['trials_by_status']}")
+    cost = summary["estimated_cost"]
+    typer.echo(
+        f"  Spend:  {summary['gpu_hours']:g} gpu-hours"
+        + (f" (~${cost})" if cost is not None else "")
+        + (
+            f" of {goal.budget.max_gpu_hours:g} budgeted"
+            if goal.budget.max_gpu_hours is not None
+            else ""
+        )
+    )
     if summary["best"]:
         best = summary["best"]
         typer.echo(
@@ -510,6 +667,60 @@ def campaign_stop(
 ) -> None:
     state = _orchestrator(runs_dir).stop(campaign_id)
     typer.echo(f"Stopped {state.campaign_id}")
+
+
+@campaign_app.command("pause")
+def campaign_pause(
+    campaign_id: str = typer.Argument(...),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+) -> None:
+    """Stop scheduling new trials (active ones keep running). Resume later."""
+    try:
+        _orchestrator(runs_dir).pause(campaign_id)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"Paused {campaign_id} — edit the goal with `iax campaign edit`, "
+        "then `iax campaign resume`."
+    )
+
+
+@campaign_app.command("resume")
+def campaign_resume(
+    campaign_id: str = typer.Argument(...),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+) -> None:
+    try:
+        state = _orchestrator(runs_dir).resume(campaign_id)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Resumed {state.campaign_id} ({state.status})")
+
+
+@campaign_app.command("edit")
+def campaign_edit(
+    campaign_id: str = typer.Argument(...),
+    goal_file: Path = typer.Argument(..., help="New goal YAML to apply"),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+) -> None:
+    """Replace the campaign's goal mid-flight (search space, budget, strategy).
+
+    Existing trial history is kept and feeds the strategy under the new goal.
+    The objective metric cannot change. Typical flow: pause -> edit -> resume.
+    """
+    try:
+        new_goal = GoalSpec.from_yaml(goal_file)
+    except Exception as exc:
+        typer.echo(f"Error: invalid goal: {exc}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        _orchestrator(runs_dir).edit_goal(campaign_id, new_goal)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Updated goal for {campaign_id}.")
 
 
 @campaign_app.command("suggest")

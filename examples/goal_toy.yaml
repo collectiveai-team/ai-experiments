@@ -24,6 +24,8 @@ budget:
   max_trials: 8
   max_parallel: 2
   max_hours: 1.0
+  # max_gpu_hours: 100     # stop when GPU spend (gpus x runtime) is exhausted
+  # gpu_hour_rate: 2.50    # $/GPU-hour, for cost display only
 
 strategy:
   name: adaptive        # grid | random | adaptive

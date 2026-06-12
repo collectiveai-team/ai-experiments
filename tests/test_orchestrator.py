@@ -177,6 +177,78 @@ def test_stop_cancels_active_trials(tmp_path):
     assert all(t.status in {"cancelled", "failed"} for t in state.trials)
 
 
+def test_pause_blocks_advance_and_resume_restarts(tmp_path):
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+    submitted_before = len(backend.submitted)
+
+    paused = orchestrator.pause(state.campaign_id)
+    assert paused.status == "paused"
+
+    after_pause = orchestrator.advance(state.campaign_id)
+    assert after_pause.status == "paused"
+    assert len(backend.submitted) == submitted_before  # nothing new scheduled
+
+    resumed = orchestrator.resume(state.campaign_id)
+    assert resumed.status in {"running", "completed"}
+    assert len(backend.submitted) > submitted_before
+
+
+def test_pause_requires_running_campaign(tmp_path):
+    import pytest
+
+    orchestrator, _ = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+    orchestrator.stop(state.campaign_id)
+
+    with pytest.raises(ValueError):
+        orchestrator.pause(state.campaign_id)
+
+
+def test_edit_goal_mid_flight(tmp_path):
+    import pytest
+
+    orchestrator, _ = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+
+    narrowed = _goal(
+        search_space={"x": {"type": "uniform", "low": 1.5, "high": 2.5}},
+    )
+    orchestrator.edit_goal(state.campaign_id, narrowed)
+
+    stored = orchestrator.campaign_store.read_goal(state.campaign_id)
+    assert stored.search_space["x"].low == 1.5  # type: ignore[union-attr]
+
+    renamed_metric = _goal(objective=ObjectiveSpec(metric="other", mode="min"))
+    with pytest.raises(ValueError, match="objective metric"):
+        orchestrator.edit_goal(state.campaign_id, renamed_metric)
+
+
+def test_gpu_hours_recorded_and_budget_stops_campaign(tmp_path):
+    from ai_experiments.schemas import ResourceSpec
+
+    orchestrator, _ = _orchestrator(tmp_path)
+    goal = _goal(resources=ResourceSpec(gpus=2))
+    state = orchestrator.start(goal)
+    for _ in range(20):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status == "completed":
+            break
+    finished = [t for t in state.trials if t.status == "completed"]
+    assert finished and all(
+        t.gpu_hours is not None and t.gpu_hours >= 0 for t in finished
+    )
+
+    # A zero GPU-hour budget halts a fresh campaign on its first step.
+    capped = _goal(
+        budget=BudgetSpec(max_trials=6, max_parallel=2, max_gpu_hours=0.0),
+        resources=ResourceSpec(gpus=2),
+    )
+    capped_state = orchestrator.start(capped)
+    assert capped_state.status == "completed"
+    assert capped_state.stop_reason == "gpu_hours_exhausted"
+
+
 def test_failed_trials_recorded_and_loop_continues(tmp_path):
     orchestrator, backend = _orchestrator(tmp_path)
     original_inspect = backend.inspect

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from ai_experiments.backends.factory import backend_for_run
 from ai_experiments.monitoring.escalation import list_escalations
@@ -77,6 +77,68 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         backend_for_run(run_store, run_id).cancel(run_id)
         return {"run_id": run_id, "cancelled": True}
 
+    @app.get("/api/runs/{run_id}/artifacts")
+    def run_artifacts(run_id: str) -> list[dict[str, Any]]:
+        _ensure_run(run_store, run_id)
+        return run_store.list_artifacts(run_id)
+
+    @app.get("/api/runs/{run_id}/artifacts/{artifact_path:path}")
+    def run_artifact_download(run_id: str, artifact_path: str) -> FileResponse:
+        _ensure_run(run_store, run_id)
+        root = run_store.artifacts_dir(run_id).resolve()
+        target = (root / artifact_path).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise HTTPException(status_code=404, detail="unknown artifact")
+        return FileResponse(target, filename=target.name)
+
+    @app.get("/api/runs/{run_id}/repro")
+    def run_repro(run_id: str) -> dict[str, Any]:
+        from ai_experiments.repro import read_repro
+
+        _ensure_run(run_store, run_id)
+        context = read_repro(run_store.run_dir(run_id))
+        if context is None:
+            raise HTTPException(status_code=404, detail="no repro bundle")
+        context["has_diff"] = (
+            run_store.run_dir(run_id) / "repro" / "diff.patch"
+        ).exists()
+        return context
+
+    @app.get("/api/leaderboard")
+    def leaderboard() -> list[dict[str, Any]]:
+        """Campaigns ranked by their best objective value, grouped per metric
+        client-side (each row carries metric + mode)."""
+        rows: list[dict[str, Any]] = []
+        for campaign_id in campaign_store.list_campaigns():
+            state = campaign_store.read_state(campaign_id)
+            goal = campaign_store.read_goal(campaign_id)
+            summary = summarize_campaign(state, goal)
+            if summary["best"] is None:
+                continue
+            rows.append(
+                {
+                    "campaign_id": campaign_id,
+                    "name": state.name,
+                    "status": state.status,
+                    "metric": goal.objective.metric,
+                    "mode": goal.objective.mode,
+                    "best_value": summary["best"]["objective_value"],
+                    "best_params": summary["best"]["params"],
+                    "best_run_id": summary["best"]["run_id"],
+                    "trials": len(state.trials),
+                    "gpu_hours": summary["gpu_hours"],
+                    "estimated_cost": summary["estimated_cost"],
+                    "updated_at": state.updated_at.isoformat(),
+                }
+            )
+        rows.sort(
+            key=lambda r: (
+                r["metric"],
+                -r["best_value"] if r["mode"] == "max" else r["best_value"],
+            )
+        )
+        return rows
+
     @app.get("/api/campaigns")
     def campaigns() -> list[dict[str, Any]]:
         return [
@@ -100,6 +162,24 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         state = orchestrator.stop(campaign_id)
         return state.model_dump(mode="json")
+
+    @app.post("/api/campaigns/{campaign_id}/pause")
+    def campaign_pause(campaign_id: str) -> dict[str, Any]:
+        _ensure_campaign(campaign_store, campaign_id)
+        orchestrator = CampaignOrchestrator(run_store, campaign_store)
+        try:
+            return orchestrator.pause(campaign_id).model_dump(mode="json")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/campaigns/{campaign_id}/resume")
+    def campaign_resume(campaign_id: str) -> dict[str, Any]:
+        _ensure_campaign(campaign_store, campaign_id)
+        orchestrator = CampaignOrchestrator(run_store, campaign_store)
+        try:
+            return orchestrator.resume(campaign_id).model_dump(mode="json")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.get("/api/escalations")
     def escalations() -> list[dict[str, Any]]:

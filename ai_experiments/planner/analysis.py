@@ -63,12 +63,25 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         for t in state.trials
         if t.objective_value is not None
     ]
+    gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
+    cost = (
+        gpu_hours * goal.budget.gpu_hour_rate
+        if goal.budget.gpu_hour_rate is not None
+        else None
+    )
     return {
         "campaign_id": state.campaign_id,
         "name": state.name,
         "goal": state.goal,
         "status": state.status,
         "stop_reason": state.stop_reason,
+        "gpu_hours": round(gpu_hours, 4),
+        "estimated_cost": round(cost, 2) if cost is not None else None,
+        "budget": {
+            "max_trials": goal.budget.max_trials,
+            "max_gpu_hours": goal.budget.max_gpu_hours,
+            "gpu_hour_rate": goal.budget.gpu_hour_rate,
+        },
         "objective": {
             "metric": goal.objective.metric,
             "mode": goal.objective.mode,

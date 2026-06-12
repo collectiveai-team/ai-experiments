@@ -108,6 +108,33 @@ def test_daemon_escalates_suspicious_run_after_ladder_threshold(tmp_path):
     assert (store.root / "_escalations" / f"{run_id}.json").exists()
 
 
+def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
+    from test_orchestrator import FakeBackend, _goal
+
+    from ai_experiments.notify import read_notifications
+    from ai_experiments.orchestrator import CampaignOrchestrator
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = _store(tmp_path)
+    _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None)
+
+    backend = FakeBackend(store)
+    backend.objective_fn = lambda p: 0.0
+    orchestrator = CampaignOrchestrator(
+        store, CampaignStore(store.root), backend_factory=lambda goal: backend
+    )
+    goal = _goal()
+    goal.objective.target = 0.5  # every fake trial hits the target
+    orchestrator.start(goal)
+
+    daemon = MonitorDaemon(store, orchestrator=orchestrator)
+    daemon.tick()
+
+    titles = [n["title"] for n in read_notifications(store.root)]
+    assert "run auto_killed" in titles
+    assert "campaign completed" in titles
+
+
 def test_daemon_ignores_terminal_runs(tmp_path):
     store = _store(tmp_path)
     _running_run(store, MonitorPolicy(), status="completed", pid=None)

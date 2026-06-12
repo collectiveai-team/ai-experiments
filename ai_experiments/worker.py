@@ -48,6 +48,9 @@ class _Supervisor:
         env.update(manifest.workload.env)
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)
+        artifacts_dir = run_dir / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        env["IAX_ARTIFACTS_DIR"] = str(artifacts_dir)
 
         self._update_status(
             status="running",
