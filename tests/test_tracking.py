@@ -123,6 +123,53 @@ def test_start_run_logs_params_and_tags(tmp_path):
     assert fake.last_client.experiments == {"camp": "exp_0"}
 
 
+def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    fake = FakeMlflowModule()
+    manifest = _manifest(
+        tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns")
+    )
+    store, run_id = _seeded_run(tmp_path, manifest)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        env = begin_tracking(store, run_id, manifest)
+
+    # MLflow 3.x gates the file store; iax opts out for the harness process
+    # and the workload env when a file store is the explicit choice.
+    assert env["MLFLOW_ALLOW_FILE_STORE"] == "true"
+    assert __import__("os").environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
+
+
+def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch):
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+    fake = FakeMlflowModule()
+    manifest = _manifest(
+        tracking=TrackingSpec(mlflow=True, tracking_uri="http://mlflow:5000")
+    )
+    store, run_id = _seeded_run(tmp_path, manifest)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        env = begin_tracking(store, run_id, manifest)
+
+    assert "MLFLOW_ALLOW_FILE_STORE" not in env
+    assert "MLFLOW_ALLOW_FILE_STORE" not in __import__("os").environ
+
+
+def test_user_file_store_opt_out_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "false")
+    fake = FakeMlflowModule()
+    manifest = _manifest(
+        tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns")
+    )
+    store, run_id = _seeded_run(tmp_path, manifest)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        env = begin_tracking(store, run_id, manifest)
+
+    assert env["MLFLOW_ALLOW_FILE_STORE"] == "false"
+
+
 def test_begin_tracking_records_details_and_env(tmp_path):
     fake = FakeMlflowModule()
     manifest = _manifest()

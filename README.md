@@ -114,6 +114,14 @@ Two halves:
 Tracking is best-effort: missing mlflow or an unreachable server records a
 warning event and never blocks a submit or a daemon tick.
 
+For teams, point `tracking_uri` at an MLflow tracking server (`http://...`) —
+that is also what lets remote Ray workloads deliver artifacts. For solo/local
+use a `file://` store works: MLflow 3.x deprecates it behind
+`MLFLOW_ALLOW_FILE_STORE`, but iax sets the opt-out automatically when a file
+store is the configured choice (an explicit `MLFLOW_ALLOW_FILE_STORE=false`
+is respected). Note `mlflow-skinny` has no SQL store — `sqlite:///` URIs need
+the full `mlflow` package.
+
 ## Comparison and cost
 
 ```bash

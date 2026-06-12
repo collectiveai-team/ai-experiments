@@ -21,6 +21,7 @@ daemon tick.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ai_experiments.repro import read_repro
@@ -48,6 +49,27 @@ def _load_mlflow() -> Any:
     return mlflow
 
 
+def _is_file_store(tracking_uri: str | None) -> bool:
+    """True when the URI resolves to MLflow's local filesystem store
+    (``file:...``, a plain path, or nothing — mlflow defaults to ./mlruns)."""
+    resolved = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")
+    return resolved == "" or resolved.startswith("file:") or "://" not in resolved
+
+
+def _file_store_optout(tracking_uri: str | None) -> dict[str, str]:
+    """MLflow 3.x gates the filesystem store behind MLFLOW_ALLOW_FILE_STORE.
+
+    Configuring a file store in iax is an explicit choice (and the only local
+    option with mlflow-skinny, which has no SQL store), so opt out of the
+    gate on the user's behalf — for this process and for the workload env.
+    An explicit MLFLOW_ALLOW_FILE_STORE=false set by the user is respected.
+    """
+    if not _is_file_store(tracking_uri):
+        return {}
+    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+    return {"MLFLOW_ALLOW_FILE_STORE": os.environ["MLFLOW_ALLOW_FILE_STORE"]}
+
+
 class MlflowTracker:
     def __init__(
         self,
@@ -56,6 +78,7 @@ class MlflowTracker:
         mlflow_module: Any = None,
     ) -> None:
         self._mlflow = mlflow_module or _load_mlflow()
+        self.extra_env = _file_store_optout(tracking_uri)
         self.client = self._mlflow.MlflowClient(tracking_uri=tracking_uri)
         self.tracking_uri = tracking_uri or self._mlflow.get_tracking_uri()
         self.experiment = experiment
@@ -168,6 +191,7 @@ def begin_tracking(
     env = {
         "MLFLOW_RUN_ID": mlflow_run_id,
         "MLFLOW_TRACKING_URI": str(tracker.tracking_uri),
+        **tracker.extra_env,
     }
     return env
 
