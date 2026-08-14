@@ -60,15 +60,16 @@ The run store is a published interface: agents, skills, and every issue repro
 read these files directly with `cat`/`jq`/`json.load`. Changing the layout breaks
 consumers outside this repo.
 
-- `<runs>/<run_id>/{manifest.yaml, manifest.source.yaml, status.json, events.jsonl, metrics.jsonl, artifacts/, repro/}`.
+- `<runs>/<run_id>/{manifest.yaml, manifest.source.yaml, status.json, status.lock, events.jsonl, metrics.jsonl, artifacts/, repro/}`.
 - Underscore-prefixed entries under the run root (`_campaigns/`, `_escalations/`,
   `_notifications.jsonl`) are **not** runs; `list_runs()` filters them.
 - `status.json` is written through `atomic_write_text` (temp sibling +
   `os.replace`) so no reader ever sees a partial document. Do not reintroduce a
   plain `write_text` on it.
 - `write_handle` **establishes** a status and refuses to overwrite an existing
-  one; `update_status` is the only way to modify one. Do not add a new mutation
-  path that bypasses it.
+  one; `update_status` is the only way to modify one. It serializes
+  cross-process mutations with `fcntl.flock` on the per-run `status.lock`
+  sidecar. Do not add a new mutation path that bypasses it.
 - A synthesized status (missing/corrupt file, `SYNTHETIC_STATUS_KEY`) describes
   the store's inability to answer, not the run. Never persist one.
 - `events.jsonl` / `metrics.jsonl` are append-only, one JSON object per line,
@@ -83,9 +84,12 @@ consumers outside this repo.
 `status.json` has concurrent writers in **different processes**: the worker main
 thread and its 15s heartbeat thread, the daemon reaper, MLflow finalize, CLI
 cancel, and `RayBackend.inspect` from whichever of CLI/daemon/server polls. A
-`threading.Lock` protects none of that. Assume any read-modify-write can
-interleave with another process, and prove cross-process claims with a test that
-actually forks processes — not threads, not a mocked clock.
+`threading.Lock` protects none of that. `FilesystemRunStore.update_status` is
+the only mutation path for an existing status, and it serializes cross-process
+read-modify-write sequences with `fcntl.flock` on the per-run `status.lock`
+sidecar. Assume any new read-modify-write can interleave with another process,
+and prove cross-process claims with a test that actually forks processes — not
+threads, not a mocked clock.
 
 ## Tests
 
