@@ -1,0 +1,44 @@
+# Real Ray cluster + real MLflow server for the integration suite.
+#
+#   docker compose -f tests/integration/compose.yaml up -d
+#   uv run --extra dev --extra ray --extra mlflow python -m pytest tests/integration -v
+#   docker compose -f tests/integration/compose.yaml down -v
+#
+# host networking on purpose: the Ray worker resolves the MLflow tracking URI
+# the harness injected into its runtime_env, so both sides must agree on
+# 127.0.0.1:5000. A bridge network would need split-horizon DNS to do the same.
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    network_mode: host
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --default-artifact-root /mlruns/artifacts
+    volumes:
+      - mlruns:/mlruns
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Pin to the ray version the client installs, so the Jobs API cannot drift.
+  ray:
+    image: rayproject/ray:2.37.0-py312
+    network_mode: host
+    shm_size: 1gb
+    command: >
+      ray start --head
+      --dashboard-host 0.0.0.0
+      --dashboard-port 8265
+      --port 6379
+      --block
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8265/api/version')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mlruns:
