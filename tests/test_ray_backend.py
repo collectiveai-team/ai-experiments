@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
+from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
+from ai_experiments.schemas import ExperimentManifest, TrackingSpec, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -143,3 +146,59 @@ def test_ray_backend_resolves_address_precedence(
     assert captured_addresses == [expected_address, expected_address]
     assert handle.dashboard_url == expected_address
     assert status.details["ray_address"] == expected_address
+
+
+# -- the MLflow linkage must survive submit on every backend ------------------
+#
+# `begin_tracking` records details.mlflow_run_id, and the daemon's
+# finalize_tracking keys on it. Any submit path that writes a fresh status
+# afterwards silently destroys the linkage: runs are never mirrored and sit
+# RUNNING in MLflow forever. Assert the invariant per backend rather than
+# trusting the order of calls inside submit.
+
+
+def _tracked_manifest(tmp_path, backend: str) -> ExperimentManifest:
+    return ExperimentManifest(
+        experiment="mlflow-linkage",
+        backend=backend,
+        workload=WorkloadSpec(entrypoint="python train.py", working_dir=str(tmp_path)),
+        tracking=TrackingSpec(mlflow=True, tracking_uri=f"file://{tmp_path}/mlruns"),
+    )
+
+
+def test_ray_submit_preserves_the_mlflow_linkage(tmp_path):
+    from test_tracking import FakeMlflowModule
+
+    store = FilesystemRunStore(tmp_path / "runs")
+    client = FakeRayClient(status="RUNNING")
+    backend = RayBackend(store=store, client_factory=lambda _address: client)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()):
+        handle = backend.submit(_tracked_manifest(tmp_path, "ray"))
+
+    status = store.read_status(handle.run_id)
+    assert status.details["mlflow_run_id"]
+    assert status.details["mlflow_tracking_uri"]
+    # The status must describe the run, not the store's fallback for a file it
+    # could not find.
+    assert status.backend == "ray"
+    assert status.error is None
+    assert status.external_id == "ray-job-1"
+
+
+def test_local_submit_preserves_the_mlflow_linkage(tmp_path):
+    from test_tracking import FakeMlflowModule
+
+    store = FilesystemRunStore(tmp_path / "runs")
+    backend = LocalBackend(store=store)
+
+    with (
+        patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()),
+        patch("subprocess.Popen"),
+    ):
+        handle = backend.submit(_tracked_manifest(tmp_path, "local"))
+
+    status = store.read_status(handle.run_id)
+    assert status.details["mlflow_run_id"]
+    assert status.backend == "local"
+    assert status.error is None

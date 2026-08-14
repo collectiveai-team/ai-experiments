@@ -38,6 +38,7 @@ from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
 
 NOTIFY_ACTIONS = {
     "auto_killed",
@@ -94,7 +95,17 @@ class MonitorDaemon:
         from ai_experiments.tracking import finalize_tracking
 
         for run_id in sorted(self.run_store.list_runs()):
-            status = self.run_store.read_status(run_id)
+            # Reading the status is itself fallible (a torn or truncated
+            # status.json), so it belongs inside the guard: one unreadable run
+            # must not end the tick for every other run being supervised.
+            try:
+                status = self.run_store.read_status(run_id)
+                if status.details.get(SYNTHETIC_STATUS_KEY):
+                    raise RuntimeError(status.error or "status unreadable")
+            except Exception as exc:
+                report.errors.append(f"{run_id}: {exc}")
+                continue
+
             if status.status not in ACTIVE_RUN_STATES:
                 try:
                     if finalize_tracking(self.run_store, status):

@@ -16,6 +16,33 @@ from ai_experiments.schemas import (
     utc_now,
 )
 
+#: Marks a ``RunStatus`` the store synthesized because the real file was
+#: missing or unreadable. Such a status describes the *store's* inability to
+#: answer, not the run — persisting it would fabricate history, so
+#: :meth:`FilesystemRunStore.update_status` refuses to write on top of one.
+SYNTHETIC_STATUS_KEY = "_synthetic"
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so no reader ever observes a partial file.
+
+    A plain ``write_text`` truncates first, so any concurrent reader (or any
+    crash) can see a half-written document. Writing to a sibling temp file and
+    ``os.replace``-ing it onto the target is atomic on POSIX and Windows, so
+    readers see either the old file or the new one.
+
+    Note this makes writes *indivisible*; it does not make read-modify-write
+    sequences *serializable*. Concurrent updaters still race — see
+    ``.scratch/proposals/concurrent-status-writes.md``.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
 
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
@@ -51,37 +78,73 @@ class FilesystemRunStore:
         return self.run_dir(run_id) / "status.json"
 
     def write_handle(self, handle: RunHandle) -> None:
-        status = RunStatus(
-            run_id=handle.run_id,
-            backend=handle.backend,
-            status=handle.status,
-            status_uri=handle.status_uri,
-            run_dir=handle.run_dir,
-            external_id=handle.external_id,
-            submitted_at=handle.submitted_at,
+        """Establish a run's initial status. Only valid for a fresh run.
+
+        A handle carries no ``details``, so writing one over an existing status
+        would silently discard whatever a caller had already recorded there
+        (this is how the MLflow linkage was lost on the Ray path). Establishing
+        status is a create, never an update: use :meth:`update_status` to
+        change an existing run.
+        """
+        path = self.status_path(handle.run_id)
+        if path.exists():
+            raise RuntimeError(
+                f"refusing to overwrite an existing status for {handle.run_id}: "
+                "write_handle establishes a run's initial status; "
+                "use update_status to modify an existing one"
+            )
+        self.write_status(
+            RunStatus(
+                run_id=handle.run_id,
+                backend=handle.backend,
+                status=handle.status,
+                status_uri=handle.status_uri,
+                run_dir=handle.run_dir,
+                external_id=handle.external_id,
+                submitted_at=handle.submitted_at,
+            )
         )
-        self.write_status(status)
 
     def write_status(self, status: RunStatus) -> None:
-        self.status_path(status.run_id).write_text(
-            json.dumps(status.model_dump(mode="json"), indent=2)
+        atomic_write_text(
+            self.status_path(status.run_id),
+            json.dumps(status.model_dump(mode="json"), indent=2),
+        )
+
+    def _synthetic_status(self, run_id: str, error: str) -> RunStatus:
+        """Stand-in for a status the store cannot read. Never persisted."""
+        return RunStatus(
+            run_id=run_id,
+            backend="local",
+            status="unknown",
+            status_uri=str(self.status_path(run_id)),
+            run_dir=str(self.run_dir(run_id)),
+            error=error,
+            details={SYNTHETIC_STATUS_KEY: True},
         )
 
     def read_status(self, run_id: str) -> RunStatus:
+        """Current status, or a synthetic ``unknown`` when it cannot be read.
+
+        A truncated or otherwise unparsable file is quarantined the same way a
+        missing one is: one corrupt run must not take down the daemon
+        supervising every other run.
+        """
         path = self.status_path(run_id)
         if not path.exists():
-            return RunStatus(
-                run_id=run_id,
-                backend="local",
-                status="unknown",
-                status_uri=str(path),
-                run_dir=str(self.run_dir(run_id)),
-                error="status file not found",
-            )
-        return RunStatus(**json.loads(path.read_text()))
+            return self._synthetic_status(run_id, "status file not found")
+        try:
+            return RunStatus(**json.loads(path.read_text()))
+        except Exception as exc:
+            return self._synthetic_status(run_id, f"status file corrupt: {exc}")
 
     def update_status(self, run_id: str, **updates: object) -> RunStatus:
         status = self.read_status(run_id)
+        if status.details.get(SYNTHETIC_STATUS_KEY):
+            # The read did not describe the run, so this update has no base to
+            # merge onto. Writing it would fabricate a status and, for a
+            # corrupt file, destroy the evidence of what went wrong.
+            raise RuntimeError(f"cannot update status for {run_id}: {status.error}")
         data = status.model_dump()
         if isinstance(updates.get("details"), dict):
             updates["details"] = {
@@ -117,7 +180,9 @@ class FilesystemRunStore:
 
     def write_metrics(self, run_id: str, points: list[MetricPoint]) -> None:
         lines = [json.dumps(point.model_dump(mode="json")) for point in points]
-        self.metrics_path(run_id).write_text("\n".join(lines) + ("\n" if lines else ""))
+        atomic_write_text(
+            self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else "")
+        )
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
         path = self.metrics_path(run_id)

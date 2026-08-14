@@ -135,6 +135,21 @@ def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
     assert "campaign completed" in titles
 
 
+def test_daemon_keeps_supervising_when_one_run_is_corrupt(tmp_path):
+    """One truncated status.json used to kill the tick -- and with it,
+    supervision of every other run."""
+    store = _store(tmp_path)
+    healthy = _running_run(store, MonitorPolicy(), pid=None)
+    corrupt = _running_run(store, MonitorPolicy(), pid=None)
+    store.status_path(corrupt).write_text('{"run_id": "run_torn", "backend": "l')
+
+    report = MonitorDaemon(store).tick()
+
+    assert report.runs_checked == 1
+    assert any(corrupt in err and "corrupt" in err for err in report.errors)
+    assert not any(healthy in err for err in report.errors)
+
+
 def test_daemon_ignores_terminal_runs(tmp_path):
     store = _store(tmp_path)
     _running_run(store, MonitorPolicy(), status="completed", pid=None)
