@@ -11,10 +11,16 @@ services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.17.2
     network_mode: host
+    # --serve-artifacts (with --artifacts-destination, and NOT
+    # --default-artifact-root) makes the server proxy artifact uploads under
+    # the mlflow-artifacts:/ scheme. With a plain --default-artifact-root the
+    # client writes to that path itself -- a path that only exists inside this
+    # container, so uploads fail with "Permission denied: '/mlruns'".
     command: >
       mlflow server --host 0.0.0.0 --port 5000
       --backend-store-uri sqlite:////mlruns/mlflow.db
-      --default-artifact-root /mlruns/artifacts
+      --artifacts-destination /mlruns/artifacts
+      --serve-artifacts
     volumes:
       - mlruns:/mlruns
     healthcheck:
