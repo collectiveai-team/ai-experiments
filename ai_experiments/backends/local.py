@@ -17,7 +17,7 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
-from ai_experiments.store import FilesystemRunStore, with_resolved_working_dir
+from ai_experiments.store import FilesystemRunStore
 
 #: Run states a cancellation can still act on.
 ACTIVE_RUN_STATES = {"submitted", "running"}
@@ -30,12 +30,14 @@ class LocalBackend(ExperimentBackend):
         self.store = store or FilesystemRunStore()
 
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
-        # Resolve the working dir here, in the only process that knows what a
-        # relative path in the manifest is relative to. The supervisor is
-        # started *in* that directory and reads the same (persisted) manifest,
-        # so a relative path would otherwise be resolved twice.
-        manifest = with_resolved_working_dir(manifest)
         run_id, run_dir = self.store.create_run(manifest)
+        # Take the working dir from the persisted manifest rather than
+        # resolving it again here: the store resolved it once, against this
+        # process's CWD, and the supervisor will read that same file. Two
+        # resolutions of one relative path is exactly how `sub` became
+        # `sub/sub`.
+        executed = self.store.read_manifest(run_id) or manifest
+        working_dir = executed.workload.working_dir
         status_path = self.store.status_path(run_id)
         handle = RunHandle(
             run_id=run_id,
@@ -77,7 +79,7 @@ class LocalBackend(ExperimentBackend):
             cmd,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            cwd=manifest.workload.working_dir,
+            cwd=working_dir,
             env=env,
             start_new_session=True,
         )

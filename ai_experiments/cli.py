@@ -328,14 +328,26 @@ def rerun(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    portable: bool = typer.Option(
+        False,
+        "--portable",
+        help="Resubmit the manifest as it was authored, re-resolving a "
+        "relative working_dir against the current directory, instead of "
+        "repeating the exact paths recorded at submit time",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Resubmit a run's persisted manifest (params are baked in), warning when
-    the current git state differs from the one recorded at submit time."""
+    the current git state differs from the one recorded at submit time.
+
+    By default this repeats the run exactly, on the paths it actually used.
+    ``--portable`` is for the other machine: it takes the manifest as
+    submitted, whose relative ``working_dir`` is what makes it movable.
+    """
     from ai_experiments.repro import current_git_sha, read_repro
 
     store = FilesystemRunStore(runs_dir)
-    manifest = store.read_manifest(run_id)
+    manifest = store.read_manifest(run_id, source=portable)
     if manifest is None:
         typer.echo(f"Error: no persisted manifest for {run_id}", err=True)
         raise typer.Exit(code=1)

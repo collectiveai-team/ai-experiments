@@ -220,6 +220,79 @@ def test_persisted_manifest_resolves_working_dir_once(tmp_path, monkeypatch):
     assert persisted.workload.working_dir == str(project / "sub")
 
 
+def test_the_manifest_as_authored_is_kept_alongside_the_resolved_one(
+    tmp_path, monkeypatch
+):
+    """Resolving is what makes a run executable; the relative path is what
+    makes the manifest portable. Keeping only one of the two throws away a
+    kind of reproducibility."""
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    monkeypatch.chdir(project)
+    store = _store(tmp_path)
+
+    run_id, _ = store.create_run(
+        _manifest(tmp_path, "python train.py", working_dir="sub")
+    )
+
+    executed = store.read_manifest(run_id)
+    authored = store.read_manifest(run_id, source=True)
+    assert executed is not None and authored is not None
+    assert executed.workload.working_dir == str(project / "sub")
+    assert authored.workload.working_dir == "sub"
+
+
+def test_no_source_manifest_when_nothing_was_resolved(tmp_path):
+    """An absolute working_dir is already portable-or-not on its own terms;
+    a byte-identical second copy would only be noise."""
+    store = _store(tmp_path)
+
+    run_id, _ = store.create_run(
+        _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
+    )
+
+    assert not store.source_manifest_path(run_id).exists()
+    assert store.read_manifest(run_id, source=True) == store.read_manifest(run_id)
+
+
+def test_rerun_portable_re_resolves_on_the_machine_it_runs_from(tmp_path, monkeypatch):
+    """The point of keeping the authored manifest: the run can be repeated
+    somewhere else. Plain rerun still repeats the exact original paths."""
+    from typer.testing import CliRunner
+
+    from ai_experiments.cli import app
+
+    here, elsewhere = tmp_path / "here", tmp_path / "elsewhere"
+    for project in (here, elsewhere):
+        (project / "sub").mkdir(parents=True)
+        (project / "sub" / "train.py").write_text("print('trained', flush=True)\n")
+    store = _store(tmp_path)
+    monkeypatch.chdir(here)
+    original = LocalBackend(store=store).submit(
+        _manifest(tmp_path, f"{sys.executable} train.py", working_dir="sub")
+    )
+    _wait_for_terminal(store, original.run_id)
+
+    monkeypatch.chdir(elsewhere)  # the run store moved with us; the paths did not
+    runner = CliRunner()
+    portable = runner.invoke(
+        app,
+        ["rerun", original.run_id, "--runs-dir", str(store.root), "--portable"],
+    )
+    exact = runner.invoke(
+        app, ["rerun", original.run_id, "--runs-dir", str(store.root)]
+    )
+
+    assert portable.exit_code == 0, portable.output
+    assert exact.exit_code == 0, exact.output
+    portable_id = portable.stdout.split()[2]
+    exact_id = exact.stdout.split()[2]
+    assert store.read_manifest(portable_id).workload.working_dir == str(
+        elsewhere / "sub"
+    )
+    assert store.read_manifest(exact_id).workload.working_dir == str(here / "sub")
+
+
 def test_worker_reports_a_manifest_it_cannot_trust(tmp_path):
     """A relative working_dir in a persisted manifest means the run directory
     was not written by this version -- resolving it again is what caused #10,

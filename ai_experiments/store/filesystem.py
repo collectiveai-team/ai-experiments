@@ -68,25 +68,36 @@ class FilesystemRunStore:
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
         """Persist ``manifest`` into a fresh run directory.
 
-        ``working_dir`` is resolved here, once, against the submitting
-        process's CWD -- the only process that knows what a relative path in
-        the manifest means. Everything downstream (the detached worker, the
-        Ray runtime_env upload, ``iax rerun``) reads the persisted manifest
-        from a different CWD, so a relative path stored verbatim would be
-        resolved a second time against the wrong directory.
+        The run directory keeps two manifests when they differ, because they
+        answer two different questions:
+
+        ``manifest.yaml`` -- **what was executed**. ``working_dir`` is resolved
+        here, once, against the submitting process's CWD, the only process
+        that knows what a relative path in the manifest means. Everything
+        downstream (the detached worker, the Ray runtime_env upload, ``iax
+        rerun``) reads it from a different CWD, so a relative path stored
+        verbatim would be resolved a second time against the wrong directory.
+
+        ``manifest.source.yaml`` -- **what was submitted**, byte for byte. A
+        relative ``working_dir`` is what makes a manifest portable: it is the
+        form that can be shared, committed, and submitted on another machine.
+        Resolving is necessary to run the thing; destroying the authored form
+        while doing so would trade one kind of reproducibility for another.
         """
-        manifest = with_resolved_working_dir(manifest)
+        resolved = with_resolved_working_dir(manifest)
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         run_dir = self.root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
-        (run_dir / "manifest.yaml").write_text(manifest.to_yaml())
+        (run_dir / "manifest.yaml").write_text(resolved.to_yaml())
+        if resolved is not manifest:
+            (run_dir / "manifest.source.yaml").write_text(manifest.to_yaml())
         (run_dir / "events.jsonl").touch()
         (run_dir / "artifacts").mkdir()
         if self.capture_repro:
             from ai_experiments.repro import capture_repro
 
             try:
-                capture_repro(run_dir, manifest.workload.working_dir)
+                capture_repro(run_dir, resolved.workload.working_dir)
             except Exception:
                 pass  # reproducibility capture must never block a submit
         return run_id, run_dir
@@ -265,8 +276,26 @@ class FilesystemRunStore:
             )
         return entries
 
-    def read_manifest(self, run_id: str) -> ExperimentManifest | None:
-        path = self.run_dir(run_id) / "manifest.yaml"
+    def manifest_path(self, run_id: str) -> Path:
+        """What was executed: absolute ``working_dir``, safe from any CWD."""
+        return self.run_dir(run_id) / "manifest.yaml"
+
+    def source_manifest_path(self, run_id: str) -> Path:
+        """What was submitted, verbatim. Absent when the two are identical."""
+        return self.run_dir(run_id) / "manifest.source.yaml"
+
+    def read_manifest(
+        self, run_id: str, source: bool = False
+    ) -> ExperimentManifest | None:
+        """The run's manifest; ``source=True`` for the portable original.
+
+        ``source`` falls back to the executed manifest when no separate
+        original was kept, so callers that want "the manifest as the author
+        wrote it" always get the closest available answer.
+        """
+        path = self.source_manifest_path(run_id) if source else Path()
+        if not path.is_file():
+            path = self.manifest_path(run_id)
         if not path.exists():
             return None
         return ExperimentManifest.from_yaml(path)

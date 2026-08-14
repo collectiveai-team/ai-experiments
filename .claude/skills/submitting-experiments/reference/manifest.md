@@ -22,7 +22,7 @@ summarizes the fields; if it disagrees with the code, the code wins.
 |---|---|---|---|
 | `entrypoint` | string | — (required) | e.g. `python`, `python3`. |
 | `args` | list[string] | `[]` | e.g. `["-m", "pkg.cli", "train", "cfg.yaml"]`. |
-| `working_dir` | string | `.` | Resolved by the backend. |
+| `working_dir` | string | `.` | Relative paths are resolved against the directory you submit from, once, at submit time; the run stores both the resolved manifest and the original. Keep it relative to stay portable. |
 | `env` | mapping | `{}` | Extra environment variables. |
 
 ## `resources`
