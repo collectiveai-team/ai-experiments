@@ -8,7 +8,7 @@ from ai_experiments.schemas import (
     EscalationPolicy,
     ExperimentManifest,
     MonitorPolicy,
-    RunStatus,
+    RunHandle,
     WorkloadSpec,
     utc_now,
 )
@@ -32,16 +32,20 @@ def _running_run(
     )
     run_id, run_dir = store.create_run(manifest)
     base = {
-        "run_id": run_id,
-        "backend": "local",
-        "status": "running",
-        "status_uri": str(store.status_path(run_id)),
-        "run_dir": str(run_dir),
         "started_at": utc_now() - timedelta(minutes=10),
         "details": {"heartbeat_at": utc_now().isoformat()},
     }
     base.update(status_overrides)
-    store.write_status(RunStatus(**base))
+    store.write_handle(
+        RunHandle(
+            run_id=run_id,
+            backend="local",
+            status="running",
+            status_uri=str(store.status_path(run_id)),
+            run_dir=str(run_dir),
+        )
+    )
+    store.update_status(run_id, **base)
     return run_id
 
 
