@@ -11,7 +11,7 @@ from ai_experiments.daemon import MonitorDaemon
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
-    RunStatus,
+    RunHandle,
     TrackingSpec,
     WorkloadSpec,
     utc_now,
@@ -96,8 +96,8 @@ def _manifest(**overrides):
 def _seeded_run(tmp_path, manifest):
     store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
     run_id, run_dir = store.create_run(manifest)
-    store.write_status(
-        RunStatus(
+    store.write_handle(
+        RunHandle(
             run_id=run_id,
             backend="local",
             status="running",

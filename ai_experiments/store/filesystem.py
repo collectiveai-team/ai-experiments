@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from ai_experiments.schemas import (
     ExperimentManifest,
@@ -31,9 +33,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     ``os.replace``-ing it onto the target is atomic on POSIX and Windows, so
     readers see either the old file or the new one.
 
-    Note this makes writes *indivisible*; it does not make read-modify-write
-    sequences *serializable*. Concurrent updaters still race — see
-    ``.scratch/proposals/concurrent-status-writes.md``.
+    Note this makes writes *indivisible*; read-modify-write sequences are made
+    serializable by ``FilesystemRunStore.update_status`` taking the per-run
+    ``status.lock`` sidecar.
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
@@ -108,6 +110,21 @@ class FilesystemRunStore:
     def status_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "status.json"
 
+    def _status_lock_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "status.lock"
+
+    @contextmanager
+    def _status_lock(self, run_id: str) -> Iterator[None]:
+        fd = os.open(self._status_lock_path(run_id), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     def write_handle(self, handle: RunHandle) -> None:
         """Establish a run's initial status. Only valid for a fresh run.
 
@@ -124,7 +141,7 @@ class FilesystemRunStore:
                 "write_handle establishes a run's initial status; "
                 "use update_status to modify an existing one"
             )
-        self.write_status(
+        self._write_status(
             RunStatus(
                 run_id=handle.run_id,
                 backend=handle.backend,
@@ -136,7 +153,7 @@ class FilesystemRunStore:
             )
         )
 
-    def write_status(self, status: RunStatus) -> None:
+    def _write_status(self, status: RunStatus) -> None:
         atomic_write_text(
             self.status_path(status.run_id),
             json.dumps(status.model_dump(mode="json"), indent=2),
@@ -170,23 +187,42 @@ class FilesystemRunStore:
             return self._synthetic_status(run_id, f"status file corrupt: {exc}")
 
     def update_status(self, run_id: str, **updates: object) -> RunStatus:
-        status = self.read_status(run_id)
-        if status.details.get(SYNTHETIC_STATUS_KEY):
-            # The read did not describe the run, so this update has no base to
-            # merge onto. Writing it would fabricate a status and, for a
-            # corrupt file, destroy the evidence of what went wrong.
-            raise RuntimeError(f"cannot update status for {run_id}: {status.error}")
-        data = status.model_dump()
-        if isinstance(updates.get("details"), dict):
-            updates["details"] = {
-                **status.details,
-                **updates["details"],  # type: ignore[index]
-            }
-        data.update(updates)
-        data["updated_at"] = utc_now()
-        updated = RunStatus(**data)
-        self.write_status(updated)
-        return updated
+        """Merge updates into a run's status under a per-run advisory lock.
+
+        The ``status.lock`` sidecar serializes cooperating local processes
+        because ``update_status`` is the intended status mutation path. This
+        does not protect against callers that bypass it, and ``fcntl.flock`` is
+        unreliable over NFS.
+        """
+        try:
+            with self._status_lock(run_id):
+                status = self.read_status(run_id)
+                if status.details.get(SYNTHETIC_STATUS_KEY):
+                    # The read did not describe the run, so this update has no base to
+                    # merge onto. Writing it would fabricate a status and, for a
+                    # corrupt file, destroy the evidence of what went wrong.
+                    raise RuntimeError(
+                        f"cannot update status for {run_id}: {status.error}"
+                    )
+                data = status.model_dump()
+                if isinstance(updates.get("details"), dict):
+                    updates["details"] = {
+                        **status.details,
+                        **updates["details"],  # type: ignore[index]
+                    }
+                data.update(updates)
+                data["updated_at"] = utc_now()
+                updated = RunStatus(**data)
+                self._write_status(updated)
+                return updated
+        except FileNotFoundError as exc:
+            if exc.filename and Path(exc.filename) == self._status_lock_path(run_id):
+                status = self.read_status(run_id)
+                if status.details.get(SYNTHETIC_STATUS_KEY):
+                    raise RuntimeError(
+                        f"cannot update status for {run_id}: {status.error}"
+                    ) from None
+            raise
 
     def cancel_marker_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "cancel.requested"
@@ -194,12 +230,10 @@ class FilesystemRunStore:
     def request_cancel(self, run_id: str) -> None:
         """Record that *iax* asked this run to stop.
 
-        A separate, create-once file rather than a field in ``status.json``:
-        the canceller is a different process from the run's supervisor, and
-        ``update_status`` is an unlocked read-modify-write, so a flag written
-        there can be silently clobbered by the supervisor's next heartbeat
-        (see ``.scratch/proposals/concurrent-status-writes.md``). This file
-        has exactly one writer and one meaning, so nothing can lose it.
+        A separate, create-once file remains the right shape for cancellation:
+        the marker has one writer and one meaning, and its presence is the
+        signal. It survives lost updates by construction because no later
+        status merge can erase an already-created file.
         """
         try:
             fd = os.open(
