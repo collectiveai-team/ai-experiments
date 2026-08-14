@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-import os
 from datetime import datetime, timezone
 from typing import Callable
 
+from ai_experiments.procs import pid_alive
 from ai_experiments.schemas import (
     DiagnosisReport,
     MetricPoint,
@@ -37,13 +37,7 @@ def _parse_iso(value: object) -> datetime | None:
 
 
 def _default_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return pid_alive(pid)
 
 
 def _objective_series(

@@ -44,6 +44,16 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def with_resolved_working_dir(manifest: ExperimentManifest) -> ExperimentManifest:
+    """Copy of ``manifest`` whose ``workload.working_dir`` is absolute."""
+    working_dir = Path(manifest.workload.working_dir)
+    if working_dir.is_absolute():
+        return manifest
+    resolved = manifest.model_copy(deep=True)
+    resolved.workload.working_dir = str(working_dir.resolve())
+    return resolved
+
+
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
@@ -56,6 +66,16 @@ class FilesystemRunStore:
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
+        """Persist ``manifest`` into a fresh run directory.
+
+        ``working_dir`` is resolved here, once, against the submitting
+        process's CWD -- the only process that knows what a relative path in
+        the manifest means. Everything downstream (the detached worker, the
+        Ray runtime_env upload, ``iax rerun``) reads the persisted manifest
+        from a different CWD, so a relative path stored verbatim would be
+        resolved a second time against the wrong directory.
+        """
+        manifest = with_resolved_working_dir(manifest)
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         run_dir = self.root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -156,6 +176,34 @@ class FilesystemRunStore:
         updated = RunStatus(**data)
         self.write_status(updated)
         return updated
+
+    def cancel_marker_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "cancel.requested"
+
+    def request_cancel(self, run_id: str) -> None:
+        """Record that *iax* asked this run to stop.
+
+        A separate, create-once file rather than a field in ``status.json``:
+        the canceller is a different process from the run's supervisor, and
+        ``update_status`` is an unlocked read-modify-write, so a flag written
+        there can be silently clobbered by the supervisor's next heartbeat
+        (see ``.scratch/proposals/concurrent-status-writes.md``). This file
+        has exactly one writer and one meaning, so nothing can lose it.
+        """
+        try:
+            fd = os.open(
+                self.cancel_marker_path(run_id),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            return  # already requested; the first request is the one that counts
+        with os.fdopen(fd, "w") as fh:
+            fh.write(utc_now().isoformat() + "\n")
+
+    def cancel_requested(self, run_id: str) -> bool:
+        """Whether a cancellation was requested for this run."""
+        return self.cancel_marker_path(run_id).exists()
 
     def append_event(self, run_id: str, event: RunEvent) -> None:
         events_path = self.run_dir(run_id) / "events.jsonl"

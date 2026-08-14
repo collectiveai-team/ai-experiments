@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
+from ai_experiments.procs import terminate_workload
 from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
@@ -16,7 +17,10 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
-from ai_experiments.store import FilesystemRunStore
+from ai_experiments.store import FilesystemRunStore, with_resolved_working_dir
+
+#: Run states a cancellation can still act on.
+ACTIVE_RUN_STATES = {"submitted", "running"}
 
 
 class LocalBackend(ExperimentBackend):
@@ -26,6 +30,11 @@ class LocalBackend(ExperimentBackend):
         self.store = store or FilesystemRunStore()
 
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
+        # Resolve the working dir here, in the only process that knows what a
+        # relative path in the manifest is relative to. The supervisor is
+        # started *in* that directory and reads the same (persisted) manifest,
+        # so a relative path would otherwise be resolved twice.
+        manifest = with_resolved_working_dir(manifest)
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
         handle = RunHandle(
@@ -68,7 +77,7 @@ class LocalBackend(ExperimentBackend):
             cmd,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            cwd=Path(manifest.workload.working_dir).resolve(),
+            cwd=manifest.workload.working_dir,
             env=env,
             start_new_session=True,
         )
@@ -89,10 +98,56 @@ class LocalBackend(ExperimentBackend):
 
     def cancel(self, run_id: str) -> None:
         status = self.store.read_status(run_id)
-        if status.pid and status.status in {"submitted", "running"}:
-            os.killpg(status.pid, signal.SIGTERM)
+        if status.status not in ACTIVE_RUN_STATES:
+            # Already finished. Rewriting it as cancelled would erase how the
+            # run actually ended -- including a workload the kernel OOM-killed
+            # a moment ago, which is exactly the confusion cancel/kill
+            # reporting is supposed to remove.
+            return
+        # Record the intent *before* signalling: the supervisor reads this to
+        # tell "iax stopped it" from "something else killed it", and the
+        # signal may beat any bookkeeping that follows it.
+        self.store.request_cancel(run_id)
+        if status.pid:
+            try:
+                os.killpg(status.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # supervisor already gone; the status write below stands
             self.store.append_event(run_id, RunEvent(message="local run cancelled"))
         self.store.update_status(run_id, status="cancelled", completed_at=utc_now())
+
+    def reap(self, run_id: str) -> dict[str, object]:
+        """Terminate a workload whose supervisor died, if it is still running.
+
+        Nothing else can: the supervisor is the workload's parent and the only
+        process that would have noticed. Its recorded pid is the sole handle
+        on an orphan that is still holding a GPU.
+        """
+        status = self.store.read_status(run_id)
+        report = terminate_workload(
+            status.details.get("workload_pid"),
+            status.details.get("workload_identity"),
+        )
+        outcome = report.get("outcome")
+        if outcome in {"terminated", "killed"}:
+            self.store.append_event(
+                run_id,
+                RunEvent(
+                    level="warning",
+                    message="orphaned workload terminated",
+                    details=report,
+                ),
+            )
+        elif outcome in {"identity_unverifiable", "identity_mismatch", "kill_failed"}:
+            self.store.append_event(
+                run_id,
+                RunEvent(
+                    level="error",
+                    message=f"orphaned workload left running ({outcome})",
+                    details=report,
+                ),
+            )
+        return report
 
     def diagnose(self, run_id: str) -> DiagnosisReport:
         return diagnose_run(self.store, run_id)
