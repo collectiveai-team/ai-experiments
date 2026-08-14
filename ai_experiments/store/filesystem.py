@@ -32,8 +32,8 @@ def atomic_write_text(path: Path, text: str) -> None:
     readers see either the old file or the new one.
 
     Note this makes writes *indivisible*; it does not make read-modify-write
-    sequences *serializable*. Concurrent updaters still race — see
-    ``.scratch/proposals/concurrent-status-writes.md``.
+    sequences *serializable*. Concurrent updaters still race, losing whole
+    fields to last-writer-wins (see issue #30).
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
