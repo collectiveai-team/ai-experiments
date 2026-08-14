@@ -35,7 +35,12 @@ from ai_experiments.monitoring.escalation import (
 )
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
-from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
+from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
+    MonitorPolicy,
+    RunEvent,
+    utc_now,
+)
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
@@ -47,8 +52,6 @@ NOTIFY_ACTIONS = {
     "killed_by_agent_verdict",
     "reaped_dead_process",
 }
-
-ACTIVE_RUN_STATES = {"submitted", "running"}
 
 #: How each reap outcome reads in a run's ``error``. Outcomes that mean the
 #: workload was already gone say nothing -- there is nothing to report.

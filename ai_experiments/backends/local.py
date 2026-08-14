@@ -10,6 +10,7 @@ from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.procs import terminate_workload
 from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
     DiagnosisReport,
     ExperimentManifest,
     RunEvent,
@@ -18,9 +19,6 @@ from ai_experiments.schemas import (
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
-
-#: Run states a cancellation can still act on.
-ACTIVE_RUN_STATES = {"submitted", "running"}
 
 
 class LocalBackend(ExperimentBackend):
