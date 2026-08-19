@@ -11,3 +11,8 @@ build/
 
 # Local manual-test scratch (fixtures + run artifacts)
 manual_test/
+
+# Shared across worktrees: real dir lives in the primary worktree, symlinked here.
+.scratch
+.agents
+.serena/

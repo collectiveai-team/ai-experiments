@@ -39,3 +39,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ai_experiments"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: exercises real Ray/MLflow services; skipped unless they are up (see tests/integration/compose.yaml)",
+]

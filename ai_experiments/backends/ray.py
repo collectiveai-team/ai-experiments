@@ -70,36 +70,17 @@ class RayBackend(ExperimentBackend):
             [manifest.workload.entrypoint, *manifest.workload.args]
         ).strip()
 
-        try:
-            client = self._client()
-        except RuntimeError as exc:
-            status = RunStatus(
-                run_id=run_id,
-                backend="ray",
-                status="failed",
-                status_uri=str(status_path),
-                run_dir=str(run_dir),
-                error="Ray is not installed. Install ai-experiments[ray].",
-                completed_at=utc_now(),
-            )
-            self.store.write_status(status)
-            raise RuntimeError(status.error) from exc
-
-        from ai_experiments.tracking import begin_tracking
-
-        tracking_env = begin_tracking(self.store, run_id, manifest)
-        runtime_env = {
-            "working_dir": str(Path(manifest.workload.working_dir).resolve()),
-            "env_vars": {**manifest.workload.env, **tracking_env},
-        }
-        external_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
+        # Establish the real status *first*. `begin_tracking` below records the
+        # MLflow linkage via update_status, and the Ray job id is only known
+        # after submit_job -- so the status file has to exist before either.
+        # Writing it last (as this once did) discarded the linkage, leaving
+        # runs unmirrored and stuck RUNNING in MLflow forever.
         handle = RunHandle(
             run_id=run_id,
             backend="ray",
             status="submitted",
             status_uri=str(status_path),
             run_dir=str(run_dir),
-            external_id=external_id,
             dashboard_url=self.address,
         )
         self.store.write_handle(handle)
@@ -109,8 +90,29 @@ class RayBackend(ExperimentBackend):
                 "stuck_after_minutes": manifest.monitoring.stuck_after_minutes,
                 "timeout_seconds": manifest.monitoring.timeout_seconds,
                 "experiment": manifest.experiment,
+                "ray_address": self.address,
             },
         )
+
+        try:
+            client = self._client()
+        except RuntimeError as exc:
+            error = "Ray is not installed. Install ai-experiments[ray]."
+            self.store.update_status(
+                run_id, status="failed", error=error, completed_at=utc_now()
+            )
+            raise RuntimeError(error) from exc
+
+        from ai_experiments.tracking import begin_tracking
+
+        tracking_env = begin_tracking(self.store, run_id, manifest)
+        runtime_env = {
+            "working_dir": str(Path(manifest.workload.working_dir).resolve()),
+            "env_vars": {**manifest.workload.env, **tracking_env},
+        }
+        external_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
+        handle.external_id = external_id
+        self.store.update_status(run_id, external_id=external_id)
         self.store.append_event(
             run_id,
             RunEvent(message="ray job submitted", details={"ray_job_id": external_id}),

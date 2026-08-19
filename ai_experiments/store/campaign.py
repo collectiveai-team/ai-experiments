@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent, utc_now
+from ai_experiments.store.filesystem import atomic_write_text
 
 
 class CampaignStore:
@@ -34,8 +35,9 @@ class CampaignStore:
 
     def write_state(self, state: CampaignState) -> None:
         state.updated_at = utc_now()
-        (self.campaign_dir(state.campaign_id) / "state.json").write_text(
-            json.dumps(state.model_dump(mode="json"), indent=2)
+        atomic_write_text(
+            self.campaign_dir(state.campaign_id) / "state.json",
+            json.dumps(state.model_dump(mode="json"), indent=2),
         )
 
     def read_state(self, campaign_id: str) -> CampaignState:
