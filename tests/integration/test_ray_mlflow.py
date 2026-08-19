@@ -31,6 +31,11 @@ for step in range(1, 4):
 print("training finished", flush=True)
 """
 
+FAILING_WORKLOAD = """import sys
+print("about to fail", flush=True)
+sys.exit(7)
+"""
+
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
@@ -131,3 +136,48 @@ def test_daemon_mirrors_the_run_into_real_mlflow(completed_ray_run, mlflow_api):
     assert run["info"]["status"] == "FINISHED", "run left RUNNING in MLflow"
     assert tags.get("iax.run_id") == handle.run_id
     assert metrics.get("val_loss") == pytest.approx(1 / 3, rel=1e-3)
+
+
+def test_cancelling_a_failed_ray_job_preserves_the_failure(
+    tmp_path, ray_address, mlflow_uri, mlflow_api
+):
+    """`iax cancel` on a job that already failed must leave the failure alone.
+
+    Only a real cluster shows this honestly: the store's status for a Ray run
+    is whatever the last inspect wrote, and `stop_job` on a finished job is a
+    no-op the cluster accepts without complaint -- so the rewrite is invisible
+    unless something checks the record afterwards against the cluster.
+    """
+    work = tmp_path / "failing"
+    work.mkdir()
+    (work / "train.py").write_text(FAILING_WORKLOAD)
+    store = FilesystemRunStore(work / "runs", capture_repro=False)
+    manifest = ExperimentManifest(
+        experiment="integration-ray-cancel-failed",
+        backend="ray",
+        backend_address=ray_address,
+        workload=WorkloadSpec(entrypoint="python train.py", working_dir=str(work)),
+        tracking=TrackingSpec(mlflow=True, tracking_uri=mlflow_uri),
+    )
+    backend = RayBackend(store=store, address=ray_address)
+    handle = backend.submit(manifest)
+    mlflow_run_id = store.read_status(handle.run_id).details["mlflow_run_id"]
+
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        if backend.inspect(handle.run_id).status in TERMINAL:
+            break
+        time.sleep(3)
+    assert store.read_status(handle.run_id).status == "failed"
+
+    backend.cancel(handle.run_id)
+
+    final = store.read_status(handle.run_id)
+    assert final.status == "failed", "cancel rewrote a failed job as cancelled"
+    assert final.error
+
+    MonitorDaemon(store).tick()
+    run = mlflow_api("runs/get", run_id=mlflow_run_id)["run"]
+    assert run["info"]["status"] == "FAILED", (
+        "MLflow says KILLED for a job that failed on its own"
+    )
