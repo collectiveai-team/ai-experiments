@@ -22,6 +22,8 @@ def build_trial_manifest(
     trial_id: str,
     params: dict[str, Any],
     backend_address: str | None = None,
+    working_dir: str | None = None,
+    variant_id: str | None = None,
 ) -> ExperimentManifest:
     """Instantiate the goal's workload template with one parameter assignment.
 
@@ -29,6 +31,10 @@ def build_trial_manifest(
     - ``{name}`` placeholders in ``workload.args`` are substituted;
     - params without a placeholder are appended as ``--name value`` args;
     - the full assignment is exported as ``IAX_PARAMS`` (JSON) in the env.
+
+    ``working_dir`` redirects the trial at a materialized workload variant, so
+    a round that changed code runs the changed code without touching the
+    user's tree.
     """
     args: list[str] = []
     substituted: set[str] = set()
@@ -48,7 +54,10 @@ def build_trial_manifest(
     env["IAX_PARAMS"] = json.dumps(params)
     env["IAX_TRIAL_ID"] = trial_id
 
-    workload = goal.workload.model_copy(update={"args": args, "env": env})
+    update: dict[str, Any] = {"args": args, "env": env}
+    if working_dir is not None:
+        update["working_dir"] = working_dir
+    workload = goal.workload.model_copy(update=update)
     return ExperimentManifest(
         experiment=f"{goal.name}/{trial_id}",
         backend=goal.backend,
@@ -62,6 +71,7 @@ def build_trial_manifest(
             "campaign": goal.name,
             "trial_id": trial_id,
             "params": params,
+            **({"variant_id": variant_id} if variant_id else {}),
         },
     )
 

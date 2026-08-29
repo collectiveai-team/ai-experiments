@@ -18,6 +18,7 @@ from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
+from ai_experiments.improve.variants import variants_root
 from ai_experiments.planner.analysis import (
     best_trial,
     extract_objective,
@@ -436,6 +437,15 @@ class CampaignOrchestrator:
                 total += live or 0.0
         return total
 
+    def _variant_dir(self, campaign_id: str, variant_id: str | None) -> str | None:
+        """Where a trial's workload variant lives, if it has one."""
+        if not variant_id:
+            return None
+        root = variants_root(self.campaign_store.campaign_dir(campaign_id)) / variant_id
+        if not root.is_dir():
+            raise ValueError(f"variant {variant_id} is missing from {root}")
+        return str(root)
+
     def _rounds(self, campaign_id: str) -> RoundLog:
         return RoundLog(self.campaign_store.campaign_dir(campaign_id))
 
@@ -581,6 +591,8 @@ class CampaignOrchestrator:
                     trial.trial_id,
                     trial.params,
                     backend_address=self._address_resolver(goal),
+                    working_dir=self._variant_dir(state.campaign_id, trial.variant_id),
+                    variant_id=trial.variant_id,
                 )
                 handle = backend.submit(manifest)
             except Exception as exc:
