@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -238,8 +239,23 @@ def diagnose_run(
     )
 
 
+#: A failure word standing on its own. The word boundary keeps `train_error`,
+#: `error_rate` and `reconstruction_error` -- ordinary metric vocabulary --
+#: out of it, and the lookahead drops `error=0.02`.
+_FAILURE_WORD = re.compile(
+    r"\b(error|traceback|fatal|exception)\b(?!\s*[:=]\s*[-+]?\d)", re.IGNORECASE
+)
+#: A python exception name: `RuntimeError`, `ValueError`, `KeyError`. There is
+#: no word boundary before "Error" in those, so the rule above cannot see them.
+_EXCEPTION_NAME = re.compile(r"\b[A-Z]\w*(Error|Exception)\b")
+
+
 def event_from_log_line(line: str) -> RunEvent:
-    level = (
-        "error" if "error" in line.lower() or "traceback" in line.lower() else "info"
-    )
-    return RunEvent(level=level, message=line.rstrip())
+    """Classify one line of workload output.
+
+    `level` is what `iax logs` filters on and what the monitoring rules read,
+    so a healthy metric line must not arrive as a failure.
+    """
+    message = line.rstrip()
+    failed = bool(_FAILURE_WORD.search(message) or _EXCEPTION_NAME.search(message))
+    return RunEvent(level="error" if failed else "info", message=message)

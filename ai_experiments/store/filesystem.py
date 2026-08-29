@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -222,13 +223,8 @@ class FilesystemRunStore:
             fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def read_events(self, run_id: str, tail: int | None = None) -> list[RunEvent]:
-        events_path = self.run_dir(run_id) / "events.jsonl"
-        if not events_path.exists():
-            return []
-        lines = events_path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [RunEvent(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.run_dir(run_id) / "events.jsonl", tail)
+        return [RunEvent(**json.loads(line)) for line in lines]
 
     def metrics_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "metrics.jsonl"
@@ -244,13 +240,8 @@ class FilesystemRunStore:
         )
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
-        path = self.metrics_path(run_id)
-        if not path.exists():
-            return []
-        lines = path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [MetricPoint(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.metrics_path(run_id), tail)
+        return [MetricPoint(**json.loads(line)) for line in lines]
 
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
@@ -310,3 +301,18 @@ class FilesystemRunStore:
             for path in self.root.iterdir()
             if path.is_dir() and not path.name.startswith("_")
         )
+
+
+def _read_lines(path: Path, tail: int | None) -> list[str]:
+    """The non-empty lines of an append-only file, at most ``tail`` of them.
+
+    Both these files grow without bound while a run does, and every monitoring
+    tick reads the last few. Streaming into a bounded deque keeps that read
+    proportional to what the caller asked for, not to how long the run has
+    been going.
+    """
+    if not path.exists():
+        return []
+    with path.open() as handle:
+        lines = deque(handle, maxlen=tail) if tail is not None else handle.readlines()
+    return [line for line in lines if line.strip()]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import shlex
 import signal
@@ -33,7 +34,7 @@ class _Supervisor:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._cancelled = False
-        self.process: subprocess.Popen[str] | None = None
+        self.process: subprocess.Popen[bytes] | None = None
 
     def _update_status(self, **updates: object) -> None:
         with self._lock:
@@ -113,7 +114,6 @@ class _Supervisor:
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
             cwd=working_dir,
             env=env,
         )
@@ -130,7 +130,17 @@ class _Supervisor:
         heartbeat.start()
 
         assert self.process.stdout is not None
-        for line in self.process.stdout:
+        # A binary pipe wrapped with newline="\n". In text mode python splits
+        # on "\r" too, so every refresh of a progress bar became its own line
+        # -- and then its own event. errors="replace" because workload output
+        # is untrusted, and one undecodable byte must not kill the supervisor.
+        stream = io.TextIOWrapper(
+            self.process.stdout, encoding="utf-8", errors="replace", newline="\n"
+        )
+        for raw in stream:
+            line = _overwrite(raw)
+            if not line:
+                continue
             metric = parse_metric_line(line)
             if metric is not None:
                 point = MetricPoint(step=metric["step"], values=metric["values"])
@@ -201,6 +211,17 @@ class _Supervisor:
                     details={"exit_code": exit_code},
                 ),
             )
+
+
+def _overwrite(raw: str) -> str:
+    """Collapse a carriage-return sequence the way a terminal displays it.
+
+    `tqdm` and every other progress bar rewrites one line with "\r". Only the
+    final state of that line carries information; the refreshes before it are
+    the animation, and storing each one turned a single bar into thousands of
+    events in a file that nothing bounds.
+    """
+    return raw.rsplit("\r", 1)[-1].rstrip("\n").rstrip()
 
 
 def _signal_name(signum: int) -> str:
