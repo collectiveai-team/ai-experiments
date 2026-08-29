@@ -290,8 +290,8 @@ metadata:
 
 ```bash
 # single runs
-iax validate experiment.yaml
-iax submit experiment.yaml --json
+iax validate experiment.yaml           # add --strict to fail on warnings
+iax submit experiment.yaml --json      # warns on the same checks; --strict refuses
 iax runs
 iax status <run_id> --json
 iax logs <run_id> --tail 200
@@ -307,7 +307,7 @@ iax leaderboard
 
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
-iax campaign start goal.yaml
+iax campaign start goal.yaml           # --strict refuses a workload that cannot start
 iax campaign list / status / advance / suggest / pause / edit / resume / stop
 
 # infrastructure
