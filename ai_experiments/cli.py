@@ -740,7 +740,11 @@ def campaign_suggest(
     except (json.JSONDecodeError, ValueError) as exc:
         typer.echo(f"Error: invalid --params: {exc}", err=True)
         raise typer.Exit(code=1)
-    trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note)
+    try:
+        trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note)
+    except ValueError as exc:
+        typer.echo(f"Error: suggestion rejected: {exc}", err=True)
+        raise typer.Exit(code=2)
     typer.echo(f"Queued {trial.trial_id} with params {trial.params}")
 
 

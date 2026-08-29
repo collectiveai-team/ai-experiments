@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+import pytest
+
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.orchestrator import CampaignOrchestrator
@@ -402,3 +404,46 @@ def test_exhausted_search_space_ends_the_campaign(tmp_path):
 
     events = orchestrator.campaign_store.read_events(state.campaign_id)
     assert any("search space" in e.message for e in events)
+
+
+def test_suggest_rejects_params_outside_the_search_space(tmp_path):
+    """An unknown key would become a literal --not_a_param flag on the
+    workload's command line and crash it as a failed trial (#13)."""
+    from ai_experiments.planner.validation import ParamValidationError
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+
+    with pytest.raises(ParamValidationError):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0, "not_a_param": 42})
+    with pytest.raises(ParamValidationError):
+        orchestrator.suggest(state.campaign_id, {"x": 99.0})
+
+    assert not [
+        t
+        for t in orchestrator.campaign_store.read_state(state.campaign_id).trials
+        if t.source == "agent"
+    ]
+
+
+def test_suggest_respects_max_trials(tmp_path):
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(budget=BudgetSpec(max_trials=1, max_parallel=1)))
+
+    with pytest.raises(ValueError, match="budget"):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0})
+
+    for _ in range(5):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+    assert len(backend.submitted) == 1
+
+
+def test_suggest_rejects_a_finished_campaign(tmp_path):
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+    orchestrator.stop(state.campaign_id)
+
+    with pytest.raises(ValueError, match="stopped"):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0})

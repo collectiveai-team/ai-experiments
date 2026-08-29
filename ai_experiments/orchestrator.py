@@ -21,6 +21,7 @@ from ai_experiments.planner.analysis import (
     summarize_campaign,
 )
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
+from ai_experiments.planner.validation import validate_params
 from ai_experiments.schemas import (
     CampaignState,
     GoalSpec,
@@ -158,8 +159,26 @@ class CampaignOrchestrator:
     def suggest(
         self, campaign_id: str, params: dict[str, Any], note: str = ""
     ) -> TrialRecord:
-        """Queue an agent/human-suggested trial; submitted on the next advance."""
+        """Queue an agent/human-suggested trial; submitted on the next advance.
+
+        A suggestion is a proposal, not an override: it is rejected when the
+        campaign can no longer run it, when the params are not in the search
+        space, or when the trial budget is already committed (#13).
+        """
         state = self.campaign_store.read_state(campaign_id)
+        if state.status not in {"running", "paused"}:
+            raise ValueError(
+                f"campaign {campaign_id} is {state.status}; it will never run a "
+                "suggested trial — start a new campaign instead"
+            )
+        goal = self.campaign_store.read_goal(campaign_id)
+        params = validate_params(goal.search_space, params)
+        if len(state.trials) >= goal.budget.max_trials:
+            raise ValueError(
+                f"trial budget is spent ({len(state.trials)}/"
+                f"{goal.budget.max_trials}); raise max_trials with "
+                "`iax campaign edit` to make room"
+            )
         trial = TrialRecord(
             trial_id=f"t{len(state.trials):03d}",
             params=params,
@@ -401,8 +420,14 @@ class CampaignOrchestrator:
                 state.trials.append(trial)
                 queue.append(trial)
 
+        # `capacity` caps concurrency; it says nothing about the budget. Trials
+        # queued by `suggest` are already in `state.trials`, so without this
+        # second cap a campaign could submit past `max_trials` (#13).
+        committed = sum(1 for t in state.trials if t.status != "planned")
+        allowance = max(goal.budget.max_trials - committed, 0)
+
         submitted: list[TrialRecord] = []
-        for trial in queue[:capacity]:
+        for trial in queue[: min(capacity, allowance)]:
             try:
                 manifest = build_trial_manifest(
                     goal,
