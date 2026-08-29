@@ -340,8 +340,34 @@ Goal manifests select a cluster by name (`cluster: aws-gpu`) or address
 
 ## Agent integration
 
-The daemon and the planner are fully programmatic. Agents plug in at three
+### From a chat
+
+The intended path: the user states an outcome, the agent states a goal, the
+harness runs the experiments.
+
+```
+user   > get val_loss under 0.05 on this model, you have 20 runs
+agent  > iax new goal goal.yaml        # then fills in metric, space, budget
+         iax campaign validate goal.yaml
+         iax loop goal.yaml --json --max-rounds 20
+         → exit 0, best val_loss 0.041 at lr 3.1e-4, depth 6 (14 trials)
+```
+
+The agent writes the goal and reads the report; it does not drive the rounds.
+The procedure it follows — which four things to ask for, how to diagnose a
+campaign that missed its target, what may never change mid-campaign — is the
+`autonomous-experimentation` skill under `.claude/skills/`, with `AGENTS.md`
+carrying the same entry point for agents that do not load skills.
+`examples/goal_agentic.yaml` is a worked example, with a workload whose
+failures the planner is meant to learn from.
+
+### Programmatic hooks
+
+The daemon and the planner are fully programmatic. Agents plug in at four
 opt-in points:
+
+- **Round planning** — `strategy: agent` hands the next batch to an agent,
+  with `strategy.fallback` covering every way that can fail.
 
 - **Escalations** — `iax escalations` lists runs the free checks flagged;
   the `diagnosing-experiments` skill drives the triage.
@@ -398,6 +424,38 @@ Agents that do not load Claude Code skills read `AGENTS.md` at the repo root:
 the same entry point, the exit-code contract, and where the procedure lives.
 
 During in-repo development, Workbench uses the uv workspace member at `packages/ai_experiments`.
+
+## Environment variables
+
+The harness **reads** these from its own environment:
+
+| variable | default | what it does |
+|---|---|---|
+| `IAX_RUNS_DIR` | `outputs/experiments/runs` | where runs, campaigns and events are stored; `--runs-dir` overrides it |
+| `IAX_CLUSTERS` | `./clusters.yaml`, then `~/.config/iax/clusters.yaml` | the cluster profile file `iax cluster` and `cluster:` resolve against |
+| `RAY_ADDRESS` | `http://127.0.0.1:8265` | the Ray Jobs address, used when the manifest sets no `backend_address` |
+| `IAX_NOTIFY_WEBHOOK` | unset | daemon notifications POST here as JSON; `--notify-webhook` overrides it |
+| `IAX_NOTIFY_COMMAND` | unset | daemon notifications run this command with the JSON payload on **stdin**; `--notify-command` overrides it |
+| `MLFLOW_TRACKING_URI` | unset (mlflow uses `./mlruns`) | used when `tracking.tracking_uri` is not set |
+
+The harness **injects** these into every workload it starts:
+
+| variable | value | for |
+|---|---|---|
+| `IAX_RUN_ID` | the run id | naming logs and checkpoints |
+| `IAX_RUN_DIR` | the run's directory | anything the workload wants beside its run |
+| `IAX_ARTIFACTS_DIR` | `<run_dir>/artifacts` | checkpoints and plots; `iax artifacts <run_id>` lists what lands here |
+| `IAX_PARAMS` | the trial's params, as JSON | campaign trials — the whole params dict, whether or not it appears in `args` |
+| `IAX_TRIAL_ID` | the trial id | campaign trials |
+| `MLFLOW_RUN_ID`, `MLFLOW_TRACKING_URI` | the run the harness created | `tracking.mlflow: true`, so a workload on a remote Ray node logs to the same run |
+| `MLFLOW_ALLOW_FILE_STORE` | `true` | set only for a file-backed tracking URI, which MLflow 3 gates; an explicit `false` is respected |
+
+`IAX_METRIC` is not a variable. It is the stdout prefix a workload prints its
+observations with:
+
+```python
+print('IAX_METRIC {"step": 12, "loss": 0.0734}')
+```
 
 ## Manifest
 
