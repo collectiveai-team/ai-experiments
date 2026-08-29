@@ -83,7 +83,7 @@ you are composing the goal in code rather than in a file.
 
 ```bash
 iax campaign rounds <campaign_id> --json    # what each round tried, and why
-iax campaign trials <campaign_id>           # per-trial value, status, error
+iax campaign trials <campaign_id>           # per-trial source, value, status, error
 ```
 
 Diagnose from the records, not from a guess:

@@ -1134,13 +1134,19 @@ def campaign_trials(
     if not state.trials:
         typer.echo("No trials yet.")
         return
-    typer.echo(f"{'TRIAL':<8} {'STATUS':<10} {'OBJECTIVE':<14} {'RUN':<24} PARAMS")
+    # `source` says who chose the params: the planner, the reviewing agent, or
+    # a person via `campaign suggest`. Without it a reader cannot tell whether
+    # the agent's hypotheses are beating the search (#23).
+    typer.echo(
+        f"{'TRIAL':<8} {'SOURCE':<10} {'STATUS':<10} "
+        f"{'OBJECTIVE':<14} {'RUN':<24} PARAMS"
+    )
     for trial in state.trials:
         value = (
             f"{trial.objective_value:.6g}" if trial.objective_value is not None else "-"
         )
         typer.echo(
-            f"{trial.trial_id:<8} {trial.status:<10} {value:<14} "
+            f"{trial.trial_id:<8} {trial.source:<10} {trial.status:<10} {value:<14} "
             f"{trial.run_id or '-':<24} {trial.params}"
         )
         if trial.error:

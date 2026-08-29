@@ -190,7 +190,7 @@ because an experiment round has the same shape as a change.
 
 ```bash
 iax campaign rounds <campaign_id>          # the loop's reasoning, oldest first
-iax campaign trials <campaign_id>          # per-trial status, value, run id, error
+iax campaign trials <campaign_id>          # per-trial source, status, value, run id, error
 ```
 
 The file is append-only. A round that went wrong is corrected by a later
@@ -557,7 +557,7 @@ iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
 iax campaign validate goal.yaml
 iax campaign start goal.yaml           # --strict refuses a workload that cannot start
 iax campaign list / status / advance / suggest / pause / edit / resume / stop
-iax campaign trials <campaign_id>          # every trial: status, value, run, error
+iax campaign trials <campaign_id>          # every trial: who chose it, status, value, run, error
 iax campaign rounds <campaign_id> --json   # why each round tried what it tried
 
 # infrastructure
