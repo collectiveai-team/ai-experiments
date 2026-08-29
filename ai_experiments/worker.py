@@ -21,7 +21,13 @@ from ai_experiments.procs import (
     process_identity,
 )
 from ai_experiments.report import parse_metric_line
-from ai_experiments.schemas import ExperimentManifest, MetricPoint, RunEvent, utc_now
+from ai_experiments.schemas import (
+    ExperimentManifest,
+    MetricPoint,
+    RunEvent,
+    load_stored,
+    utc_now,
+)
 from ai_experiments.store import FilesystemRunStore
 
 HEARTBEAT_SECONDS = 15
@@ -86,7 +92,7 @@ class _Supervisor:
 
     def run(self) -> None:
         run_dir = self.store.run_dir(self.run_id)
-        manifest = ExperimentManifest.from_yaml(run_dir / "manifest.yaml")
+        manifest = load_stored(ExperimentManifest, run_dir / "manifest.yaml")
 
         command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)

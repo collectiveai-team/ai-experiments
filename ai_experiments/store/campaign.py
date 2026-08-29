@@ -5,7 +5,13 @@ import uuid
 from pathlib import Path
 from typing import Iterable
 
-from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent, utc_now
+from ai_experiments.schemas import (
+    CampaignState,
+    GoalSpec,
+    RunEvent,
+    load_stored,
+    utc_now,
+)
 from ai_experiments.store.filesystem import atomic_write_text
 
 
@@ -31,7 +37,7 @@ class CampaignStore:
         return self.root / campaign_id
 
     def read_goal(self, campaign_id: str) -> GoalSpec:
-        return GoalSpec.from_yaml(self.campaign_dir(campaign_id) / "goal.yaml")
+        return load_stored(GoalSpec, self.campaign_dir(campaign_id) / "goal.yaml")
 
     def write_state(self, state: CampaignState) -> None:
         state.updated_at = utc_now()
