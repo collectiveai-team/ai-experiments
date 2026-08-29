@@ -1,5 +1,8 @@
-# A research goal the harness pursues on its own. Start it with:
+# A research goal the harness pursues on its own. Run it with:
 #   iax campaign validate goal.yaml
+#   iax loop goal.yaml --json     # blocks; exit 0 = target reached, 4 = not
+#
+# Or drive the rounds yourself:
 #   iax campaign start goal.yaml
 #   iax daemon            # drives the loop and watches every trial
 #
@@ -57,6 +60,10 @@ monitoring:
 analysis:
   agent_review: false     # true: ask an agent to reshape the search between
                           # rounds; it replies with `iax campaign suggest`
+  review_between_rounds: false  # `iax loop`: ask the agent for a verdict after
+                                # each round; a `stop` ends a hopeless campaign
+  apply_agent_changes: false    # true: an accepted verdict may widen the search
+                                # space or the budget (never the metric)
 
 tracking:
   mlflow: false

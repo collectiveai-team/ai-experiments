@@ -388,9 +388,14 @@ npx skills@latest add https://github.com/collectiveai-team/ai-experiments
 npx skills@latest add git@github.com:collectiveai-team/ai-experiments.git
 ```
 
-This installs the `submitting-experiments`, `monitoring-experiments`,
-`diagnosing-experiments`, and `cancelling-experiments` skills into the project's
-`.claude/skills/` (add `-g` for `~/.claude/skills/`).
+This installs the `autonomous-experimentation`, `running-campaigns`,
+`submitting-experiments`, `monitoring-experiments`, `diagnosing-experiments`,
+and `cancelling-experiments` skills into the project's `.claude/skills/` (add
+`-g` for `~/.claude/skills/`). `autonomous-experimentation` is the one that
+turns "get val_loss under 0.05" into a goal file and an `iax loop` run.
+
+Agents that do not load Claude Code skills read `AGENTS.md` at the repo root:
+the same entry point, the exit-code contract, and where the procedure lives.
 
 During in-repo development, Workbench uses the uv workspace member at `packages/ai_experiments`.
 

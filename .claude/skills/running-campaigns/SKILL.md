@@ -9,6 +9,11 @@ A campaign is a goal pursued autonomously: the planner generates trials over a
 search space, the orchestrator submits/collects them, and the monitor daemon
 drives the loop until the target is reached or the budget is spent.
 
+Use **autonomous-experimentation** instead when the user states an outcome and
+wants the harness to reach it — `iax loop` runs the whole loop as one command
+and reports whether the target was met. This skill is for driving the rounds
+yourself.
+
 ## Author the goal manifest
 
 Translate the user's ask into a `GoalSpec` YAML (full reference:
