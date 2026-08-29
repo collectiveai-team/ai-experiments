@@ -247,6 +247,11 @@ uv pip install "ai-experiments[ray] @ git+https://github.com/collectiveai-team/a
 Pin `@v0.1.0` to the tag matching the `version` in `pyproject.toml`; use `@main` or a
 commit SHA to track unreleased work.
 
+On macOS or Windows, add the `psutil` extra as well. The daemon kills a workload whose
+supervisor died only when it can prove the recorded pid still names the same process.
+It reads that proof from `/proc`, which those platforms do not have, and `psutil`
+supplies it instead. Without it the orphan is reported and left running.
+
 ### Agent skills
 
 The repo also ships agent skills (under `.claude/skills/`) that teach a Claude Code
