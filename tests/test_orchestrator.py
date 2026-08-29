@@ -447,3 +447,17 @@ def test_suggest_rejects_a_finished_campaign(tmp_path):
 
     with pytest.raises(ValueError, match="stopped"):
         orchestrator.suggest(state.campaign_id, {"x": 1.0})
+
+
+def test_agent_review_round_keeps_the_escalation_inbox_readable(tmp_path):
+    """End-to-end guard for #4: a campaign with agent_review on must not
+    poison `iax escalations`."""
+    from ai_experiments.monitoring.escalation import list_escalations
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(analysis={"agent_review": True}))
+    state = orchestrator.advance(state.campaign_id)
+
+    items = list_escalations(orchestrator.run_store)
+    assert [i.kind for i in items] == ["campaign"]
+    assert items[0].summary["campaign_id"] == state.campaign_id

@@ -230,7 +230,7 @@ def escalations(
     from ai_experiments.monitoring.escalation import list_escalations
 
     store = FilesystemRunStore(runs_dir)
-    _echo_json([request.model_dump(mode="json") for request in list_escalations(store)])
+    _echo_json([item.model_dump(mode="json") for item in list_escalations(store)])
 
 
 @app.command()

@@ -486,21 +486,24 @@ class CampaignOrchestrator:
         """Drop a review request for an agent session — analysis beyond the
         built-in strategy (e.g. reshaping the search space) costs tokens, so
         it is opt-in via ``analysis.agent_review`` and file-based."""
+        from ai_experiments.monitoring.escalation import (
+            CAMPAIGN_PREFIX,
+            CampaignReview,
+        )
+
         escalations = self.run_store.root / "_escalations"
         escalations.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "type": "campaign_review",
-            "created_at": utc_now().isoformat(),
-            "campaign_id": state.campaign_id,
-            "summary": summarize_campaign(state, goal),
-            "note": (
+        review = CampaignReview(
+            campaign_id=state.campaign_id,
+            summary=summarize_campaign(state, goal),
+            note=(
                 "Review trial history; queue better trials via "
                 "`iax campaign suggest <campaign_id> --params '{...}'` "
                 "or stop via `iax campaign stop <campaign_id>`."
             ),
-        }
-        (escalations / f"campaign_{state.campaign_id}.json").write_text(
-            json.dumps(payload, indent=2)
+        )
+        (escalations / f"{CAMPAIGN_PREFIX}{state.campaign_id}.json").write_text(
+            json.dumps(review.model_dump(mode="json"), indent=2)
         )
 
 

@@ -183,9 +183,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.get("/api/escalations")
     def escalations() -> list[dict[str, Any]]:
-        return [
-            request.model_dump(mode="json") for request in list_escalations(run_store)
-        ]
+        return [item.model_dump(mode="json") for item in list_escalations(run_store)]
 
     @app.get("/api/clusters")
     def clusters() -> list[dict[str, Any]]:
