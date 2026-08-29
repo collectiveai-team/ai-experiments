@@ -1,0 +1,56 @@
+# A research goal the harness pursues on its own. Start it with:
+#   iax campaign validate goal.yaml
+#   iax campaign start goal.yaml
+#   iax daemon            # drives the loop and watches every trial
+#
+# Every key below is a field of GoalSpec (ai_experiments/schemas.py).
+
+goal: "Describe, in one sentence, what a good result looks like"
+name: my-campaign
+
+objective:
+  metric: loss            # must match a key your workload reports
+  mode: min               # min | max
+  target: 0.01            # optional: stop as soon as this is reached
+
+search_space:
+  lr: { type: loguniform, low: 0.0001, high: 0.1 }
+  # batch_size: { type: choice, values: [16, 32, 64] }
+  # layers: { type: int, low: 2, high: 8 }
+
+workload:
+  entrypoint: python
+  args: ["train.py"]
+  working_dir: "."
+
+budget:
+  max_trials: 8
+  max_parallel: 2
+  max_hours: 1.0
+  # max_gpu_hours: 100
+  # gpu_hour_rate: 2.50   # $/GPU-hour, for cost display only
+
+strategy:
+  name: adaptive          # grid | random | adaptive
+  seed: 7
+  exploration: 0.3        # adaptive: fraction of fresh random samples
+  top_k: 2                # adaptive: perturb around one of the best k trials
+
+backend: local            # or `ray` (+ backend_address / cluster)
+
+monitoring:
+  interval_seconds: 30
+  stuck_after_minutes: 10
+  auto_kill: true
+  fatal_on_nan: true
+  escalation:
+    after_suspicious_ticks: 3
+    cooldown_minutes: 30
+    max_agent_calls: 3
+
+analysis:
+  agent_review: false     # true: ask an agent to reshape the search between
+                          # rounds; it replies with `iax campaign suggest`
+
+tracking:
+  mlflow: false

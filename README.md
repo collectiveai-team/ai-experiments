@@ -44,6 +44,14 @@ monitor/experiment loop until the goal is reached or the budget is spent:
 iax run examples/goal_toy.yaml --open     # dashboard at http://127.0.0.1:8585
 ```
 
+Installed from PyPI, with no repo checkout, scaffold the same two files first:
+
+```bash
+iax new workload train.py     # a workload that already reports IAX_METRIC
+iax new goal goal.yaml        # a commented goal; point its workload at train.py
+iax run goal.yaml --open
+```
+
 Ctrl+C detaches without killing the trials; resume the loop any time with
 `iax daemon`. The same pieces are also available separately for long-lived /
 multi-campaign setups:
@@ -289,6 +297,12 @@ metadata:
 ## CLI
 
 ```bash
+# start from a template (works from a pip/uv install, no repo checkout)
+iax new goal goal.yaml
+iax new workload train.py
+iax new manifest experiment.yaml
+iax new manifest next.yaml --from-run <run_id>   # reuse a run that worked
+
 # single runs
 iax validate experiment.yaml
 iax submit experiment.yaml --json
