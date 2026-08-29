@@ -233,3 +233,86 @@ def test_clusters_endpoint_without_config(client, monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.config/iax/clusters.yaml
 
     assert client.get("/api/clusters").json() == []
+
+
+# -- unauthenticated mutations over the network (#24) ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("host", "loopback"),
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("localhost", True),
+        ("0.0.0.0", False),
+        ("192.168.1.40", False),
+        ("::", False),
+        ("dashboard.internal", False),
+    ],
+)
+def test_what_counts_as_reachable_only_from_this_machine(host, loopback):
+    from ai_experiments.server.app import is_loopback
+
+    assert is_loopback(host) is loopback
+
+
+def _mutations(store, run_id: str, campaign_id: str) -> list[str]:
+    return [
+        f"/api/runs/{run_id}/cancel",
+        f"/api/campaigns/{campaign_id}/stop",
+        f"/api/campaigns/{campaign_id}/pause",
+        f"/api/campaigns/{campaign_id}/resume",
+    ]
+
+
+def _seed_campaign(store) -> str:
+    from ai_experiments.schemas import GoalSpec
+    from ai_experiments.store.campaign import CampaignStore
+
+    goal = GoalSpec(
+        goal="minimize loss",
+        name="served",
+        objective={"metric": "loss"},
+        search_space={"lr": {"type": "choice", "values": [0.1]}},
+        workload={"entrypoint": "true"},
+    )
+    return CampaignStore(store.root).create_campaign(goal).campaign_id
+
+
+def test_a_networked_dashboard_refuses_every_mutation(store):
+    """Anyone who can route to the port could otherwise cancel a week of work."""
+    run_id = _seed_run(store)
+    campaign_id = _seed_campaign(store)
+    client = TestClient(create_app(store, host="0.0.0.0"))
+
+    for path in _mutations(store, run_id, campaign_id):
+        response = client.post(path)
+        assert response.status_code == 403, path
+        assert "--allow-remote-mutations" in response.json()["detail"]
+
+    assert store.read_status(run_id).status == "running"
+
+
+def test_a_networked_dashboard_still_serves_every_read(store):
+    run_id = _seed_run(store)
+    client = TestClient(create_app(store, host="0.0.0.0"))
+
+    assert client.get("/api/runs").status_code == 200
+    assert client.get(f"/api/runs/{run_id}").status_code == 200
+    assert client.get(f"/api/runs/{run_id}/metrics").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "read-only"
+
+
+def test_the_operator_can_ask_for_networked_mutations_by_name(store):
+    run_id = _seed_run(store)
+    client = TestClient(create_app(store, host="0.0.0.0", allow_remote_mutations=True))
+
+    assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "allowed"
+
+
+def test_the_default_loopback_dashboard_is_unchanged(client, store):
+    run_id = _seed_run(store)
+
+    assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "allowed"
