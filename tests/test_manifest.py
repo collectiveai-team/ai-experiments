@@ -64,3 +64,34 @@ def test_local_manifest_does_not_need_backend_address():
 
     assert manifest.backend == "local"
     assert manifest.backend_address is None
+
+
+def test_error_tail_keeps_the_last_thing_a_workload_said():
+    """A planner learns from the error, not from the exit code."""
+    from ai_experiments.worker import error_tail
+
+    tail = error_tail(
+        [
+            "Traceback (most recent call last):\n",
+            "  File train.py, line 10\n",
+            "RuntimeError: out of memory: needs 25.2 GB\n",
+        ]
+    )
+
+    assert tail.endswith("RuntimeError: out of memory: needs 25.2 GB")
+    assert "Traceback" in tail
+
+
+def test_error_tail_is_bounded_because_workload_output_is_untrusted():
+    from ai_experiments.worker import ERROR_TAIL_CHARS, error_tail
+
+    tail = error_tail(["x" * 5000])
+
+    assert len(tail) <= ERROR_TAIL_CHARS
+    assert tail.endswith("…")
+
+
+def test_error_tail_of_a_silent_workload_is_empty():
+    from ai_experiments.worker import error_tail
+
+    assert error_tail(["\n", "   \n"]) == ""

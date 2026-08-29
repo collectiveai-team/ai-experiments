@@ -11,6 +11,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -131,3 +132,44 @@ def test_the_agentic_target_is_reachable_inside_its_own_search_space():
 
     assert feasible, "no configuration in the search space fits the device"
     assert min(feasible) < goal.objective.target
+
+
+def test_a_failed_trial_carries_the_reason_the_workload_gave(tmp_path):
+    """The whole point of `strategy: agent` is a planner that reads failures."""
+    import sys as _sys
+
+    from ai_experiments.orchestrator import CampaignOrchestrator
+    from ai_experiments.store import FilesystemRunStore
+    from ai_experiments.store.campaign import CampaignStore
+
+    script = tmp_path / "fails.py"
+    script.write_text(
+        "import sys\n"
+        "print('loading data', flush=True)\n"
+        "raise RuntimeError('out of memory: needs 25.2 GB')\n"
+    )
+    goal = GoalSpec(
+        goal="fail on purpose",
+        name="failing",
+        objective={"metric": "loss", "mode": "min"},
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload={
+            "entrypoint": _sys.executable,
+            "args": [str(script)],
+            "working_dir": str(tmp_path),
+        },
+        budget={"max_trials": 1, "max_parallel": 1},
+        monitoring={"interval_seconds": 1, "stuck_after_minutes": 5},
+    )
+    store = FilesystemRunStore(tmp_path / "runs")
+    orchestrator = CampaignOrchestrator(store, CampaignStore(store.root))
+    state = orchestrator.start(goal)
+
+    for _ in range(60):
+        state = orchestrator.advance(state.campaign_id)
+        if state.trials[0].status in {"failed", "cancelled"}:
+            break
+        time.sleep(0.2)
+
+    assert state.trials[0].status == "failed"
+    assert "out of memory" in (state.trials[0].error or "")

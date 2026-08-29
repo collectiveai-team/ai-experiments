@@ -53,11 +53,12 @@ def main() -> None:
     if needed > DEVICE_MEMORY_GB:
         # A trial that cannot run must fail loudly. The harness records this
         # message in the campaign state, and the planner gets to read it.
-        raise RuntimeError(
+        reason = (
             f"out of memory: needs {needed:.1f} GB, "
             f"the device has {DEVICE_MEMORY_GB:.1f} GB "
             f"(width={args.width}, depth={args.depth}, batch={args.batch})"
         )
+        raise RuntimeError(reason)
 
     target = loss_surface(args.lr, args.width, args.depth)
     rng = random.Random(args.width * 1000 + args.depth)

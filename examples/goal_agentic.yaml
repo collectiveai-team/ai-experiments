@@ -3,17 +3,23 @@
 # Exit 0 means the target was reached; exit 4 means it was not.
 #
 # The workload refuses configurations that do not fit in memory and says why
-# (examples/agentic_train.py). An agent planner reads those errors in the
-# trial history; grid and random cannot, and keep proposing configurations
-# that fail. That is what this example is for.
+# (examples/agentic_train.py). About a third of the search space cannot run,
+# and the best configurations sit just inside the boundary. An agent planner
+# reads those errors in the trial history and walks up to the edge; grid and
+# random cannot read them, and adaptive plateaus around loss 0.40 because it
+# perturbs the best trial instead of reasoning about the constraint.
+#
+# So `strategy: adaptive` on this goal often exits 4 within 30 trials, and an
+# agent that reads the failures gets under the target in far fewer. That
+# difference is the whole example.
 
-goal: "Reach loss < 0.45 without exceeding the 4 GB device"
+goal: "Reach loss < 0.40 without exceeding the 4 GB device"
 name: agentic-capacity
 
 objective:
   metric: loss
   mode: min
-  target: 0.45
+  target: 0.40
 
 search_space:
   lr: { type: loguniform, low: 0.00001, high: 0.1 }
@@ -27,7 +33,7 @@ workload:
   working_dir: "."
 
 budget:
-  max_trials: 20
+  max_trials: 30
   max_parallel: 3
   max_hours: 1.0
 
