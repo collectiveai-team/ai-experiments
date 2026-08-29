@@ -24,12 +24,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from ai_experiments.cli_support import IaxError, invalid_input, not_found
 from ai_experiments.improve.rounds import RoundLog
 from ai_experiments.loop import LoopReport
 from ai_experiments.loop import run_loop as _run_loop
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
+from ai_experiments.schema_errors import describe
 from ai_experiments.schemas import GoalSpec
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
@@ -63,7 +66,9 @@ def goal_from_dict(data: dict[str, Any]) -> GoalSpec:
     """
     try:
         return GoalSpec(**data)
-    except Exception as exc:  # pydantic ValidationError, TypeError, ...
+    except ValidationError as exc:
+        invalid_input(f"invalid goal: {describe(GoalSpec, exc)}")
+    except Exception as exc:  # TypeError, ...
         invalid_input(f"invalid goal: {exc}")
 
 

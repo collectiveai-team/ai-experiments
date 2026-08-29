@@ -46,9 +46,12 @@ summarizes the fields; if it disagrees with the code, the code wins.
 |---|---|---|
 | `interval_seconds` | int | `300` |
 | `stuck_after_minutes` | int | `30` |
-| `no_event_after_minutes` | int \| null | `null` |
 | `timeout_seconds` | int \| null | `null` |
-| `checks` | list[string] | `["no_status_update", "no_log_progress", "process_exit"]` |
+| `auto_kill` | bool | `false` |
+| `fatal_on_nan` | bool | `true` |
+
+Every field above is the whole list. An unknown key is rejected by name, so a
+manifest never runs under configuration it did not get.
 
 ## Ray backend address
 

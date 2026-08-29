@@ -7,7 +7,6 @@
 experiment: my-experiment
 backend: local            # local | ray
 # backend_address: http://127.0.0.1:8265   # ray only; else RAY_ADDRESS
-# cluster: my-cluster                      # named profile from clusters.yaml
 
 workload:
   entrypoint: python

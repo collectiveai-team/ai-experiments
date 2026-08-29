@@ -2,10 +2,70 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, TypeVar, Union
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from ai_experiments.schema_errors import describe
+
+#: Keys older versions of iax defined, defaulted, documented -- and never read.
+#: They are rejected in a hand-written file and dropped from a stored one (#14).
+REMOVED_MONITOR_KEYS = ("checks", "no_event_after_minutes")
+
+
+class ConfigModel(BaseModel):
+    """Base for every model a human or an agent writes by hand.
+
+    An unknown key is an error, not a comment: silently dropping ``monitor:``
+    for ``monitoring:`` leaves the author sure they configured something they
+    did not. Models that only describe *stored* state stay permissive, so an
+    older file keeps loading after a field is added.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ConfigT = TypeVar("ConfigT", bound=ConfigModel)
+
+
+def load_config(model: type[ConfigT], path: str | Path) -> ConfigT:
+    """Load a hand-written YAML config, reporting a bad key by name."""
+    with Path(path).open() as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a YAML mapping of fields")
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        raise ValueError(describe(model, exc)) from exc
+
+
+def load_stored(model: type[ConfigT], path: str | Path) -> ConfigT:
+    """Load a config iax itself wrote, tolerating keys older versions emitted.
+
+    A run directory written before a field was removed still has to replay,
+    so the stored path drops those keys instead of refusing the file.
+    """
+    with Path(path).open() as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a YAML mapping of fields")
+    monitoring = data.get("monitoring")
+    if isinstance(monitoring, dict):
+        for key in REMOVED_MONITOR_KEYS:
+            monitoring.pop(key, None)
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        raise ValueError(describe(model, exc)) from exc
 
 
 def utc_now() -> datetime:
@@ -24,7 +84,7 @@ RunState = Literal[
 BackendName = Literal["local", "ray"]
 
 
-class WorkloadSpec(BaseModel):
+class WorkloadSpec(ConfigModel):
     """Executable workload for a training experiment."""
 
     entrypoint: str
@@ -33,18 +93,18 @@ class WorkloadSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
 
-class ResourceSpec(BaseModel):
+class ResourceSpec(ConfigModel):
     cpus: float = 1
     gpus: float = 0
     memory_gb: float | None = None
 
 
-class ArtifactSpec(BaseModel):
+class ArtifactSpec(ConfigModel):
     output_dir: str = "outputs/training"
     status_path: str | None = None
 
 
-class EscalationPolicy(BaseModel):
+class EscalationPolicy(ConfigModel):
     """Controls when a suspicious run is handed to an agent for diagnosis.
 
     Programmatic checks are free; agent checks cost tokens. The ladder only
@@ -59,26 +119,30 @@ class EscalationPolicy(BaseModel):
     agent_timeout_seconds: int = 600
 
 
-class MonitorPolicy(BaseModel):
+class MonitorPolicy(ConfigModel):
     interval_seconds: int = 300
     stuck_after_minutes: int = 30
-    no_event_after_minutes: int | None = None
     timeout_seconds: int | None = None
     auto_kill: bool = False
     fatal_on_nan: bool = True
     objective_metric: str | None = None
     plateau_patience_points: int | None = None
     escalation: EscalationPolicy = Field(default_factory=EscalationPolicy)
-    checks: list[str] = Field(
-        default_factory=lambda: [
-            "no_status_update",
-            "no_log_progress",
-            "process_exit",
-        ]
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            dead = [key for key in REMOVED_MONITOR_KEYS if key in data]
+            if dead:
+                raise ValueError(
+                    f"{', '.join(dead)}: removed; iax never read this key. "
+                    "Delete it. The monitoring rules are not configurable."
+                )
+        return data
 
 
-class TrackingSpec(BaseModel):
+class TrackingSpec(ConfigModel):
     """Optional MLflow experiment tracking.
 
     When enabled, the harness creates the MLflow run at submit time, injects
@@ -94,7 +158,7 @@ class TrackingSpec(BaseModel):
     experiment: str | None = None  # defaults to the iax experiment name
 
 
-class ExperimentManifest(BaseModel):
+class ExperimentManifest(ConfigModel):
     """Generic detached training experiment manifest."""
 
     experiment: str
@@ -128,8 +192,7 @@ class ExperimentManifest(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentManifest:
-        with Path(path).open() as fh:
-            return cls(**(yaml.safe_load(fh) or {}))
+        return load_config(cls, path)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)
@@ -203,7 +266,7 @@ class DiagnosisReport(BaseModel):
 # --- Goal / campaign layer -------------------------------------------------
 
 
-class ChoiceParam(BaseModel):
+class ChoiceParam(ConfigModel):
     type: Literal["choice"]
     values: list[Any]
 
@@ -215,7 +278,7 @@ class ChoiceParam(BaseModel):
         return value
 
 
-class UniformParam(BaseModel):
+class UniformParam(ConfigModel):
     type: Literal["uniform"]
     low: float
     high: float
@@ -227,7 +290,7 @@ class UniformParam(BaseModel):
         return self
 
 
-class LogUniformParam(BaseModel):
+class LogUniformParam(ConfigModel):
     type: Literal["loguniform"]
     low: float
     high: float
@@ -241,7 +304,7 @@ class LogUniformParam(BaseModel):
         return self
 
 
-class IntParam(BaseModel):
+class IntParam(ConfigModel):
     type: Literal["int"]
     low: int
     high: int
@@ -259,13 +322,13 @@ ParamSpec = Annotated[
 ]
 
 
-class ObjectiveSpec(BaseModel):
+class ObjectiveSpec(ConfigModel):
     metric: str
     mode: Literal["min", "max"] = "min"
     target: float | None = None
 
 
-class BudgetSpec(BaseModel):
+class BudgetSpec(ConfigModel):
     max_trials: int = 10
     max_parallel: int = 1
     max_hours: float | None = None
@@ -281,7 +344,7 @@ class BudgetSpec(BaseModel):
         return self
 
 
-class StrategySpec(BaseModel):
+class StrategySpec(ConfigModel):
     name: Literal["grid", "random", "adaptive", "agent"] = "adaptive"
     seed: int = 0
     batch_size: int | None = None
@@ -293,7 +356,7 @@ class StrategySpec(BaseModel):
     fallback: Literal["grid", "random", "adaptive"] = "adaptive"
 
 
-class AgentSpec(BaseModel):
+class AgentSpec(ConfigModel):
     """How the harness reaches the agent that plans and reviews rounds.
 
     The command is operator-supplied configuration. It receives the brief on
@@ -307,7 +370,7 @@ class AgentSpec(BaseModel):
     max_calls: int = 20
 
 
-class VariantSpec(BaseModel):
+class VariantSpec(ConfigModel):
     """Whether, and how far, the loop may change the workload's own code.
 
     Off by default: a loop that edits code without being asked is a surprise.
@@ -325,7 +388,7 @@ class VariantSpec(BaseModel):
     smoke_timeout_seconds: int = 120
 
 
-class AnalysisSpec(BaseModel):
+class AnalysisSpec(ConfigModel):
     agent_review: bool = False
     #: Ask the agent for a verdict between rounds during ``iax loop``. The
     #: agent can end a campaign it judges hopeless instead of burning the
@@ -336,7 +399,7 @@ class AnalysisSpec(BaseModel):
     apply_agent_changes: bool = False
 
 
-class GoalSpec(BaseModel):
+class GoalSpec(ConfigModel):
     """A research goal the harness pursues autonomously.
 
     The planner turns this into a campaign: batches of experiment manifests,
@@ -386,8 +449,7 @@ class GoalSpec(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> GoalSpec:
-        with Path(path).open() as fh:
-            return cls(**(yaml.safe_load(fh) or {}))
+        return load_config(cls, path)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)

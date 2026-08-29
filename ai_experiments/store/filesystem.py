@@ -13,6 +13,7 @@ from ai_experiments.schemas import (
     RunEvent,
     RunHandle,
     RunStatus,
+    load_stored,
     utc_now,
 )
 
@@ -221,7 +222,7 @@ class FilesystemRunStore:
         path = self.run_dir(run_id) / "manifest.yaml"
         if not path.exists():
             return None
-        return ExperimentManifest.from_yaml(path)
+        return load_stored(ExperimentManifest, path)
 
     def list_runs(self) -> Iterable[str]:
         if not self.root.exists():

@@ -13,7 +13,13 @@ from types import FrameType
 from ai_experiments.failures import ERROR_TAIL_LINES, failure_message
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.report import parse_metric_line
-from ai_experiments.schemas import ExperimentManifest, MetricPoint, RunEvent, utc_now
+from ai_experiments.schemas import (
+    ExperimentManifest,
+    MetricPoint,
+    RunEvent,
+    load_stored,
+    utc_now,
+)
 from ai_experiments.store import FilesystemRunStore
 
 HEARTBEAT_SECONDS = 15
@@ -43,7 +49,7 @@ class _Supervisor:
 
     def run(self) -> None:
         run_dir = self.store.run_dir(self.run_id)
-        manifest = ExperimentManifest.from_yaml(run_dir / "manifest.yaml")
+        manifest = load_stored(ExperimentManifest, run_dir / "manifest.yaml")
 
         command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
         env = os.environ.copy()

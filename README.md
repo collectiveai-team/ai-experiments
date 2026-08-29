@@ -302,6 +302,8 @@ Every daemon tick runs free checks per active run:
 | No metric progress for `stuck_after_minutes` | suspicious |
 | Objective plateau over `plateau_patience_points` | suspicious |
 
+The check list is fixed; only the thresholds above are configurable.
+
 `kill` verdicts are handled inline: cancelled when the run's policy sets
 `auto_kill: true`, escalated otherwise. Suspicious runs climb an escalation
 ladder — only after `after_suspicious_ticks` consecutive suspicious ticks does
@@ -470,11 +472,19 @@ workload:
     - train
     - configs/training.yaml
   working_dir: .
-monitor:
+monitoring:
   interval_seconds: 300
-  stuck_after_seconds: 1800
+  stuck_after_minutes: 30
 metadata:
   project_id: example
+```
+
+Manifests and goals are validated strictly: a key iax does not know fails
+`iax validate` by name, with the field it most likely meant.
+
+```console
+$ iax validate experiment.yaml
+Error: invalid manifest experiment.yaml: monitor: unknown field; did you mean 'monitoring'?
 ```
 
 ## CLI
