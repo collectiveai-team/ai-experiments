@@ -17,6 +17,7 @@ from ai_experiments.agents.runner import AgentRunner, CliAgentRunner
 from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
+from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.planner.analysis import (
     best_trial,
     extract_objective,
@@ -230,9 +231,13 @@ class CampaignOrchestrator:
         if stop_reason:
             return self._finish(state, goal, backend, stop_reason)
 
+        if finished_now:
+            self._record_evaluation(state, goal, finished_now)
+
         submitted = self._fill_capacity(state, goal, backend)
         if submitted:
             state.rounds += 1
+            self._record_proposal(state, goal, submitted)
 
         # The planner can run dry before `max_trials` — a grid or a small
         # discrete space has finitely many points. With nothing in flight and
@@ -430,6 +435,65 @@ class CampaignOrchestrator:
                 )
                 total += live or 0.0
         return total
+
+    def _rounds(self, campaign_id: str) -> RoundLog:
+        return RoundLog(self.campaign_store.campaign_dir(campaign_id))
+
+    def _record_proposal(
+        self, state: CampaignState, goal: GoalSpec, submitted: list[TrialRecord]
+    ) -> None:
+        """Why this round exists, written the moment it is submitted."""
+        decision = self.last_decision
+        self._rounds(state.campaign_id).append(
+            RoundRecord(
+                campaign_id=state.campaign_id,
+                round=state.rounds,
+                stage="propose",
+                strategy=goal.strategy.name,
+                hypothesis=decision.hypothesis if decision else "",
+                rationale=decision.rationale if decision else "",
+                trial_ids=[t.trial_id for t in submitted],
+                outcome={t.trial_id: t.params for t in submitted},
+                agent_calls=state.agent_calls,
+                used_fallback=bool(decision and decision.used_fallback),
+                rejected=decision.rejected if decision else [],
+            )
+        )
+
+    def _record_evaluation(
+        self, state: CampaignState, goal: GoalSpec, finished: list[TrialRecord]
+    ) -> None:
+        """What the round actually measured, including what broke."""
+        best = best_trial(state, goal.objective.mode)
+        self._rounds(state.campaign_id).append(
+            RoundRecord(
+                campaign_id=state.campaign_id,
+                round=state.rounds,
+                stage="evaluate",
+                strategy=goal.strategy.name,
+                trial_ids=[t.trial_id for t in finished],
+                outcome={
+                    "metric": goal.objective.metric,
+                    "values": {
+                        t.trial_id: {
+                            "status": t.status,
+                            "objective_value": t.objective_value,
+                            "error": t.error,
+                        }
+                        for t in finished
+                    },
+                    "best_so_far": (
+                        {
+                            "trial_id": best.trial_id,
+                            "objective_value": best.objective_value,
+                        }
+                        if best
+                        else None
+                    ),
+                },
+                agent_calls=state.agent_calls,
+            )
+        )
 
     def _plan_params(
         self, state: CampaignState, goal: GoalSpec, count: int

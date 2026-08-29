@@ -680,6 +680,10 @@ def campaign_status(
     )
     typer.echo(f"  Goal:   {state.goal}")
     typer.echo(f"  Trials: {summary['trials_by_status']}")
+    typer.echo(
+        f"  Loop:   round {summary['rounds']}, "
+        f"last advanced {summary['last_advanced_at']}"
+    )
     cost = summary["estimated_cost"]
     typer.echo(
         f"  Spend:  {summary['gpu_hours']:g} gpu-hours"
@@ -945,3 +949,78 @@ def _scaffold_write(kind: str, path: Path, force: bool) -> None:
         invalid_input(str(exc))
     typer.echo(f"Wrote {target}")
     typer.echo(f"Next: {_NEXT_STEP[kind].format(path=target)}")
+
+
+@campaign_app.command("trials", cls=IaxCommand)
+def campaign_trials(
+    campaign_id: str = typer.Argument(...),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """List every trial: status, objective value, run id, and error."""
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = FilesystemRunStore(runs_dir)
+    _require_campaign(store, campaign_id)
+    state = CampaignStore(store.root).read_state(campaign_id)
+    if output_json:
+        _echo_json([t.model_dump(mode="json") for t in state.trials])
+        return
+    if not state.trials:
+        typer.echo("No trials yet.")
+        return
+    typer.echo(f"{'TRIAL':<8} {'STATUS':<10} {'OBJECTIVE':<14} {'RUN':<24} PARAMS")
+    for trial in state.trials:
+        value = (
+            f"{trial.objective_value:.6g}" if trial.objective_value is not None else "-"
+        )
+        typer.echo(
+            f"{trial.trial_id:<8} {trial.status:<10} {value:<14} "
+            f"{trial.run_id or '-':<24} {trial.params}"
+        )
+        if trial.error:
+            typer.echo(f"         error: {trial.error}")
+
+
+@campaign_app.command("rounds", cls=IaxCommand)
+def campaign_rounds(
+    campaign_id: str = typer.Argument(...),
+    tail: Optional[int] = typer.Option(None, "--tail", help="Only the last N records"),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Replay the improvement loop: what each round tried, and what it measured."""
+    from ai_experiments.improve.rounds import RoundLog
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = FilesystemRunStore(runs_dir)
+    _require_campaign(store, campaign_id)
+    records = RoundLog(CampaignStore(store.root).campaign_dir(campaign_id)).read(
+        limit=tail
+    )
+    if output_json:
+        _echo_json([r.model_dump(mode="json") for r in records])
+        return
+    if not records:
+        typer.echo("No rounds recorded yet.")
+        return
+    for record in records:
+        typer.echo(
+            f"round {record.round} [{record.stage}] via {record.strategy}"
+            + (" (fallback)" if record.used_fallback else "")
+        )
+        if record.hypothesis:
+            typer.echo(f"  hypothesis: {record.hypothesis}")
+        if record.rationale:
+            typer.echo(f"  rationale:  {record.rationale}")
+        if record.trial_ids:
+            typer.echo(f"  trials:     {', '.join(record.trial_ids)}")
+        if record.stage == "evaluate":
+            for trial_id, result in (record.outcome.get("values") or {}).items():
+                value = result.get("objective_value")
+                shown = f"{value:.6g}" if isinstance(value, (int, float)) else "-"
+                typer.echo(f"    {trial_id}: {result.get('status')} {shown}")
+                if result.get("error"):
+                    typer.echo(f"      error: {result['error']}")
+        for rejection in record.rejected:
+            typer.echo(f"  rejected:   {rejection.get('reason')}")

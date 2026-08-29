@@ -104,6 +104,21 @@ The prompt goes to the agent on **stdin**, never as a command-line argument:
 it quotes campaign output, and campaign output is untrusted. Every call leaves
 a transcript under `<campaign_dir>/agents/<role>/<n>/`.
 
+## Reading the loop back
+
+Every round leaves a record in `<campaign_dir>/rounds.jsonl`: what it proposed,
+on what hypothesis, which trials it submitted, and what those trials measured.
+The stages mirror a code review — propose, apply, validate, evaluate, review —
+because an experiment round has the same shape as a change.
+
+```bash
+iax campaign rounds <campaign_id>          # the loop's reasoning, oldest first
+iax campaign trials <campaign_id>          # per-trial status, value, run id, error
+```
+
+The file is append-only. A round that went wrong is corrected by a later
+record, never by rewriting an earlier one.
+
 ## Artifacts and reproducibility
 
 Workloads write checkpoints/plots/models to `$IAX_ARTIFACTS_DIR` (or use
@@ -351,6 +366,8 @@ iax leaderboard
 iax campaign validate goal.yaml
 iax campaign start goal.yaml
 iax campaign list / status / advance / suggest / pause / edit / resume / stop
+iax campaign trials <campaign_id>          # every trial: status, value, run, error
+iax campaign rounds <campaign_id> --json   # why each round tried what it tried
 
 # infrastructure
 iax daemon --interval 30        # monitor + loop driver (foreground)

@@ -172,6 +172,8 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         "goal": state.goal,
         "status": state.status,
         "stop_reason": state.stop_reason,
+        "created_at": state.created_at.isoformat(),
+        "last_advanced_at": state.updated_at.isoformat(),
         "gpu_hours": round(gpu_hours, 4),
         "estimated_cost": round(cost, 2) if cost is not None else None,
         "budget": {
@@ -185,6 +187,7 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
             "target": goal.objective.target,
         },
         "rounds": state.rounds,
+        "agent_calls": state.agent_calls,
         "trials_by_status": by_status,
         "trials_total": len(state.trials),
         "best": (
