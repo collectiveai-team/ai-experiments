@@ -250,3 +250,92 @@ def test_daemon_finalizes_tracked_terminal_runs(tmp_path):
     actions = {a.run_id: a.action for a in report.actions}
     assert actions[run_id] == "mlflow_synced"
     assert store.read_status(run_id).details["mlflow_synced"] is True
+
+
+class BrokenArtifactClient(FakeMlflowClient):
+    """A real shape: the server is up, its artifact root is not client-writable."""
+
+    def log_artifacts(self, run_id, local_dir):
+        raise PermissionError(f"cannot write to /mlruns/artifacts: {local_dir}")
+
+
+class BrokenMlflowModule(FakeMlflowModule):
+    def MlflowClient(self, tracking_uri=None):  # noqa: N802 - mlflow API shape
+        if self.last_client is None:
+            self.last_client = BrokenArtifactClient(tracking_uri)
+        return self.last_client
+
+
+def _tracked_terminal_run(tmp_path, fake):
+    manifest = _manifest()
+    store, run_id = _seeded_run(tmp_path, manifest)
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        begin_tracking(store, run_id, manifest)
+    (store.artifacts_dir(run_id) / "model.bin").write_bytes(b"w")
+    store.update_status(run_id, status="completed", completed_at=utc_now())
+    return store, run_id
+
+
+def test_a_failed_sync_is_a_tick_error_not_a_clean_tick(tmp_path):
+    """#26: mirroring died, and `iax daemon` reported `"errors": []`."""
+    fake = BrokenMlflowModule()
+    store, run_id = _tracked_terminal_run(tmp_path, fake)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        report = MonitorDaemon(store).tick()
+
+    assert report.errors, "a dead mirror reported a clean tick"
+    assert run_id in report.errors[0]
+    assert "mlflow finalize failed" in report.errors[0]
+    assert not any(a.action == "mlflow_synced" for a in report.actions)
+
+
+def test_a_failed_sync_is_recorded_where_iax_status_shows_it(tmp_path):
+    fake = BrokenMlflowModule()
+    store, run_id = _tracked_terminal_run(tmp_path, fake)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+        MonitorDaemon(store).tick()
+
+    details = store.read_status(run_id).details
+    assert details["mlflow_sync_attempts"] == 1
+    assert "cannot write" in details["mlflow_sync_error"]
+    assert "mlflow_synced" not in details
+
+
+def test_a_permanently_broken_sync_stops_after_a_bounded_retry(tmp_path):
+    """A transient outage recovers; a misconfiguration must not shout forever."""
+    from ai_experiments.tracking import MAX_SYNC_ATTEMPTS
+
+    fake = BrokenMlflowModule()
+    store, run_id = _tracked_terminal_run(tmp_path, fake)
+    daemon = MonitorDaemon(store)
+
+    reports = []
+    for _ in range(MAX_SYNC_ATTEMPTS + 2):
+        with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
+            reports.append(daemon.tick())
+
+    noisy = [report for report in reports if report.errors]
+    assert len(noisy) == MAX_SYNC_ATTEMPTS
+    assert store.read_status(run_id).details["mlflow_sync_failed"] is True
+    assert "giving up" in "".join(event.message for event in store.read_events(run_id))
+
+
+def test_a_transient_failure_still_syncs_when_the_server_comes_back(tmp_path):
+    broken = BrokenMlflowModule()
+    store, run_id = _tracked_terminal_run(tmp_path, broken)
+    daemon = MonitorDaemon(store)
+
+    with patch("ai_experiments.tracking._load_mlflow", return_value=broken):
+        assert daemon.tick().errors
+
+    healed = FakeMlflowModule()
+    healed.last_client = broken.last_client
+    healed.last_client.__class__ = FakeMlflowClient
+    with patch("ai_experiments.tracking._load_mlflow", return_value=healed):
+        report = daemon.tick()
+
+    assert report.errors == []
+    assert any(a.action == "mlflow_synced" for a in report.actions)
+    assert store.read_status(run_id).details["mlflow_synced"] is True

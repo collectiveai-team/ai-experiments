@@ -196,15 +196,30 @@ def begin_tracking(
     return env
 
 
+#: How many ticks a failing sync is retried before the daemon gives up on it.
+#: A transient MLflow outage recovers inside this; a misconfiguration does not,
+#: and repeating its error every tick forever would only bury the next problem.
+MAX_SYNC_ATTEMPTS = 3
+
+
+class TrackingSyncError(RuntimeError):
+    """A mirroring pass ran and failed. Not "nothing to mirror" (#26)."""
+
+
 def finalize_tracking(store: FilesystemRunStore, status: RunStatus) -> bool:
     """Daemon hook: mirror + close the MLflow run once, at terminal state.
 
-    Returns True when a sync happened.
+    Returns True when a sync happened, False when there was nothing to do, and
+    raises :class:`TrackingSyncError` when a sync was attempted and failed --
+    the daemon reports that as a tick error. Returning False for a failure made
+    a dead mirror look like a clean tick, so metrics and artifacts silently
+    never arrived (#26).
     """
     mlflow_run_id = status.details.get("mlflow_run_id")
     if (
         not mlflow_run_id
         or status.details.get("mlflow_synced")
+        or status.details.get("mlflow_sync_failed")
         or status.status not in _TERMINAL_MLFLOW_STATUS
     ):
         return False
@@ -217,15 +232,31 @@ def finalize_tracking(store: FilesystemRunStore, status: RunStatus) -> bool:
             return False
         tracker.finalize_run(store, status.run_id, str(mlflow_run_id))
     except Exception as exc:
+        attempts = int(status.details.get("mlflow_sync_attempts", 0)) + 1
+        give_up = attempts >= MAX_SYNC_ATTEMPTS
+        store.update_status(
+            status.run_id,
+            details={
+                "mlflow_sync_attempts": attempts,
+                "mlflow_sync_error": str(exc),
+                **({"mlflow_sync_failed": True} if give_up else {}),
+            },
+        )
         store.append_event(
             status.run_id,
             RunEvent(
-                level="warning",
-                message="mlflow finalize failed",
-                details={"error": str(exc)},
+                level="error" if give_up else "warning",
+                message=(
+                    "mlflow finalize failed; giving up"
+                    if give_up
+                    else "mlflow finalize failed"
+                ),
+                details={"error": str(exc), "attempt": attempts},
             ),
         )
-        return False
+        raise TrackingSyncError(
+            f"mlflow finalize failed (attempt {attempts}/{MAX_SYNC_ATTEMPTS}): {exc}"
+        ) from exc
     store.update_status(status.run_id, details={"mlflow_synced": True})
     store.append_event(
         status.run_id,

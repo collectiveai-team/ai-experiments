@@ -56,6 +56,10 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `cancel.requested` | Local backend only: created by `iax cancel` before it signals. Its presence is what lets the supervisor report a stop it was asked for as `cancelled`, and one it was not (a kernel OOM kill) as `failed`. |
 | `worker.log` | Local backend only: the *supervisor's* own stdout/stderr, including any traceback that killed it — `iax logs <run> --worker` prints it. The workload's output goes to `events.jsonl`. Ray run dirs lack it. |
 
+If a run or campaign is not moving, check that a daemon is: `_daemon/heartbeat.json`
+under the store root holds the last tick, and `iax runs` / `iax campaign status`
+print a stderr warning when no daemon has ticked in ten minutes.
+
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs` under the nearest project root above the current
 directory. A not-found error prints the store it read; check that path before
