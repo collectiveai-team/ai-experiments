@@ -53,6 +53,10 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `escalation.json` | Escalation-ladder state (suspicious tick count, agent-call budget) written by the daemon. |
 | `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs lack it. |
 
+If a run or campaign is not moving, check that a daemon is: `_daemon/heartbeat.json`
+under the store root holds the last tick, and `iax runs` / `iax campaign status`
+print a stderr warning when no daemon has ticked in ten minutes.
+
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs` under the nearest project root above the current
 directory. A not-found error prints the store it read; check that path before

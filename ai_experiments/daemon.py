@@ -28,6 +28,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ai_experiments.backends.factory import backend_for_run
+from ai_experiments.heartbeat import Heartbeat, write_heartbeat
 from ai_experiments.monitoring.escalation import (
     EscalationLadder,
     clear_escalation,
@@ -82,17 +83,33 @@ class MonitorDaemon:
         self.ladder = EscalationLadder(run_store)
         self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
+        self.ticks = 0
 
     # -- one tick --------------------------------------------------------------
 
-    def tick(self) -> TickReport:
+    def tick(self, interval_seconds: int | None = None) -> TickReport:
         report = TickReport(timestamp=utc_now().isoformat())
         self._check_runs(report)
         self._advance_campaigns(report)
+        self.ticks += 1
+        # Stamped even when the tick found nothing to do: the whole point is
+        # that "nothing happened" and "nobody is watching" stop looking alike.
+        try:
+            write_heartbeat(
+                self.run_store.root,
+                Heartbeat(
+                    interval_seconds=interval_seconds,
+                    ticks=self.ticks,
+                    runs_checked=report.runs_checked,
+                    campaigns_advanced=report.campaigns_advanced,
+                ),
+            )
+        except OSError as exc:
+            report.errors.append(f"heartbeat: {exc}")
         return report
 
     def _check_runs(self, report: TickReport) -> None:
-        from ai_experiments.tracking import finalize_tracking
+        from ai_experiments.tracking import TrackingSyncError, finalize_tracking
 
         for run_id in sorted(self.run_store.list_runs()):
             # Reading the status is itself fallible (a torn or truncated
@@ -116,6 +133,8 @@ class MonitorDaemon:
                                 action="mlflow_synced",
                             )
                         )
+                except TrackingSyncError as exc:
+                    report.errors.append(f"{run_id}: {exc}")
                 except Exception as exc:
                     report.errors.append(f"{run_id}: mlflow finalize: {exc}")
                 continue
@@ -279,15 +298,35 @@ class MonitorDaemon:
         self._stop = True
 
     def run_forever(
-        self, interval_seconds: int = 30, max_ticks: int | None = None
+        self,
+        interval_seconds: int = 30,
+        max_ticks: int | None = None,
+        heartbeat_seconds: int = 300,
     ) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
         ticks = 0
+        next_heartbeat = 0.0
         while not self._stop:
-            report = self.tick()
+            report = self.tick(interval_seconds=interval_seconds)
             if report.actions or report.errors:
                 print(json.dumps(report.model_dump(mode="json")), flush=True)
+            elif time.monotonic() >= next_heartbeat:
+                # A quiet daemon that never speaks cannot be told from a dead
+                # one in a log someone reads tomorrow morning.
+                print(
+                    json.dumps(
+                        {
+                            "timestamp": report.timestamp,
+                            "heartbeat": True,
+                            "runs_checked": report.runs_checked,
+                            "campaigns_advanced": report.campaigns_advanced,
+                            "next_tick_seconds": interval_seconds,
+                        }
+                    ),
+                    flush=True,
+                )
+                next_heartbeat = time.monotonic() + heartbeat_seconds
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break

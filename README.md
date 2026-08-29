@@ -312,6 +312,31 @@ the daemon involve an agent, subject to `cooldown_minutes` and
 file under `<runs>/_escalations/` plus `iax escalations` — an external agent
 session picks it up and zero tokens are spent by the daemon.
 
+### Is the daemon alive?
+
+Every tick stamps `<runs>/_daemon/heartbeat.json`, so a working daemon and a
+dead one are distinguishable after the fact. A quiet daemon also prints one
+line every `--heartbeat` seconds (default 300):
+
+```json
+{"timestamp": "...", "heartbeat": true, "runs_checked": 3, "campaigns_advanced": 1, "next_tick_seconds": 30}
+```
+
+When something is waiting on a daemon that is not ticking — an active run, a
+running campaign, a campaign you just started — `iax runs`, `iax campaign list`
+and `iax campaign status` say so on **stderr**, so `--json` stdout stays
+parseable:
+
+```console
+$ iax campaign status camp_9f21 --json
+No daemon tick for 45m (last: 2026-08-29T01:12:04+00:00, pid 4242). Start one with `iax daemon`.
+{ ... }
+```
+
+A failed MLflow sync is a tick error, not a clean tick: the daemon reports it,
+`status.details.mlflow_sync_error` keeps it, and it is retried three times
+before iax gives up on that run and sets `mlflow_sync_failed`.
+
 ```yaml
 monitoring:
   auto_kill: true

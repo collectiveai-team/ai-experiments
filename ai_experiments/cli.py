@@ -69,6 +69,21 @@ def _echo_json(payload: object) -> None:
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _warn_if_no_daemon(store: FilesystemRunStore, work_is_waiting: bool) -> None:
+    """Say so when something needs a daemon and no daemon is ticking (#22).
+
+    On stderr: this is context for the person reading, not part of the data a
+    caller parses from stdout.
+    """
+    if not work_is_waiting:
+        return
+    from ai_experiments.heartbeat import daemon_warning
+
+    warning = daemon_warning(store.root)
+    if warning:
+        typer.echo(warning, err=True)
+
+
 def _require_run(store: FilesystemRunStore, run_id: str) -> None:
     if not store.run_dir(run_id).exists():
         not_found(
@@ -254,6 +269,9 @@ def runs(
         # On stderr: an empty list is the moment the caller needs to know
         # which store was read, and stdout may be JSON someone is parsing.
         typer.echo(f"No runs in {store.root}", err=True)
+    _warn_if_no_daemon(
+        store, any(status.status in {"submitted", "running"} for status in statuses)
+    )
     if output_json:
         _echo_json([status.model_dump(mode="json") for status in statuses])
         return
@@ -445,6 +463,9 @@ def leaderboard(
 def daemon(
     interval: int = typer.Option(30, "--interval", help="Seconds between ticks"),
     once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
+    heartbeat: int = typer.Option(
+        300, "--heartbeat", help="Seconds between 'still alive' lines on a quiet daemon"
+    ),
     notify_webhook: Optional[str] = typer.Option(
         None, "--notify-webhook", help="Webhook URL (Slack-compatible) for alerts"
     ),
@@ -466,7 +487,7 @@ def daemon(
         _echo_json(monitor_daemon.tick())
         return
     typer.echo(f"iax daemon watching {store.root} every {interval}s", err=True)
-    monitor_daemon.run_forever(interval_seconds=interval)
+    monitor_daemon.run_forever(interval_seconds=interval, heartbeat_seconds=heartbeat)
 
 
 @app.command(cls=IaxCommand)
@@ -648,6 +669,8 @@ def campaign_start(
         raise IaxError(
             f"campaign start failed: {exc}", code="backend_unavailable"
         ) from exc
+    # A campaign nobody drives submits its first batch and then stops forever.
+    _warn_if_no_daemon(FilesystemRunStore(runs_dir), True)
     if output_json:
         _echo_json(state)
     else:
@@ -668,6 +691,9 @@ def campaign_list(
     states = [campaign_store.read_state(cid) for cid in campaign_store.list_campaigns()]
     if not states:
         typer.echo(f"No campaigns in {store.root}", err=True)
+    _warn_if_no_daemon(
+        store, any(state.status in {"running", "stopping"} for state in states)
+    )
     if output_json:
         _echo_json([state.model_dump(mode="json") for state in states])
         return
@@ -692,6 +718,7 @@ def campaign_status(
     state = campaign_store.read_state(campaign_id)
     goal = campaign_store.read_goal(campaign_id)
     summary = summarize_campaign(state, goal)
+    _warn_if_no_daemon(store, state.status in {"running", "stopping"})
     if output_json:
         _echo_json(summary)
         return
