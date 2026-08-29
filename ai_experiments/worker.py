@@ -10,31 +10,13 @@ from collections import deque
 from pathlib import Path
 from types import FrameType
 
+from ai_experiments.failures import ERROR_TAIL_LINES, failure_message
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import ExperimentManifest, MetricPoint, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
 
 HEARTBEAT_SECONDS = 15
-
-#: How much of a failed workload's output goes into its error message. A
-#: planner reads that message to learn why the trial died — "exited with code
-#: 1" teaches it nothing, and the whole log would drown the evidence.
-ERROR_TAIL_LINES = 3
-ERROR_TAIL_CHARS = 400
-
-
-def error_tail(lines: list[str]) -> str:
-    """The last thing the workload said before it died, trimmed to fit.
-
-    The output is untrusted: it is quoted into an error field and read back by
-    agents and dashboards, never executed, and never allowed to grow without
-    a bound.
-    """
-    tail = " | ".join(line.strip() for line in lines if line.strip())
-    if len(tail) > ERROR_TAIL_CHARS:
-        tail = tail[: ERROR_TAIL_CHARS - 1].rstrip() + "\u2026"
-    return tail
 
 
 class _Supervisor:
@@ -140,13 +122,13 @@ class _Supervisor:
                 RunEvent(level="warning", message="workload terminated"),
             )
         else:
-            tail = error_tail(list(recent))
-            message = f"workload exited with code {exit_code}"
             self._update_status(
                 status="failed",
                 exit_code=exit_code,
                 completed_at=utc_now(),
-                error=f"{message}: {tail}" if tail else message,
+                error=failure_message(
+                    f"workload exited with code {exit_code}", list(recent)
+                ),
             )
             self.store.append_event(
                 self.run_id,

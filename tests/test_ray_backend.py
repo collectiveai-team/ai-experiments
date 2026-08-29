@@ -98,7 +98,8 @@ def test_ray_failed_status_records_error(tmp_path):
 
     status = backend.inspect(handle.run_id)
     assert status.status == "failed"
-    assert status.error == "worker crashed"
+    # The prefix says where the failure came from; the tail says what it was.
+    assert status.error == "Ray job failed: worker crashed"
 
     report = backend.diagnose(handle.run_id)
     assert report.decision.decision == "training_failed"
