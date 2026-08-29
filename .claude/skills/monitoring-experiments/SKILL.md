@@ -54,7 +54,9 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs lack it. |
 
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
-`outputs/experiments/runs`.
+`outputs/experiments/runs` under the nearest project root above the current
+directory. A not-found error prints the store it read; check that path before
+concluding a run is gone.
 
 On Ray, `iax logs` returns harness events only. Worker stdout and tracebacks surface
 through `status.error` and `status.details.ray_log_tail`; Ray condition hints live in

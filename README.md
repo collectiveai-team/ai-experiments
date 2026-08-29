@@ -433,12 +433,19 @@ The harness **reads** these from its own environment:
 
 | variable | default | what it does |
 |---|---|---|
-| `IAX_RUNS_DIR` | `outputs/experiments/runs` | where runs, campaigns and events are stored; `--runs-dir` overrides it |
+| `IAX_RUNS_DIR` | `<project>/outputs/experiments/runs` | where runs, campaigns and events are stored; `--runs-dir` overrides it |
 | `IAX_CLUSTERS` | `./clusters.yaml`, then `~/.config/iax/clusters.yaml` | the cluster profile file `iax cluster` and `cluster:` resolve against |
 | `RAY_ADDRESS` | `http://127.0.0.1:8265` | the Ray Jobs address, used when the manifest sets no `backend_address` |
 | `IAX_NOTIFY_WEBHOOK` | unset | daemon notifications POST here as JSON; `--notify-webhook` overrides it |
 | `IAX_NOTIFY_COMMAND` | unset | daemon notifications run this command with the JSON payload on **stdin**; `--notify-command` overrides it |
 | `MLFLOW_TRACKING_URI` | unset (mlflow uses `./mlruns`) | used when `tracking.tracking_uri` is not set |
+
+Without `IAX_RUNS_DIR` or `--runs-dir`, the store is found by walking up from
+the current directory: the first ancestor that already holds
+`outputs/experiments/runs`, else the first that holds a `.git` or
+`pyproject.toml`. So `iax submit` at the repo root and `iax status` three
+directories down read the same store. Every not-found error prints the store
+path it read.
 
 The harness **injects** these into every workload it starts:
 

@@ -71,7 +71,11 @@ def _echo_json(payload: object) -> None:
 
 def _require_run(store: FilesystemRunStore, run_id: str) -> None:
     if not store.run_dir(run_id).exists():
-        not_found("run", run_id, hint="list them with `iax runs`")
+        not_found(
+            "run",
+            run_id,
+            hint=f"run store is {store.root}; list them with `iax runs`",
+        )
 
 
 def _require_campaign(store: FilesystemRunStore, campaign_id: str) -> None:
@@ -80,7 +84,11 @@ def _require_campaign(store: FilesystemRunStore, campaign_id: str) -> None:
     if not (
         CampaignStore(store.root).campaign_dir(campaign_id) / "state.json"
     ).exists():
-        not_found("campaign", campaign_id, hint="list them with `iax campaign list`")
+        not_found(
+            "campaign",
+            campaign_id,
+            hint=(f"run store is {store.root}; list them with `iax campaign list`"),
+        )
 
 
 def _backend_for_run(run_id: str, store: FilesystemRunStore):
@@ -242,6 +250,10 @@ def runs(
     """List all runs in the run store."""
     store = FilesystemRunStore(runs_dir)
     statuses = [store.read_status(run_id) for run_id in sorted(store.list_runs())]
+    if not statuses:
+        # On stderr: an empty list is the moment the caller needs to know
+        # which store was read, and stdout may be JSON someone is parsing.
+        typer.echo(f"No runs in {store.root}", err=True)
     if output_json:
         _echo_json([status.model_dump(mode="json") for status in statuses])
         return
@@ -654,6 +666,8 @@ def campaign_list(
     store = FilesystemRunStore(runs_dir)
     campaign_store = CampaignStore(store.root)
     states = [campaign_store.read_state(cid) for cid in campaign_store.list_campaigns()]
+    if not states:
+        typer.echo(f"No campaigns in {store.root}", err=True)
     if output_json:
         _echo_json([state.model_dump(mode="json") for state in states])
         return
