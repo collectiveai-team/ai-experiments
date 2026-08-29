@@ -26,6 +26,40 @@ from ai_experiments.schemas import (
 #: :meth:`FilesystemRunStore.update_status` refuses to write on top of one.
 SYNTHETIC_STATUS_KEY = "_synthetic"
 
+#: Where a project keeps its runs, relative to the project root.
+DEFAULT_RUNS_SUBDIR = Path("outputs/experiments/runs")
+
+#: What makes a directory the root of a project. The run store belongs to the
+#: project, not to whatever directory a command happened to run in.
+PROJECT_MARKERS = (".git", "pyproject.toml")
+
+
+def default_runs_root(start: str | Path | None = None) -> Path:
+    """Resolve the run store an `iax` command without `--runs-dir` should use.
+
+    An agent submits from the repo root and asks for status from a
+    subdirectory. Resolving against the cwd made those two different stores,
+    and the second one empty (#21), so the search walks up instead:
+
+    1. ``IAX_RUNS_DIR``, when set — an explicit answer beats any search.
+    2. The nearest directory at or above the start that already holds a store.
+       An existing store is the strongest evidence of where the runs live.
+    3. The nearest directory at or above the start holding a project marker.
+    4. The start directory, for a project that has neither.
+    """
+    override = os.environ.get("IAX_RUNS_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    candidates = (here, *here.parents)
+    for directory in candidates:
+        if (directory / DEFAULT_RUNS_SUBDIR).is_dir():
+            return directory / DEFAULT_RUNS_SUBDIR
+    for directory in candidates:
+        if any((directory / marker).exists() for marker in PROJECT_MARKERS):
+            return directory / DEFAULT_RUNS_SUBDIR
+    return here / DEFAULT_RUNS_SUBDIR
+
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` so no reader ever observes a partial file.
@@ -64,8 +98,10 @@ class FilesystemRunStore:
     def __init__(
         self, root: str | Path | None = None, capture_repro: bool = True
     ) -> None:
-        self.root = Path(
-            root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs")
+        self.root = (
+            Path(root).expanduser().resolve()
+            if root is not None
+            else default_runs_root()
         )
         self.capture_repro = capture_repro
 
