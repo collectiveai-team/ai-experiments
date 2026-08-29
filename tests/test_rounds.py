@@ -44,9 +44,7 @@ def _harness(tmp_path, agent_runner=None):
         store,
         CampaignStore(store.root),
         backend_factory=lambda goal: backend,
-        agent_runner_factory=(lambda goal, cid: agent_runner)
-        if agent_runner
-        else None,
+        agent_runner_factory=(lambda goal, cid: agent_runner) if agent_runner else None,
     )
     return orchestrator, store
 
@@ -78,9 +76,7 @@ def test_the_evaluate_record_carries_the_measured_values(tmp_path):
 
     state = _drive(orchestrator, orchestrator.start(_goal()))
 
-    records = RoundLog(
-        CampaignStore(store.root).campaign_dir(state.campaign_id)
-    ).read()
+    records = RoundLog(CampaignStore(store.root).campaign_dir(state.campaign_id)).read()
     evaluations = [r for r in records if r.stage == "evaluate"]
     assert evaluations
     values = evaluations[0].outcome["values"]

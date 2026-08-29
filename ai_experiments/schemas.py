@@ -327,6 +327,13 @@ class VariantSpec(BaseModel):
 
 class AnalysisSpec(BaseModel):
     agent_review: bool = False
+    #: Ask the agent for a verdict between rounds during ``iax loop``. The
+    #: agent can end a campaign it judges hopeless instead of burning the
+    #: whole budget on it.
+    review_between_rounds: bool = False
+    #: Let an accepted review widen the search space or the budget on its own.
+    #: Off by default: a loop that rewrites its own goal unasked is a surprise.
+    apply_agent_changes: bool = False
 
 
 class GoalSpec(BaseModel):

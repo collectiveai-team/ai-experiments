@@ -17,6 +17,7 @@ Exit codes are part of the CLI contract (see CONVENTIONS.md §6):
 | 1 | the thing asked for does not exist (`not_found`) |
 | 2 | the input is invalid — bad YAML, bad params (`invalid_input`) |
 | 3 | the execution backend could not be reached (`backend_unavailable`) |
+| 4 | the work ran, but the objective was not reached (`iax loop` only) |
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ EXIT_OK = 0
 EXIT_NOT_FOUND = 1
 EXIT_INVALID_INPUT = 2
 EXIT_BACKEND_UNAVAILABLE = 3
+#: `iax loop` only: the campaign finished without meeting the target. Not an
+#: error — the run happened — so it must not look like one to a caller.
+EXIT_GOAL_NOT_REACHED = 4
 
 _EXIT_FOR_CODE = {
     "not_found": EXIT_NOT_FOUND,

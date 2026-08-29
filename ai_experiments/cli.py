@@ -11,7 +11,13 @@ from pydantic import BaseModel
 from typer.core import TyperCommand
 
 from ai_experiments.backends.factory import backend_for_run, get_backend
-from ai_experiments.cli_support import IaxError, invalid_input, not_found, report
+from ai_experiments.cli_support import (
+    EXIT_GOAL_NOT_REACHED,
+    IaxError,
+    invalid_input,
+    not_found,
+    report,
+)
 from ai_experiments.schemas import ExperimentManifest, GoalSpec
 from ai_experiments.store import FilesystemRunStore
 
@@ -1024,3 +1030,89 @@ def campaign_rounds(
                     typer.echo(f"      error: {result['error']}")
         for rejection in record.rejected:
             typer.echo(f"  rejected:   {rejection.get('reason')}")
+
+
+@app.command("loop", cls=IaxCommand)
+def loop_goal(
+    config: Path = typer.Argument(..., help="Path to goal YAML"),
+    resume: Optional[str] = typer.Option(
+        None, "--resume", help="Continue an existing campaign instead of starting one"
+    ),
+    max_rounds: Optional[int] = typer.Option(
+        None, "--max-rounds", help="Stop after this many planning rounds"
+    ),
+    max_seconds: Optional[float] = typer.Option(
+        None, "--max-seconds", help="Stop after this much wall clock time"
+    ),
+    interval: float = typer.Option(
+        5.0, "--interval", help="Seconds between loop iterations"
+    ),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Print the report as JSON"),
+) -> None:
+    """Run the whole improvement loop and report whether the goal was reached.
+
+    This is the command an agent drives: it blocks until the campaign is
+    finished (or a limit is hit), prints one report, and exits 0 only when the
+    objective's target was actually reached. Exit 4 means the work ran and the
+    target was missed — the report says what the best trial was.
+    """
+    from ai_experiments.loop import run_loop
+
+    try:
+        goal = GoalSpec.from_yaml(config)
+    except Exception as exc:
+        invalid_input(f"invalid goal {config}: {exc}")
+
+    store = FilesystemRunStore(runs_dir)
+    if resume is not None:
+        _require_campaign(store, resume)
+
+    report = run_loop(
+        goal,
+        store,
+        campaign_id=resume,
+        max_rounds=max_rounds,
+        max_seconds=max_seconds,
+        interval_seconds=interval,
+    )
+
+    if output_json:
+        _echo_json(report)
+    else:
+        _print_loop_report(report)
+    if not report.target_reached:
+        raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
+
+
+def _print_loop_report(report) -> None:
+    typer.echo(f"{report.campaign_id}: {report.status} ({report.stop_reason})")
+    typer.echo(
+        f"  Loop:    {report.rounds} rounds, {report.trials} trials, "
+        f"{report.agent_calls} agent calls, {report.elapsed_seconds:g}s"
+    )
+    metric = report.objective.get("metric", "objective")
+    if report.best:
+        typer.echo(
+            f"  Best:    {report.best['trial_id']} {metric}={report.best['objective_value']:.6g}"
+        )
+        typer.echo(f"           params={report.best['params']}")
+    else:
+        typer.echo("  Best:    no trial produced a usable objective value")
+    target = report.objective.get("target")
+    if report.target_reached:
+        typer.echo(
+            f"  Target:  reached ({metric} {report.objective.get('mode')} {target})"
+        )
+    elif target is not None:
+        typer.echo(
+            f"  Target:  NOT reached (wanted {metric} {report.objective.get('mode')} {target})"
+        )
+    else:
+        typer.echo("  Target:  none set, so the loop ran to its budget")
+    for review in report.reviews:
+        if review.get("verdict"):
+            typer.echo(f"  Review:  {review['verdict']} — {review.get('reason', '')}")
+    typer.echo(f"  Rounds:  iax campaign rounds {report.campaign_id}")

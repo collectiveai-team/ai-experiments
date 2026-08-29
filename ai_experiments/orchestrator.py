@@ -80,6 +80,11 @@ class CampaignOrchestrator:
         #: The agent decision made during the current `advance()`, if any.
         self.last_decision: AgentDecision | None = None
 
+    def agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
+        """The agent this campaign talks to. One place, so every role — planner,
+        reviewer — gets the same command, timeout and transcript directory."""
+        return self._agent_runner_factory(goal, campaign_id)
+
     def _default_agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
         return CliAgentRunner(
             goal.agent.command,
@@ -534,7 +539,7 @@ class CampaignOrchestrator:
             return get_strategy(goal.strategy.fallback).plan(goal, state.trials, count)
 
         strategy = AgentStrategy(
-            self._agent_runner_factory(goal, state.campaign_id),
+            self.agent_runner(goal, state.campaign_id),
             fallback=goal.strategy.fallback,
         )
         params = strategy.plan(goal, state.trials, count)

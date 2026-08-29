@@ -76,6 +76,54 @@ This works identically on the local backend (the worker tails stdout) and on
 remote Ray clusters with no shared filesystem (metrics are extracted from job
 logs).
 
+## One goal, one answer (`iax loop`)
+
+`iax run` is for a human watching a dashboard. `iax loop` is for an agent: it
+starts the campaign, drives it to a conclusion, prints one report, and exits.
+
+```bash
+iax loop goal.yaml --json            # blocks until the loop ends
+echo $?                              # 0 = target reached, 4 = it was not
+```
+
+```json
+{
+  "campaign_id": "cmp_20260829_1",
+  "status": "completed",
+  "stop_reason": "target_reached",
+  "target_reached": true,
+  "rounds": 4,
+  "trials": 12,
+  "best": {"trial_id": "t_009", "objective_value": 0.0041, "params": {"x": 1.94}}
+}
+```
+
+Exit code 4 is not an error: the work ran, the objective was not met. A caller
+must be able to tell that apart from a bad goal file (2) or an unreachable
+cluster (3), which is why it has a code of its own.
+
+The loop stops by itself. `--max-rounds` and `--max-seconds` bound it further;
+either one leaves the campaign `running`, so a later `iax loop --resume
+<campaign_id>` continues the same campaign instead of starting a new one.
+
+### Review between rounds
+
+With `strategy: agent`, the agent can also be asked to judge the campaign
+after each round, not just to propose the next one:
+
+```yaml
+analysis:
+  review_between_rounds: true    # ask the agent for a verdict between rounds
+  apply_agent_changes: true      # let an accepted verdict edit the goal
+```
+
+The verdict is `continue`, `stop`, or `change_goal`. A `stop` ends the campaign
+with the agent's reason instead of burning the rest of the budget on a goal
+that cannot be reached. A `change_goal` may widen the search space or the
+budget — and nothing else: the objective metric stays fixed, because every
+value already recorded was measured against it. Each review is appended to
+`rounds.jsonl` as a `review` stage, so the decision is auditable afterwards.
+
 ## Agent-planned rounds (`strategy: agent`)
 
 The built-in strategies search a fixed space by fixed rules. `strategy: agent`
@@ -362,6 +410,10 @@ iax cancel <run_id>
 iax escalations
 iax leaderboard
 
+# one goal in, one answer out (the agent entry point)
+iax loop goal.yaml --json --max-rounds 20    # exit 0 = target reached, 4 = not
+iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
+
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
 iax campaign start goal.yaml
@@ -386,6 +438,7 @@ agent can branch on the result instead of parsing prose:
 | 1 | `not_found` | the run, campaign, or bundle does not exist |
 | 2 | `invalid_input` | bad manifest, bad goal, params outside the search space |
 | 3 | `backend_unavailable` | the execution backend could not be reached |
+| 4 | — | `iax loop` only: the loop ran, the objective was not reached |
 
 With `--json` the error is one object on **stdout**; without it, one line on
 **stderr**. Successful output always goes to stdout.
