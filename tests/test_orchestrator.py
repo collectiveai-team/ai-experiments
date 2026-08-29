@@ -378,3 +378,27 @@ def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
     finished = [t for t in state.trials if t.status == "completed"]
     assert finished
     assert all("no metrics" in (t.error or "") for t in finished)
+
+
+def test_exhausted_search_space_ends_the_campaign(tmp_path):
+    """A grid smaller than max_trials must terminate, not sit in `running`
+    forever with the planner returning [] every tick (#15)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(
+        _goal(
+            search_space={"x": {"type": "choice", "values": [1.0, 2.0, 3.0]}},
+            budget=BudgetSpec(max_trials=50, max_parallel=2),
+            strategy=StrategySpec(name="grid", seed=1),
+        )
+    )
+    for _ in range(20):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+
+    assert state.status == "completed"
+    assert state.stop_reason == "search_space_exhausted"
+    assert len(state.trials) == 3
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    assert any("search space" in e.message for e in events)

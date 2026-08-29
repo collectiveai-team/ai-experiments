@@ -190,26 +190,59 @@ class CampaignOrchestrator:
 
         stop_reason = self._stop_reason(state, goal)
         if stop_reason:
-            self._cancel_active(state, backend)
-            state.status = (
-                "failed" if stop_reason in FAILURE_STOP_REASONS else "completed"
-            )
-            state.stop_reason = stop_reason
-            self.campaign_store.write_state(state)
-            self.campaign_store.append_event(
-                campaign_id,
-                RunEvent(message="campaign finished", details={"reason": stop_reason}),
-            )
-            self._write_summary(state, goal)
-            return state
+            return self._finish(state, goal, backend, stop_reason)
 
         submitted = self._fill_capacity(state, goal, backend)
         if submitted:
             state.rounds += 1
+
+        # The planner can run dry before `max_trials` — a grid or a small
+        # discrete space has finitely many points. With nothing in flight and
+        # nothing queued, no later tick can change that, so the campaign would
+        # otherwise report `running` forever (#15).
+        if not self._has_work(state):
+            self.campaign_store.append_event(
+                campaign_id,
+                RunEvent(
+                    level="warning",
+                    message="planner exhausted the search space",
+                    details={
+                        "trials": len(state.trials),
+                        "max_trials": goal.budget.max_trials,
+                        "strategy": goal.strategy.name,
+                    },
+                ),
+            )
+            return self._finish(state, goal, backend, "search_space_exhausted")
+
         if finished_now and goal.analysis.agent_review:
             self._request_agent_review(state, goal)
 
         self.campaign_store.write_state(state)
+        return state
+
+    def _has_work(self, state: CampaignState) -> bool:
+        return any(
+            t.status in ACTIVE_TRIAL_STATES or t.status == "planned"
+            for t in state.trials
+        )
+
+    def _finish(
+        self,
+        state: CampaignState,
+        goal: GoalSpec,
+        backend: ExperimentBackend,
+        stop_reason: str,
+    ) -> CampaignState:
+        self._cancel_active(state, backend)
+        state.status = "failed" if stop_reason in FAILURE_STOP_REASONS else "completed"
+        state.stop_reason = stop_reason
+        self.campaign_store.write_state(state)
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(message="campaign finished", details={"reason": stop_reason}),
+        )
+        self._write_summary(state, goal)
         return state
 
     # -- internals -------------------------------------------------------------
