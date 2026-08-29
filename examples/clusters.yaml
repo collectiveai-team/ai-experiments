@@ -11,15 +11,19 @@ clusters:
     address: http://vader:8265
     description: "on-prem box running a Ray head"
 
+  # `cluster_config` is your own Ray cluster launcher YAML -- the file you
+  # would pass to `ray up`. iax does not ship one; it runs `ray up`/`ray down`
+  # on the path you give here, resolved from the directory you run iax in.
+  # See https://docs.ray.io/en/latest/cluster/vms/index.html
   aws-gpu:
     provider: aws
     address: http://10.0.0.5:8265            # head node dashboard
-    cluster_config: infra/ray-aws.yaml        # used by `iax cluster up/down`
+    cluster_config: ./ray-aws.yaml           # used by `iax cluster up/down`
 
   gcp-tpu:
     provider: gcp
-    cluster_config: infra/ray-gcp.yaml
+    cluster_config: ./ray-gcp.yaml
 
   azure-a100:
     provider: azure
-    cluster_config: infra/ray-azure.yaml
+    cluster_config: ./ray-azure.yaml

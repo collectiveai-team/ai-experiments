@@ -101,8 +101,23 @@ iax campaign resume <campaign_id>            # replans from the full trial histo
 ```
 
 A finished campaign writes `summary.json` in
-`<runs>/_campaigns/<campaign_id>/`. `stop_reason` is one of `target_reached`,
-`budget_exhausted`, `max_hours_exceeded`, or `user_requested`.
+`<runs>/_campaigns/<campaign_id>/`. `stop_reason` is one of:
+
+| `stop_reason` | what it means |
+|---|---|
+| `target_reached` | the objective target was met; the best trial is the answer |
+| `budget_exhausted` | `max_trials` were run without reaching the target |
+| `max_hours_exceeded` | `budget.max_hours` elapsed |
+| `gpu_hours_exhausted` | `budget.max_gpu_hours` were spent |
+| `search_space_exhausted` | the planner ran out of points; widen the goal |
+| `backend_unavailable` | no trial could be submitted; start the cluster |
+| `objective_not_reported` | trials ran but never reported the objective metric |
+| `agent_requested_stop` | the reviewing agent judged the campaign hopeless |
+| `user_requested` | `iax campaign stop` |
+
+Only `target_reached` answers the question. Every other reason means the
+campaign stopped for a reason of its own, and the best trial so far is a
+partial result — say which one it was when you report.
 
 ## Inject your own analysis (opt-in tokens)
 
