@@ -17,18 +17,29 @@ import shlex
 import shutil
 from pathlib import Path
 
-from ai_experiments.schemas import ExperimentManifest
+from ai_experiments.schemas import ExperimentManifest, GoalSpec, WorkloadSpec
+
+#: What every caller prefixes a warning with, so one grep finds them all.
+WARNING_PREFIX = "Warning: "
 
 
-def workload_warnings(manifest: ExperimentManifest) -> list[str]:
-    """Reasons this workload looks unable to start on this machine."""
+def workload_warnings(
+    source: ExperimentManifest | GoalSpec | WorkloadSpec,
+) -> list[str]:
+    """Reasons this workload looks unable to start on this machine.
+
+    Takes a manifest, a goal, or the workload itself: a campaign runs every
+    trial from one `GoalSpec.workload`, so the same check answers for the
+    whole campaign (#32).
+    """
+    workload = source if isinstance(source, WorkloadSpec) else source.workload
     warnings: list[str] = []
-    working_dir = Path(manifest.workload.working_dir)
+    working_dir = Path(workload.working_dir)
     if not working_dir.is_dir():
         warnings.append(f"working_dir does not exist: {working_dir}")
 
     try:
-        argv = shlex.split(manifest.workload.entrypoint)
+        argv = shlex.split(workload.entrypoint)
     except ValueError as exc:
         return [*warnings, f"entrypoint is not a valid command line: {exc}"]
     if not argv:

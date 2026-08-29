@@ -138,3 +138,122 @@ def test_logs_worker_reports_a_missing_log(tmp_path):
 
     assert result.exit_code == 1
     assert "no worker log" in result.stderr
+
+
+# -- submit and campaign start run the same check (#32) ---------------------
+
+
+def _goal_file(tmp_path, entrypoint: str, working_dir: str):
+    path = tmp_path / "goal.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "goal": "minimize loss",
+                "name": "preflight",
+                "objective": {"metric": "loss", "mode": "min", "target": 0.0},
+                "search_space": {"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+                "workload": {"entrypoint": entrypoint, "working_dir": working_dir},
+                "budget": {"max_trials": 1, "max_parallel": 1},
+            }
+        )
+    )
+    return path
+
+
+def test_submit_warns_on_stderr_and_still_submits(tmp_path):
+    """The warning must not reach stdout: `--json` output is parsed."""
+    path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
+
+    result = runner.invoke(
+        app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs"), "--json"]
+    )
+
+    assert result.exit_code == 0
+    assert "is not on PATH" in result.stderr
+    assert json.loads(result.stdout)["run_id"]
+
+
+def test_submit_is_quiet_about_a_runnable_workload(tmp_path):
+    path = _manifest_file(tmp_path, sys.executable, str(tmp_path))
+
+    result = runner.invoke(
+        app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs")]
+    )
+
+    assert result.exit_code == 0
+    assert "Warning" not in result.stderr
+
+
+def test_submit_strict_refuses_and_creates_no_run(tmp_path):
+    runs_dir = tmp_path / "runs"
+    path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
+
+    result = runner.invoke(
+        app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"]
+    )
+
+    assert result.exit_code == 1
+    assert "is not on PATH" in result.stderr
+    listed = runner.invoke(app, ["runs", "--runs-dir", str(runs_dir), "--json"])
+    assert json.loads(listed.stdout) == []
+
+
+def test_campaign_start_warns_once_before_it_spends_the_budget(tmp_path):
+    path = _goal_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
+
+    result = runner.invoke(
+        app,
+        ["campaign", "start", str(path), "--runs-dir", str(tmp_path / "runs")],
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr.count("is not on PATH") == 1
+
+
+def test_campaign_start_strict_refuses_and_creates_no_campaign(tmp_path):
+    runs_dir = tmp_path / "runs"
+    path = _goal_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
+
+    result = runner.invoke(
+        app,
+        ["campaign", "start", str(path), "--runs-dir", str(runs_dir), "--strict"],
+    )
+
+    assert result.exit_code == 1
+    listed = runner.invoke(
+        app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"]
+    )
+    assert json.loads(listed.stdout) == []
+
+
+def test_a_campaign_records_the_warning_where_an_agent_reads_it(tmp_path):
+    """A campaign started from the API never passes through the CLI."""
+    from ai_experiments.orchestrator import CampaignOrchestrator
+    from ai_experiments.schemas import GoalSpec
+    from ai_experiments.store import FilesystemRunStore
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec.from_yaml(_goal_file(tmp_path, "not-a-binary", str(tmp_path)))
+
+    state = CampaignOrchestrator(store, campaign_store).start(goal)
+
+    messages = [e.message for e in campaign_store.read_events(state.campaign_id)]
+    assert "workload may not start" in messages
+
+
+def test_a_runnable_campaign_records_no_warning(tmp_path):
+    from ai_experiments.orchestrator import CampaignOrchestrator
+    from ai_experiments.schemas import GoalSpec
+    from ai_experiments.store import FilesystemRunStore
+    from ai_experiments.store.campaign import CampaignStore
+
+    store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec.from_yaml(_goal_file(tmp_path, sys.executable, str(tmp_path)))
+
+    state = CampaignOrchestrator(store, campaign_store).start(goal)
+
+    messages = [e.message for e in campaign_store.read_events(state.campaign_id)]
+    assert "workload may not start" not in messages
