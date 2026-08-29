@@ -29,9 +29,11 @@ def main() -> None:
     params = json.loads(os.environ.get("IAX_PARAMS") or "{}")
     lr = float(params.get("lr", 0.01))
 
+    # A stand-in for training: the loss falls by `lr` each step. Replace the
+    # body of this loop with a real step; keep the report() call.
     loss = 1.0
-    for step in range(20):
-        loss = max(loss - lr, 0.0)  # replace with a real training step
+    for step in range(100):
+        loss = max(loss - lr, 0.0)
         report(step, loss=loss)
 
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")

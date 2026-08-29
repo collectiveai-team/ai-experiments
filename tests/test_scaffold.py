@@ -66,7 +66,7 @@ def test_workload_template_runs_and_reports_metrics(tmp_path):
     metric_lines = [
         line for line in result.stdout.splitlines() if line.startswith("IAX_METRIC ")
     ]
-    assert len(metric_lines) == 20
+    assert len(metric_lines) == 100
     assert (artifacts / "result.json").exists()
 
 
@@ -168,3 +168,27 @@ def test_new_manifest_from_an_unknown_run_is_not_found(tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+def test_the_scaffolded_goal_and_workload_reach_their_target(tmp_path):
+    """`iax new` twice, then `iax loop`, is a new user's first five minutes.
+
+    If that misses its target, the templates teach that the tool does not
+    work. So the pair is held to reaching it.
+    """
+    from ai_experiments.api import goal_from_yaml, run_loop
+
+    scaffold.write("workload", tmp_path / "train.py", force=False)
+    scaffold.write("goal", tmp_path / "goal.yaml", force=False)
+
+    goal = goal_from_yaml(tmp_path / "goal.yaml")
+    goal.workload.working_dir = str(tmp_path)
+    goal.workload.entrypoint = sys.executable
+    goal.workload.args = ["train.py"]
+
+    report = run_loop(
+        goal, runs_dir=tmp_path / "runs", interval_seconds=0, max_seconds=180
+    )
+
+    assert report.target_reached, report.stop_reason
+    assert report.best["objective_value"] <= goal.objective.target

@@ -941,7 +941,7 @@ def new_workload(
 
 _NEXT_STEP = {
     "manifest": "iax validate {path} && iax submit {path} --json",
-    "goal": "iax campaign validate {path} && iax campaign start {path}",
+    "goal": "iax campaign validate {path} && iax loop {path}",
     "workload": "point a manifest's workload.args at {path}",
 }
 
