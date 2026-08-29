@@ -22,12 +22,18 @@ server = [
 mlflow = [
   "mlflow-skinny>=2.10.0",
 ]
+# Off Linux there is no /proc, so the daemon cannot tell which process a pid
+# names and refuses to kill an orphaned workload. psutil restores that (#31).
+psutil = [
+  "psutil>=5.9.0",
+]
 dev = [
   "pytest>=8.0.0",
   "httpx>=0.27.0",
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
   "ruff>=0.4.0",
+  "psutil>=5.9.0",
 ]
 
 [project.scripts]

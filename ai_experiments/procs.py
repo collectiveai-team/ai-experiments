@@ -6,9 +6,15 @@ anything acts on it -- and signalling that process would be a far worse bug
 than the orphan it was meant to clean up.
 
 Every decision here is therefore gated on an *identity*: the process start
-time the kernel reports in ``/proc/<pid>/stat``, which is fixed for the life
-of a process and cannot be shared by a later process that reuses its pid. A
-pid whose identity cannot be confirmed is never signalled.
+time the kernel reports, which is fixed for the life of a process and cannot
+be shared by a later process that reuses its pid. A pid whose identity cannot
+be confirmed is never signalled.
+
+The identity comes from ``/proc/<pid>/stat`` on Linux, and from ``psutil``
+when there is no ``/proc`` (macOS, Windows). Without either, identity is
+unavailable: an orphaned workload is reported but never killed, and a zombie
+supervisor reads as alive. Install the ``psutil`` extra to get the same
+guarantee off Linux (#31).
 """
 
 from __future__ import annotations
@@ -22,6 +28,24 @@ from pathlib import Path
 TERMINATE_GRACE_SECONDS = 5.0
 
 
+def identity_supported() -> bool:
+    """Whether this machine can identify a process behind a pid at all.
+
+    False means the two guarantees built on identity are off: the daemon
+    cannot kill an orphaned workload, and it cannot tell a zombie supervisor
+    from a healthy one. Callers say so where an operator will see it.
+    """
+    return _proc_available() or _psutil() is not None
+
+
+#: What to tell an operator whose platform cannot identify a process.
+IDENTITY_UNAVAILABLE_HINT = (
+    "no /proc and no psutil: this machine cannot verify which process a pid "
+    "names, so an orphaned workload will be reported but not killed. "
+    "Install `ai-experiments[psutil]` to enable it."
+)
+
+
 def pid_alive(pid: int) -> bool:
     """Whether ``pid`` names a live process.
 
@@ -32,9 +56,9 @@ def pid_alive(pid: int) -> bool:
     a liveness check built on that alone reports a dead supervisor as healthy
     and the run is supervised by nobody, forever.
     """
-    if _proc_available():
+    if identity_supported():
         return process_identity(pid) is not None
-    # No /proc (macOS, Windows): fall back to signal 0, which cannot see the
+    # Neither /proc nor psutil: fall back to signal 0, which cannot see the
     # difference. Better a missed zombie than reaping every healthy run.
     try:
         os.kill(pid, 0)
@@ -49,15 +73,29 @@ def _proc_available() -> bool:
     return Path("/proc/self/stat").exists()
 
 
+def _psutil():
+    """The optional psutil module, or None when it is not installed."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil
+
+
 def process_identity(pid: int) -> str | None:
     """Kernel start time of ``pid``, or ``None`` when there is no such process.
 
     The value is opaque: callers only ever compare it to one recorded earlier
     for the same pid. ``None`` means "not a running process" -- the pid is
-    gone, is a zombie awaiting reaping, or the platform does not expose
-    ``/proc`` (macOS, Windows), in which case identity cannot be established
-    at all and callers must refuse to signal.
+    gone, it is a zombie awaiting reaping, or this machine cannot tell (no
+    ``/proc`` and no ``psutil``), in which case callers must refuse to signal.
+
+    Two sources produce two different strings for the same process, so an
+    identity recorded before psutil was installed will not match one read
+    after. A mismatch refuses to signal, which is the safe direction.
     """
+    if not _proc_available():
+        return _psutil_identity(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
@@ -72,6 +110,23 @@ def process_identity(pid: int) -> str | None:
     if state == "Z":  # exited, still in the table until its parent reaps it
         return None
     return start_ticks
+
+
+def _psutil_identity(pid: int) -> str | None:
+    """The same identity off Linux, when the optional extra is installed."""
+    psutil = _psutil()
+    if psutil is None:
+        return None
+    try:
+        process = psutil.Process(pid)
+        if process.status() == psutil.STATUS_ZOMBIE:
+            return None
+        # Six decimals: the kernel's own resolution, and stable across reads.
+        return f"{process.create_time():.6f}"
+    except Exception:
+        # NoSuchProcess, AccessDenied, and anything else psutil raises for a
+        # pid it cannot describe. Unidentifiable is the safe answer.
+        return None
 
 
 def terminate_workload(
@@ -91,6 +146,8 @@ def terminate_workload(
     ``identity_unverifiable``
         A live pid, but no identity to check it against -- refused, because
         the pid may since have been reused. Reported so an operator can act.
+        A machine with neither ``/proc`` nor ``psutil`` reports every live
+        workload this way, and says so in ``hint``.
     ``identity_mismatch``
         The pid has been reused by an unrelated process -- refused.
     ``terminated`` / ``killed``
@@ -103,7 +160,13 @@ def terminate_workload(
     report: dict[str, object] = {"pid": pid}
     current = process_identity(pid)
     if current is None:
-        return {**report, "outcome": "already_exited"}
+        if identity_supported():
+            return {**report, "outcome": "already_exited"}
+        # This machine cannot identify any process, so "no identity" is not
+        # evidence that the pid is gone. Calling a live orphan `already_exited`
+        # would be the same lie the reaper exists to stop telling (#31).
+        outcome = "identity_unverifiable" if pid_alive(pid) else "already_exited"
+        return {**report, "outcome": outcome, "hint": IDENTITY_UNAVAILABLE_HINT}
     if not isinstance(identity, str) or not identity:
         return {**report, "outcome": "identity_unverifiable"}
     if current != identity:

@@ -59,6 +59,15 @@ Each run lives under `<runs_dir>/<run_id>/`:
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs`.
 
+**Orphan reaping needs Linux or the `psutil` extra.** The daemon kills a
+workload whose supervisor died only when it can prove the recorded pid still
+names the same process. It reads that proof from `/proc` on Linux, and from
+`psutil` when there is no `/proc` (macOS, Windows). With neither, the run
+records `orphan reaping is disabled on this machine` at start, the reap report
+comes back `identity_unverifiable` with a `hint`, and the workload keeps
+running — read `status.details.workload_pid` and kill it by hand. Install
+`ai-experiments[psutil]` to make the reaper work everywhere.
+
 On Ray, `iax logs` returns harness events only. Worker stdout and tracebacks surface
 through `status.error` and `status.details.ray_log_tail`; Ray condition hints live in
 `status.details.ray_condition`. `exit_code` is local-backend-only and remains `None`

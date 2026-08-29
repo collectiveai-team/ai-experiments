@@ -12,7 +12,11 @@ from pathlib import Path
 from types import FrameType
 
 from ai_experiments.monitoring.rules import event_from_log_line
-from ai_experiments.procs import process_identity
+from ai_experiments.procs import (
+    IDENTITY_UNAVAILABLE_HINT,
+    identity_supported,
+    process_identity,
+)
 from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import ExperimentManifest, MetricPoint, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
@@ -119,12 +123,25 @@ class _Supervisor:
         )
         # workload_identity pins which process that pid is, so a later reaper
         # cannot signal an unrelated process that inherited the number.
+        identity = process_identity(self.process.pid)
         self._update_status(
             details={
                 "workload_pid": self.process.pid,
-                "workload_identity": process_identity(self.process.pid),
+                "workload_identity": identity,
             }
         )
+        if identity is None and not identity_supported():
+            # Say it once, here, where the run's own log keeps it. Otherwise
+            # the guarantee is off and only a return value nobody reads says
+            # so (#31).
+            self.store.append_event(
+                self.run_id,
+                RunEvent(
+                    level="warning",
+                    message="orphan reaping is disabled on this machine",
+                    details={"reason": IDENTITY_UNAVAILABLE_HINT},
+                ),
+            )
 
         heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True)
         heartbeat.start()
