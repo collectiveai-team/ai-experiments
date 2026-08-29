@@ -124,6 +124,35 @@ budget — and nothing else: the objective metric stays fixed, because every
 value already recorded was measured against it. Each review is appended to
 `rounds.jsonl` as a `review` stage, so the decision is auditable afterwards.
 
+## The same loop from python
+
+`iax` is one caller of the library, not the library. Everything the CLI does
+is a function in `ai_experiments.api`, taking plain data and returning plain
+data, so an agent in a chat session can drive a campaign without a shell:
+
+```python
+from ai_experiments import api
+
+goal = api.goal_from_dict({...})          # or api.goal_from_yaml("goal.yaml")
+report = api.run_loop(goal, max_rounds=20)
+
+if not report.target_reached:             # think, then continue the same one
+    api.suggest_trial(report.campaign_id, {"lr": 3e-4}, note="the flat region")
+    api.run_loop(goal, campaign_id=report.campaign_id)
+```
+
+| function | answers |
+|---|---|
+| `start_campaign(goal)` | begin, and submit the first round |
+| `advance_campaign(id)` | one loop step, when the agent wants to think between rounds |
+| `campaign_report(id)` | where it stands, without advancing it |
+| `campaign_rounds(id)` | what the loop believed at each round, oldest first |
+| `suggest_trial(id, params)` | queue one trial the agent chose itself |
+| `run_loop(goal)` | all of the above, until it ends |
+
+Failures raise `IaxError`, carrying the same `code` and `exit_code` the CLI
+reports, so an agent handles a bad goal the same way whichever surface it uses.
+
 ## Agent-planned rounds (`strategy: agent`)
 
 The built-in strategies search a fixed space by fixed rules. `strategy: agent`
