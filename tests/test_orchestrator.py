@@ -321,3 +321,60 @@ def test_failed_trial_value_still_visible_to_the_agent(tmp_path):
     ]
     assert failed and failed[0]["status"] == "failed"
     assert failed[0]["error"] == "OOM"
+
+
+def test_typod_objective_metric_is_reported_on_the_trial(tmp_path):
+    """A workload that reports metrics but not *the* objective metric must
+    say so on the trial and in the events (#11)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(objective=ObjectiveSpec(metric="val_loss")))
+    state = orchestrator.advance(state.campaign_id)
+
+    finished = [t for t in state.trials if t.status in {"completed", "failed"}]
+    assert finished
+    assert all(t.objective_value is None for t in finished)
+    assert all("val_loss" in (t.error or "") for t in finished)
+    assert all("loss" in (t.error or "") for t in finished)
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    assert any(e.level == "warning" and "objective" in e.message for e in events)
+
+
+def test_objective_never_reported_stops_the_campaign_early(tmp_path):
+    """The budget must not be burned silently on a metric nobody reports."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(
+        _goal(
+            objective=ObjectiveSpec(metric="val_loss"),
+            budget=BudgetSpec(max_trials=20, max_parallel=2),
+        )
+    )
+    for _ in range(20):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+
+    assert state.status == "failed"
+    assert state.stop_reason == "objective_not_reported"
+    assert len(state.trials) < 20
+
+
+def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
+    """No metrics at all is a different diagnosis from the wrong metric name."""
+    orchestrator, backend = _orchestrator(tmp_path)
+
+    def silent_inspect(run_id: str) -> RunStatus:
+        status = backend.store.read_status(run_id)
+        if status.status in {"submitted", "running"}:
+            return backend.store.update_status(
+                run_id, status="completed", completed_at=utc_now()
+            )
+        return status
+
+    backend.inspect = silent_inspect  # type: ignore[method-assign]
+    state = orchestrator.start(_goal())
+    state = orchestrator.advance(state.campaign_id)
+
+    finished = [t for t in state.trials if t.status == "completed"]
+    assert finished
+    assert all("no metrics" in (t.error or "") for t in finished)

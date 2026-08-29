@@ -3,28 +3,80 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
 from ai_experiments.store import FilesystemRunStore
 
 
+class ObjectiveReading(BaseModel):
+    """What a finished run actually reported about the objective.
+
+    ``value`` alone cannot distinguish "the workload never reported" from
+    "the objective metric is misspelled" from "every value was NaN" — three
+    failures with three different fixes. ``miss_reason`` names which one it
+    was, so the orchestrator can put it on the trial instead of scoring
+    ``null`` in silence (#11).
+    """
+
+    value: float | None = None
+    final_metrics: dict[str, float] = Field(default_factory=dict)
+    observed_metrics: list[str] = Field(default_factory=list)
+    miss_reason: Literal["no_metrics", "metric_absent", "not_finite"] | None = None
+
+    def miss_message(self, metric: str) -> str | None:
+        if self.miss_reason is None:
+            return None
+        if self.miss_reason == "no_metrics":
+            return (
+                "no metrics reported: the workload printed no IAX_METRIC lines, "
+                f"so objective '{metric}' could not be scored"
+            )
+        observed = ", ".join(self.observed_metrics) or "(none)"
+        if self.miss_reason == "metric_absent":
+            return (
+                f"objective metric '{metric}' was never reported; "
+                f"observed metrics: {observed}"
+            )
+        return (
+            f"objective metric '{metric}' was reported but never finite "
+            f"(NaN/inf only); observed metrics: {observed}"
+        )
+
+
 def extract_objective(
     store: FilesystemRunStore, run_id: str, objective: ObjectiveSpec
-) -> tuple[float | None, dict[str, float]]:
-    """Best observed objective value for a run, plus the final metric snapshot."""
+) -> ObjectiveReading:
+    """Best observed objective value for a run, plus why it is missing."""
     metrics = store.read_metrics(run_id)
+    if not metrics:
+        return ObjectiveReading(miss_reason="no_metrics")
+
+    observed = sorted({name for point in metrics for name in point.values})
+    final = dict(metrics[-1].values)
+    if objective.metric not in observed:
+        return ObjectiveReading(
+            final_metrics=final,
+            observed_metrics=observed,
+            miss_reason="metric_absent",
+        )
+
     values = [
         point.values[objective.metric]
         for point in metrics
         if objective.metric in point.values
         and math.isfinite(point.values[objective.metric])
     ]
-    best = None
-    if values:
-        best = max(values) if objective.mode == "max" else min(values)
-    final = dict(metrics[-1].values) if metrics else {}
-    return best, final
+    if not values:
+        return ObjectiveReading(
+            final_metrics=final,
+            observed_metrics=observed,
+            miss_reason="not_finite",
+        )
+    best = max(values) if objective.mode == "max" else min(values)
+    return ObjectiveReading(value=best, final_metrics=final, observed_metrics=observed)
 
 
 def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool:

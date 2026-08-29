@@ -35,6 +35,13 @@ from ai_experiments.store.campaign import CampaignStore
 
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
 
+#: Stop reasons that mean the campaign broke rather than finished.
+FAILURE_STOP_REASONS = {"objective_not_reported"}
+
+#: How many trials may complete without a usable objective before the
+#: campaign is declared broken instead of merely unlucky.
+MIN_TRIALS_BEFORE_CONTRACT_CHECK = 2
+
 _RUN_TO_TRIAL: dict[RunState, TrialState] = {
     "submitted": "submitted",
     "running": "running",
@@ -184,7 +191,9 @@ class CampaignOrchestrator:
         stop_reason = self._stop_reason(state, goal)
         if stop_reason:
             self._cancel_active(state, backend)
-            state.status = "completed"
+            state.status = (
+                "failed" if stop_reason in FAILURE_STOP_REASONS else "completed"
+            )
             state.stop_reason = stop_reason
             self.campaign_store.write_state(state)
             self.campaign_store.append_event(
@@ -236,11 +245,31 @@ class CampaignOrchestrator:
                     run_status.started_at or run_status.submitted_at,
                     trial.completed_at,
                 )
-                value, final = extract_objective(
+                reading = extract_objective(
                     self.run_store, trial.run_id, goal.objective
                 )
-                trial.objective_value = value
-                trial.final_metrics = final
+                trial.objective_value = reading.value
+                trial.final_metrics = reading.final_metrics
+                miss = reading.miss_message(goal.objective.metric)
+                if miss and mapped == "completed":
+                    # A trial that ran to completion without producing the
+                    # objective is a broken contract, not a bad result. Say so
+                    # on the trial; scoring it `null` in silence burns the
+                    # whole budget with no explanation (#11).
+                    trial.error = miss
+                    self.campaign_store.append_event(
+                        state.campaign_id,
+                        RunEvent(
+                            level="warning",
+                            message="trial reported no usable objective",
+                            details={
+                                "trial_id": trial.trial_id,
+                                "objective_metric": goal.objective.metric,
+                                "observed_metrics": reading.observed_metrics,
+                                "reason": reading.miss_reason,
+                            },
+                        ),
+                    )
                 finished.append(trial)
                 self.campaign_store.append_event(
                     state.campaign_id,
@@ -249,7 +278,7 @@ class CampaignOrchestrator:
                         details={
                             "trial_id": trial.trial_id,
                             "status": mapped,
-                            "objective_value": value,
+                            "objective_value": reading.value,
                             "params": trial.params,
                         },
                     ),
@@ -261,6 +290,10 @@ class CampaignOrchestrator:
         state.best_trial_id = best.trial_id if best else None
 
     def _stop_reason(self, state: CampaignState, goal: GoalSpec) -> str | None:
+        contract_broken = self._objective_contract_broken(state)
+        if contract_broken:
+            return contract_broken
+
         best = best_trial(state, goal.objective.mode)
         target = goal.objective.target
         if best is not None and target is not None and best.objective_value is not None:
@@ -289,6 +322,20 @@ class CampaignOrchestrator:
         if len(state.trials) >= goal.budget.max_trials and not active and not planned:
             return "budget_exhausted"
         return None
+
+    def _objective_contract_broken(self, state: CampaignState) -> str | None:
+        """Stop early when the workload never reports the objective.
+
+        Continuing would spend the whole budget on trials that can only score
+        ``null`` — the campaign would then end as a "successful"
+        ``budget_exhausted`` with no best trial and no explanation (#11).
+        """
+        completed = [t for t in state.trials if t.status == "completed"]
+        if len(completed) < MIN_TRIALS_BEFORE_CONTRACT_CHECK:
+            return None
+        if any(t.objective_value is not None for t in completed):
+            return None
+        return "objective_not_reported"
 
     def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
         """GPU-hours consumed so far: recorded for finished trials, a live
