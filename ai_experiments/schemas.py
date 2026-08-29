@@ -287,16 +287,58 @@ class BudgetSpec(BaseModel):
 
 
 class StrategySpec(BaseModel):
-    name: Literal["grid", "random", "adaptive"] = "adaptive"
+    name: Literal["grid", "random", "adaptive", "agent"] = "adaptive"
     seed: int = 0
     batch_size: int | None = None
     grid_resolution: int = 4
     exploration: float = 0.3
     top_k: int = 3
+    #: Used when ``name == "agent"`` and the agent cannot deliver a usable
+    #: round. A campaign must keep making progress without a working agent.
+    fallback: Literal["grid", "random", "adaptive"] = "adaptive"
+
+
+class AgentSpec(BaseModel):
+    """How the harness reaches the agent that plans and reviews rounds.
+
+    The command is operator-supplied configuration. It receives the brief on
+    stdin, never as an argument (CONVENTIONS.md §9).
+    """
+
+    command: str = "claude"
+    timeout_seconds: int = 600
+    #: Hard ceiling on agent invocations per campaign. An unattended loop that
+    #: keeps asking is an unattended loop that keeps spending.
+    max_calls: int = 20
+
+
+class VariantSpec(BaseModel):
+    """Whether, and how far, the loop may change the workload's own code.
+
+    Off by default: a loop that edits code without being asked is a surprise.
+    """
+
+    enabled: bool = False
+    #: What gets copied for each variant. Defaults to ``workload.working_dir``.
+    source_dir: str | None = None
+    #: Glob allowlist for the files a variant may write. Empty means any path
+    #: inside the copied workload.
+    editable_paths: list[str] = Field(default_factory=list)
+    #: Run inside the variant before any trial uses it. A non-zero exit means
+    #: the variant is discarded instead of costing a whole round.
+    smoke_command: list[str] = Field(default_factory=list)
+    smoke_timeout_seconds: int = 120
 
 
 class AnalysisSpec(BaseModel):
     agent_review: bool = False
+    #: Ask the agent for a verdict between rounds during ``iax loop``. The
+    #: agent can end a campaign it judges hopeless instead of burning the
+    #: whole budget on it.
+    review_between_rounds: bool = False
+    #: Let an accepted review widen the search space or the budget on its own.
+    #: Off by default: a loop that rewrites its own goal unasked is a surprise.
+    apply_agent_changes: bool = False
 
 
 class GoalSpec(BaseModel):
@@ -314,6 +356,8 @@ class GoalSpec(BaseModel):
     workload: WorkloadSpec
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
+    agent: AgentSpec = Field(default_factory=AgentSpec)
+    variants: VariantSpec = Field(default_factory=VariantSpec)
     analysis: AnalysisSpec = Field(default_factory=AnalysisSpec)
     backend: BackendName = "local"
     backend_address: str | None = None
@@ -372,6 +416,8 @@ class TrialRecord(BaseModel):
     trial_id: str
     params: dict[str, Any]
     source: Literal["strategy", "agent"] = "strategy"
+    #: The workload variant this trial ran against, if the loop changed code.
+    variant_id: str | None = None
     run_id: str | None = None
     status: TrialState = "planned"
     objective_value: float | None = None
@@ -393,3 +439,5 @@ class CampaignState(BaseModel):
     trials: list[TrialRecord] = Field(default_factory=list)
     best_trial_id: str | None = None
     rounds: int = 0
+    #: Agent invocations spent on this campaign, capped by ``GoalSpec.agent.max_calls``.
+    agent_calls: int = 0

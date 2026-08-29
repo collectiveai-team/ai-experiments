@@ -117,3 +117,70 @@ def test_escalate_handles_non_json_agent_output(tmp_path):
 
     assert verdict is not None
     assert verdict.verdict == "inconclusive"
+
+
+def test_campaign_review_does_not_break_the_escalation_inbox(tmp_path):
+    """A campaign review file has no run_id and no decision. Parsing every
+    *.json as an EscalationRequest crashed `iax escalations` permanently from
+    the first agent-review round on (#4)."""
+    import json
+
+    store, run_id = _setup(tmp_path)
+    escalate(store, _suspicious(run_id), EscalationPolicy())
+
+    reviews = store.root / "_escalations"
+    (reviews / "campaign_cmp_abc123.json").write_text(
+        json.dumps(
+            {
+                "type": "campaign_review",
+                "created_at": utc_now().isoformat(),
+                "campaign_id": "cmp_abc123",
+                "summary": {"best": None, "history": []},
+                "note": "review the history",
+            }
+        )
+    )
+
+    items = list_escalations(store)
+
+    kinds = sorted(item.kind for item in items)
+    assert kinds == ["campaign", "run"]
+    campaign = next(i for i in items if i.kind == "campaign")
+    assert campaign.campaign_id == "cmp_abc123"
+    run = next(i for i in items if i.kind == "run")
+    assert run.run_id == run_id
+
+
+def test_unreadable_escalation_file_is_skipped_not_fatal(tmp_path):
+    store, run_id = _setup(tmp_path)
+    escalate(store, _suspicious(run_id), EscalationPolicy())
+    (store.root / "_escalations" / "garbage.json").write_text("{not json")
+
+    items = list_escalations(store)
+
+    assert [i.kind for i in items] == ["run"]
+
+
+def test_clear_campaign_review_removes_the_file(tmp_path):
+    import json
+
+    from ai_experiments.monitoring.escalation import clear_campaign_review
+
+    store, _ = _setup(tmp_path)
+    reviews = store.root / "_escalations"
+    reviews.mkdir(parents=True, exist_ok=True)
+    (reviews / "campaign_cmp_x.json").write_text(
+        json.dumps(
+            {
+                "type": "campaign_review",
+                "created_at": utc_now().isoformat(),
+                "campaign_id": "cmp_x",
+                "summary": {},
+                "note": "",
+            }
+        )
+    )
+
+    clear_campaign_review(store, "cmp_x")
+
+    assert list_escalations(store) == []

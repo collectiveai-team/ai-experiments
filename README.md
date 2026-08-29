@@ -44,6 +44,14 @@ monitor/experiment loop until the goal is reached or the budget is spent:
 iax run examples/goal_toy.yaml --open     # dashboard at http://127.0.0.1:8585
 ```
 
+Installed from PyPI, with no repo checkout, scaffold the same two files first:
+
+```bash
+iax new workload train.py     # a workload that already reports IAX_METRIC
+iax new goal goal.yaml        # a commented goal; point its workload at train.py
+iax run goal.yaml --open
+```
+
 Ctrl+C detaches without killing the trials; resume the loop any time with
 `iax daemon`. The same pieces are also available separately for long-lived /
 multi-campaign setups:
@@ -67,6 +75,126 @@ report_metric(step=12, loss=0.0734)
 This works identically on the local backend (the worker tails stdout) and on
 remote Ray clusters with no shared filesystem (metrics are extracted from job
 logs).
+
+## One goal, one answer (`iax loop`)
+
+`iax run` is for a human watching a dashboard. `iax loop` is for an agent: it
+starts the campaign, drives it to a conclusion, prints one report, and exits.
+
+```bash
+iax loop goal.yaml --json            # blocks until the loop ends
+echo $?                              # 0 = target reached, 4 = it was not
+```
+
+```json
+{
+  "campaign_id": "cmp_20260829_1",
+  "status": "completed",
+  "stop_reason": "target_reached",
+  "target_reached": true,
+  "rounds": 4,
+  "trials": 12,
+  "best": {"trial_id": "t_009", "objective_value": 0.0041, "params": {"x": 1.94}}
+}
+```
+
+Exit code 4 is not an error: the work ran, the objective was not met. A caller
+must be able to tell that apart from a bad goal file (2) or an unreachable
+cluster (3), which is why it has a code of its own.
+
+The loop stops by itself. `--max-rounds` and `--max-seconds` bound it further;
+either one leaves the campaign `running`, so a later `iax loop --resume
+<campaign_id>` continues the same campaign instead of starting a new one.
+
+### Review between rounds
+
+With `strategy: agent`, the agent can also be asked to judge the campaign
+after each round, not just to propose the next one:
+
+```yaml
+analysis:
+  review_between_rounds: true    # ask the agent for a verdict between rounds
+  apply_agent_changes: true      # let an accepted verdict edit the goal
+```
+
+The verdict is `continue`, `stop`, or `change_goal`. A `stop` ends the campaign
+with the agent's reason instead of burning the rest of the budget on a goal
+that cannot be reached. A `change_goal` may widen the search space or the
+budget — and nothing else: the objective metric stays fixed, because every
+value already recorded was measured against it. Each review is appended to
+`rounds.jsonl` as a `review` stage, so the decision is auditable afterwards.
+
+## The same loop from python
+
+`iax` is one caller of the library, not the library. Everything the CLI does
+is a function in `ai_experiments.api`, taking plain data and returning plain
+data, so an agent in a chat session can drive a campaign without a shell:
+
+```python
+from ai_experiments import api
+
+goal = api.goal_from_dict({...})          # or api.goal_from_yaml("goal.yaml")
+report = api.run_loop(goal, max_rounds=20)
+
+if not report.target_reached:             # think, then continue the same one
+    api.suggest_trial(report.campaign_id, {"lr": 3e-4}, note="the flat region")
+    api.run_loop(goal, campaign_id=report.campaign_id)
+```
+
+| function | answers |
+|---|---|
+| `start_campaign(goal)` | begin, and submit the first round |
+| `advance_campaign(id)` | one loop step, when the agent wants to think between rounds |
+| `campaign_report(id)` | where it stands, without advancing it |
+| `campaign_rounds(id)` | what the loop believed at each round, oldest first |
+| `suggest_trial(id, params)` | queue one trial the agent chose itself |
+| `run_loop(goal)` | all of the above, until it ends |
+
+Failures raise `IaxError`, carrying the same `code` and `exit_code` the CLI
+reports, so an agent handles a bad goal the same way whichever surface it uses.
+
+## Agent-planned rounds (`strategy: agent`)
+
+The built-in strategies search a fixed space by fixed rules. `strategy: agent`
+asks an agent instead: it reads the goal, the search space, and every trial so
+far — failures and their errors included — and answers with the next batch.
+
+```yaml
+strategy:
+  name: agent
+  fallback: adaptive      # used whenever the agent cannot deliver a round
+agent:
+  command: claude         # claude | codex | any command reading a prompt on stdin
+  timeout_seconds: 600
+  max_calls: 20           # hard ceiling on agent calls for this campaign
+```
+
+The harness never trusts the reply. Every proposal is validated against the
+search space; out-of-range and already-tried params are dropped and recorded.
+If the agent crashes, times out, exceeds `max_calls`, or answers without JSON,
+the round is planned by `strategy.fallback` and the campaign keeps going — an
+agent outage slows a campaign down, it does not stop it. The agent may end the
+campaign deliberately by replying `{"stop": true, "rationale": "..."}`, which
+stops it with `agent_requested_stop`.
+
+The prompt goes to the agent on **stdin**, never as a command-line argument:
+it quotes campaign output, and campaign output is untrusted. Every call leaves
+a transcript under `<campaign_dir>/agents/<role>/<n>/`.
+
+## Reading the loop back
+
+Every round leaves a record in `<campaign_dir>/rounds.jsonl`: what it proposed,
+on what hypothesis, which trials it submitted, and what those trials measured.
+The stages mirror a code review — propose, apply, validate, evaluate, review —
+because an experiment round has the same shape as a change.
+
+```bash
+iax campaign rounds <campaign_id>          # the loop's reasoning, oldest first
+iax campaign trials <campaign_id>          # per-trial status, value, run id, error
+```
+
+The file is append-only. A round that went wrong is corrected by a later
+record, never by rewriting an earlier one.
 
 ## Artifacts and reproducibility
 
@@ -212,8 +340,34 @@ Goal manifests select a cluster by name (`cluster: aws-gpu`) or address
 
 ## Agent integration
 
-The daemon and the planner are fully programmatic. Agents plug in at three
+### From a chat
+
+The intended path: the user states an outcome, the agent states a goal, the
+harness runs the experiments.
+
+```
+user   > get val_loss under 0.05 on this model, you have 20 runs
+agent  > iax new goal goal.yaml        # then fills in metric, space, budget
+         iax campaign validate goal.yaml
+         iax loop goal.yaml --json --max-rounds 20
+         → exit 0, best val_loss 0.041 at lr 3.1e-4, depth 6 (14 trials)
+```
+
+The agent writes the goal and reads the report; it does not drive the rounds.
+The procedure it follows — which four things to ask for, how to diagnose a
+campaign that missed its target, what may never change mid-campaign — is the
+`autonomous-experimentation` skill under `.claude/skills/`, with `AGENTS.md`
+carrying the same entry point for agents that do not load skills.
+`examples/goal_agentic.yaml` is a worked example, with a workload whose
+failures the planner is meant to learn from.
+
+### Programmatic hooks
+
+The daemon and the planner are fully programmatic. Agents plug in at four
 opt-in points:
+
+- **Round planning** — `strategy: agent` hands the next batch to an agent,
+  with `strategy.fallback` covering every way that can fail.
 
 - **Escalations** — `iax escalations` lists runs the free checks flagged;
   the `diagnosing-experiments` skill drives the triage.
@@ -265,11 +419,48 @@ npx skills@latest add https://github.com/collectiveai-team/ai-experiments
 npx skills@latest add git@github.com:collectiveai-team/ai-experiments.git
 ```
 
-This installs the `submitting-experiments`, `monitoring-experiments`,
-`diagnosing-experiments`, and `cancelling-experiments` skills into the project's
-`.claude/skills/` (add `-g` for `~/.claude/skills/`).
+This installs the `autonomous-experimentation`, `running-campaigns`,
+`submitting-experiments`, `monitoring-experiments`, `diagnosing-experiments`,
+and `cancelling-experiments` skills into the project's `.claude/skills/` (add
+`-g` for `~/.claude/skills/`). `autonomous-experimentation` is the one that
+turns "get val_loss under 0.05" into a goal file and an `iax loop` run.
+
+Agents that do not load Claude Code skills read `AGENTS.md` at the repo root:
+the same entry point, the exit-code contract, and where the procedure lives.
 
 During in-repo development, Workbench uses the uv workspace member at `packages/ai_experiments`.
+
+## Environment variables
+
+The harness **reads** these from its own environment:
+
+| variable | default | what it does |
+|---|---|---|
+| `IAX_RUNS_DIR` | `outputs/experiments/runs` | where runs, campaigns and events are stored; `--runs-dir` overrides it |
+| `IAX_CLUSTERS` | `./clusters.yaml`, then `~/.config/iax/clusters.yaml` | the cluster profile file `iax cluster` and `cluster:` resolve against |
+| `RAY_ADDRESS` | `http://127.0.0.1:8265` | the Ray Jobs address, used when the manifest sets no `backend_address` |
+| `IAX_NOTIFY_WEBHOOK` | unset | daemon notifications POST here as JSON; `--notify-webhook` overrides it |
+| `IAX_NOTIFY_COMMAND` | unset | daemon notifications run this command with the JSON payload on **stdin**; `--notify-command` overrides it |
+| `MLFLOW_TRACKING_URI` | unset (mlflow uses `./mlruns`) | used when `tracking.tracking_uri` is not set |
+
+The harness **injects** these into every workload it starts:
+
+| variable | value | for |
+|---|---|---|
+| `IAX_RUN_ID` | the run id | naming logs and checkpoints |
+| `IAX_RUN_DIR` | the run's directory | anything the workload wants beside its run |
+| `IAX_ARTIFACTS_DIR` | `<run_dir>/artifacts` | checkpoints and plots; `iax artifacts <run_id>` lists what lands here |
+| `IAX_PARAMS` | the trial's params, as JSON | campaign trials — the whole params dict, whether or not it appears in `args` |
+| `IAX_TRIAL_ID` | the trial id | campaign trials |
+| `MLFLOW_RUN_ID`, `MLFLOW_TRACKING_URI` | the run the harness created | `tracking.mlflow: true`, so a workload on a remote Ray node logs to the same run |
+| `MLFLOW_ALLOW_FILE_STORE` | `true` | set only for a file-backed tracking URI, which MLflow 3 gates; an explicit `false` is respected |
+
+`IAX_METRIC` is not a variable. It is the stdout prefix a workload prints its
+observations with:
+
+```python
+print('IAX_METRIC {"step": 12, "loss": 0.0734}')
+```
 
 ## Manifest
 
@@ -294,6 +485,12 @@ metadata:
 ## CLI
 
 ```bash
+# start from a template (works from a pip/uv install, no repo checkout)
+iax new goal goal.yaml
+iax new workload train.py
+iax new manifest experiment.yaml
+iax new manifest next.yaml --from-run <run_id>   # reuse a run that worked
+
 # single runs
 iax validate experiment.yaml           # add --strict to fail on warnings
 iax submit experiment.yaml --json      # warns on the same checks; --strict refuses
@@ -310,15 +507,47 @@ iax cancel <run_id>
 iax escalations
 iax leaderboard
 
+# one goal in, one answer out (the agent entry point)
+iax loop goal.yaml --json --max-rounds 20    # exit 0 = target reached, 4 = not
+iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
+
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
 iax campaign start goal.yaml           # --strict refuses a workload that cannot start
 iax campaign list / status / advance / suggest / pause / edit / resume / stop
+iax campaign trials <campaign_id>          # every trial: status, value, run, error
+iax campaign rounds <campaign_id> --json   # why each round tried what it tried
 
 # infrastructure
 iax daemon --interval 30        # monitor + loop driver (foreground)
 iax serve --port 8585           # dashboard + REST API  (needs [server] extra)
 iax cluster list / status / up / down
+```
+
+### Exit codes and errors
+
+Every command takes `--json` and every failure follows one contract, so an
+agent can branch on the result instead of parsing prose:
+
+| exit | code | meaning |
+|---|---|---|
+| 0 | — | success |
+| 1 | `not_found` | the run, campaign, or bundle does not exist |
+| 2 | `invalid_input` | bad manifest, bad goal, params outside the search space |
+| 3 | `backend_unavailable` | the execution backend could not be reached |
+| 4 | — | `iax loop` only: the loop ran, the objective was not reached |
+
+With `--json` the error is one object on **stdout**; without it, one line on
+**stderr**. Successful output always goes to stdout.
+
+```console
+$ iax status run_nope --json; echo "exit=$?"
+{
+  "error": "unknown run 'run_nope'; list them with `iax runs`",
+  "code": "not_found",
+  "details": {"run": "run_nope"}
+}
+exit=1
 ```
 
 `iax monitor --quiet-when-waiting` is the Workbench scheduler integration point. It prints nothing while the run should keep waiting. It emits JSON only when the run has completed, failed, looks stuck, or needs delegated review.

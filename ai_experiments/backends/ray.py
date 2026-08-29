@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ai_experiments.backends.base import ExperimentBackend
+from ai_experiments.failures import failure_message
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.report import parse_metric_line
@@ -19,7 +20,6 @@ from ai_experiments.schemas import (
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
-
 
 DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
 
@@ -144,9 +144,13 @@ class RayBackend(ExperimentBackend):
                     run_id, status=mapped, details=details
                 )
             if mapped == "failed" and not status.error:
+                # Ray's message can carry 20,000 characters of job log. It ends
+                # up in the planner's evidence block, so it gets the same tail
+                # treatment as a local workload's output.
                 message = details.get("ray_message") or details.get("ray_error_type")
                 status = self.store.update_status(
-                    run_id, error=str(message or "Ray job failed")
+                    run_id,
+                    error=failure_message("Ray job failed", str(message or "")),
                 )
             return status
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster

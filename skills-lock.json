@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "using-orq-lite": {
+      "source": "collectiveai-team/orquesta-lite",
+      "sourceType": "github",
+      "skillPath": "skills/using-orq-lite/SKILL.md",
+      "computedHash": "c8814596b862147225f0551723bae91ee1ffe6763e6bb3d2b0afd3a21fddca4b"
+    }
+  }
+}

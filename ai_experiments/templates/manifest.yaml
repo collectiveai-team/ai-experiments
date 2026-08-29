@@ -1,0 +1,38 @@
+# A single experiment run. Validate, then submit:
+#   iax validate experiment.yaml
+#   iax submit experiment.yaml --json
+#
+# Every key below is a field of ExperimentManifest (ai_experiments/schemas.py).
+
+experiment: my-experiment
+backend: local            # local | ray
+# backend_address: http://127.0.0.1:8265   # ray only; else RAY_ADDRESS
+# cluster: my-cluster                      # named profile from clusters.yaml
+
+workload:
+  entrypoint: python
+  args: ["train.py"]
+  working_dir: "."
+  # env:                  # extra environment for the workload only
+  #   WANDB_MODE: offline
+
+resources:
+  cpus: 1
+  # gpus: 1
+  # memory_gb: 8
+
+monitoring:
+  interval_seconds: 60    # how often the daemon checks this run
+  stuck_after_minutes: 30 # no new metric for this long -> suspicious
+  # timeout_seconds: 3600
+  auto_kill: false        # true: the daemon kills NaN / timed-out / frozen runs
+  fatal_on_nan: true
+
+artifacts:
+  output_dir: ./outputs   # exported to the workload as $IAX_ARTIFACTS_DIR
+
+tracking:
+  mlflow: false           # true: mirror params, metrics and artifacts to MLflow
+
+metadata:
+  owner: me

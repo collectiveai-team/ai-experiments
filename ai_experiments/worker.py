@@ -9,9 +9,11 @@ import subprocess
 import sys
 import threading
 import traceback
+from collections import deque
 from pathlib import Path
 from types import FrameType
 
+from ai_experiments.failures import ERROR_TAIL_LINES, failure_message
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.procs import (
     IDENTITY_UNAVAILABLE_HINT,
@@ -154,6 +156,7 @@ class _Supervisor:
         stream = io.TextIOWrapper(
             self.process.stdout, encoding="utf-8", errors="replace", newline="\n"
         )
+        recent: deque[str] = deque(maxlen=ERROR_TAIL_LINES)
         for raw in stream:
             line = _overwrite(raw)
             if not line:
@@ -170,6 +173,7 @@ class _Supervisor:
                     }
                 )
             else:
+                recent.append(line)
                 self.store.append_event(self.run_id, event_from_log_line(line))
 
         exit_code = self.process.wait()
@@ -218,7 +222,9 @@ class _Supervisor:
                 status="failed",
                 exit_code=exit_code,
                 completed_at=utc_now(),
-                error=f"workload exited with code {exit_code}",
+                error=failure_message(
+                    f"workload exited with code {exit_code}", list(recent)
+                ),
             )
             self.store.append_event(
                 self.run_id,

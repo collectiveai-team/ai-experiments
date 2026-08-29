@@ -1,0 +1,63 @@
+# A goal the agent plans, not just the harness. Run the whole loop with:
+#   iax loop examples/goal_agentic.yaml --json
+# Exit 0 means the target was reached; exit 4 means it was not.
+#
+# The workload refuses configurations that do not fit in memory and says why
+# (examples/agentic_train.py). About a third of the search space cannot run,
+# and the best configurations sit just inside the boundary. An agent planner
+# reads those errors in the trial history and walks up to the edge; grid and
+# random cannot read them, and adaptive plateaus around loss 0.40 because it
+# perturbs the best trial instead of reasoning about the constraint.
+#
+# So `strategy: adaptive` on this goal often exits 4 within 30 trials, and an
+# agent that reads the failures gets under the target in far fewer. That
+# difference is the whole example.
+
+goal: "Reach loss < 0.40 without exceeding the 4 GB device"
+name: agentic-capacity
+
+objective:
+  metric: loss
+  mode: min
+  target: 0.40
+
+search_space:
+  lr: { type: loguniform, low: 0.00001, high: 0.1 }
+  width: { type: choice, values: [64, 128, 256, 512] }
+  depth: { type: int, low: 2, high: 8 }
+  batch: { type: choice, values: [16, 32, 64, 128] }
+
+workload:
+  entrypoint: "python examples/agentic_train.py"
+  args: ["--steps", "15", "--sleep", "0.05"]
+  working_dir: "."
+
+budget:
+  max_trials: 30
+  max_parallel: 3
+  max_hours: 1.0
+
+strategy:
+  name: agent           # the agent proposes each round from the full history
+  fallback: adaptive    # plans the round when the agent is down or off-contract
+  seed: 7
+
+agent:
+  command: claude       # claude | codex | any command reading a prompt on stdin
+  timeout_seconds: 600
+  max_calls: 12         # every call costs; this is the ceiling for the campaign
+
+analysis:
+  review_between_rounds: true   # ask for a verdict after each round
+  apply_agent_changes: false    # true: a verdict may widen the space or budget
+
+backend: local          # or `ray` (+ backend_address / cluster)
+
+monitoring:
+  interval_seconds: 15
+  stuck_after_minutes: 5
+  auto_kill: true
+  fatal_on_nan: true
+
+tracking:
+  mlflow: false
