@@ -49,6 +49,7 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `manifest.yaml` | What was executed: the submitted manifest with `workload.working_dir` resolved to an absolute path, so it means the same thing from any directory. |
 | `manifest.source.yaml` | What was submitted, verbatim — the portable form, present only when the author wrote a relative `working_dir`. `iax rerun --portable` resubmits this one. |
 | `status.json` | Current `RunStatus` (status, exit_code, error, details, timestamps). |
+| `status.lock` | Harness bookkeeping for serialized status updates; ignore it when inspecting or summarizing a run. |
 | `events.jsonl` | One JSON `RunEvent` per line; what `iax logs` reads. |
 | `metrics.jsonl` | `MetricPoint`s parsed from the workload's `IAX_METRIC` stdout lines; what `iax metrics` reads. Present on both backends once the workload reports. |
 | `escalation.json` | Escalation-ladder state (suspicious tick count, agent-call budget) written by the daemon. |

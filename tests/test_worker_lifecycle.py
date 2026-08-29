@@ -21,6 +21,7 @@ from ai_experiments.daemon import MonitorDaemon
 from ai_experiments.procs import process_identity
 from ai_experiments.schemas import (
     ExperimentManifest,
+    RunHandle,
     RunStatus,
     WorkloadSpec,
     utc_now,
@@ -483,20 +484,23 @@ def test_reaper_refuses_to_signal_a_reused_pid(tmp_path):
     run_id, run_dir = store.create_run(manifest)
     bystander = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
     try:
-        store.write_status(
-            RunStatus(
+        store.write_handle(
+            RunHandle(
                 run_id=run_id,
                 backend="local",
                 status="running",
                 status_uri=str(store.status_path(run_id)),
                 run_dir=str(run_dir),
-                pid=999999,
-                started_at=utc_now(),
-                details={
-                    "workload_pid": bystander.pid,
-                    "workload_identity": "1",  # not the bystander's start time
-                },
             )
+        )
+        store.update_status(
+            run_id,
+            pid=999999,
+            started_at=utc_now(),
+            details={
+                "workload_pid": bystander.pid,
+                "workload_identity": "1",  # not the bystander's start time
+            },
         )
 
         report = LocalBackend(store=store).reap(run_id)
@@ -516,17 +520,20 @@ def test_reaper_reports_a_workload_it_cannot_identify(tmp_path):
     run_id, run_dir = store.create_run(manifest)
     bystander = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
     try:
-        store.write_status(
-            RunStatus(
+        store.write_handle(
+            RunHandle(
                 run_id=run_id,
                 backend="local",
                 status="running",
                 status_uri=str(store.status_path(run_id)),
                 run_dir=str(run_dir),
-                pid=999999,
-                started_at=utc_now(),
-                details={"workload_pid": bystander.pid},
             )
+        )
+        store.update_status(
+            run_id,
+            pid=999999,
+            started_at=utc_now(),
+            details={"workload_pid": bystander.pid},
         )
 
         report = LocalBackend(store=store).reap(run_id)
