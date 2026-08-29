@@ -13,6 +13,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ai_experiments.agents.runner import AgentRunner, CliAgentRunner
+from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
 from ai_experiments.planner.analysis import (
@@ -21,6 +23,7 @@ from ai_experiments.planner.analysis import (
     summarize_campaign,
 )
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
+from ai_experiments.planner.strategies import get_strategy
 from ai_experiments.planner.validation import validate_params
 from ai_experiments.schemas import (
     CampaignState,
@@ -52,6 +55,10 @@ _RUN_TO_TRIAL: dict[RunState, TrialState] = {
 }
 
 BackendFactory = Callable[[GoalSpec], ExperimentBackend]
+AgentRunnerFactory = Callable[[GoalSpec, str], AgentRunner]
+
+#: Stop reason recorded when the agent itself says more trials cannot help.
+AGENT_STOP_REASON = "agent_requested_stop"
 
 
 class CampaignOrchestrator:
@@ -61,11 +68,22 @@ class CampaignOrchestrator:
         campaign_store: CampaignStore | None = None,
         backend_factory: BackendFactory | None = None,
         address_resolver: Callable[[GoalSpec], str | None] | None = None,
+        agent_runner_factory: AgentRunnerFactory | None = None,
     ) -> None:
         self.run_store = run_store
         self.campaign_store = campaign_store or CampaignStore(run_store.root)
         self._address_resolver = address_resolver or _default_address_resolver
         self._backend_factory = backend_factory or self._default_backend_factory
+        self._agent_runner_factory = agent_runner_factory or self._default_agent_runner
+        #: The agent decision made during the current `advance()`, if any.
+        self.last_decision: AgentDecision | None = None
+
+    def _default_agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
+        return CliAgentRunner(
+            goal.agent.command,
+            transcript_dir=self.campaign_store.campaign_dir(campaign_id) / "agents",
+            timeout_seconds=goal.agent.timeout_seconds,
+        )
 
     def _default_backend_factory(self, goal: GoalSpec) -> ExperimentBackend:
         return get_backend(
@@ -198,6 +216,7 @@ class CampaignOrchestrator:
     # -- the loop step ---------------------------------------------------------
 
     def advance(self, campaign_id: str) -> CampaignState:
+        self.last_decision = None
         state = self.campaign_store.read_state(campaign_id)
         if state.status in {"completed", "stopped", "failed", "paused"}:
             return state
@@ -229,10 +248,20 @@ class CampaignOrchestrator:
                         "trials": len(state.trials),
                         "max_trials": goal.budget.max_trials,
                         "strategy": goal.strategy.name,
+                        "agent_stop_reason": (
+                            self.last_decision.stop_reason
+                            if self.last_decision is not None
+                            else ""
+                        ),
                     },
                 ),
             )
-            return self._finish(state, goal, backend, "search_space_exhausted")
+            exhausted_reason = (
+                AGENT_STOP_REASON
+                if self.last_decision is not None and self.last_decision.stop
+                else "search_space_exhausted"
+            )
+            return self._finish(state, goal, backend, exhausted_reason)
 
         if finished_now and goal.analysis.agent_review:
             self._request_agent_review(state, goal)
@@ -402,6 +431,60 @@ class CampaignOrchestrator:
                 total += live or 0.0
         return total
 
+    def _plan_params(
+        self, state: CampaignState, goal: GoalSpec, count: int
+    ) -> list[dict[str, Any]]:
+        """The next parameter assignments, from the agent or from a strategy.
+
+        `strategy: agent` is the only path that costs tokens, so it is the only
+        one with a budget. Past `goal.agent.max_calls` the campaign keeps
+        running on the fallback strategy rather than stopping: a spent agent
+        budget is a reason to plan more cheaply, not a reason to give up.
+        """
+        if goal.strategy.name != "agent":
+            return plan_next_params(goal, state.trials, count)
+
+        if state.agent_calls >= goal.agent.max_calls:
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="warning",
+                    message="agent call budget exhausted; planning with the fallback",
+                    details={
+                        "agent_calls": state.agent_calls,
+                        "max_calls": goal.agent.max_calls,
+                        "fallback": goal.strategy.fallback,
+                    },
+                ),
+            )
+            return get_strategy(goal.strategy.fallback).plan(goal, state.trials, count)
+
+        strategy = AgentStrategy(
+            self._agent_runner_factory(goal, state.campaign_id),
+            fallback=goal.strategy.fallback,
+        )
+        params = strategy.plan(goal, state.trials, count)
+        state.agent_calls += 1
+        decision = strategy.last_decision
+        self.last_decision = decision
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="warning" if decision.used_fallback else "info",
+                message="agent planned a round",
+                details={
+                    "hypothesis": decision.hypothesis,
+                    "rationale": decision.rationale,
+                    "accepted": len(decision.accepted),
+                    "rejected": len(decision.rejected),
+                    "used_fallback": decision.used_fallback,
+                    "fallback_reason": decision.fallback_reason,
+                    "agent_error": decision.agent_error,
+                },
+            ),
+        )
+        return params
+
     def _fill_capacity(
         self, state: CampaignState, goal: GoalSpec, backend: ExperimentBackend
     ) -> list[TrialRecord]:
@@ -415,7 +498,7 @@ class CampaignOrchestrator:
         batch_limit = goal.strategy.batch_size or goal.budget.max_parallel
         want_new = min(capacity - len(queue), remaining_budget, batch_limit)
         if want_new > 0:
-            for params in plan_next_params(goal, state.trials, want_new):
+            for params in self._plan_params(state, goal, want_new):
                 trial = TrialRecord(trial_id=f"t{len(state.trials):03d}", params=params)
                 state.trials.append(trial)
                 queue.append(trial)

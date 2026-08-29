@@ -85,7 +85,7 @@ def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool
     return candidate > incumbent if mode == "max" else candidate < incumbent
 
 
-def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
+def best_of(trials: list[TrialRecord], mode: str) -> TrialRecord | None:
     """The best *completed* trial.
 
     A crashed trial can report a good value moments before it dies — an OOM
@@ -96,7 +96,7 @@ def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     """
     scored = [
         t
-        for t in state.trials
+        for t in trials
         if t.status == "completed"
         and t.objective_value is not None
         and math.isfinite(t.objective_value)
@@ -111,12 +111,13 @@ def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     return min(scored, key=key)  # type: ignore[arg-type]
 
 
-def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
-    by_status: dict[str, int] = {}
-    for trial in state.trials:
-        by_status[trial.status] = by_status.get(trial.status, 0) + 1
-    best = best_trial(state, goal.objective.mode)
-    history = [
+def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
+    return best_of(state.trials, mode)
+
+
+def trial_history(trials: list[TrialRecord]) -> list[dict[str, Any]]:
+    """Every trial an agent can learn from: scored ones and failures alike."""
+    return [
         {
             "trial_id": t.trial_id,
             "status": t.status,
@@ -124,9 +125,41 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
             "params": t.params,
             "error": t.error,
         }
-        for t in state.trials
+        for t in trials
         if t.objective_value is not None or t.error is not None
     ]
+
+
+def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any]:
+    """The evidence block an agent plans from, without a CampaignState.
+
+    A strategy sees trials, not campaigns. This is the same history and best
+    trial that ``summarize_campaign`` reports, so the agent and the dashboard
+    never disagree about what happened.
+    """
+    best = best_of(trials, goal.objective.mode)
+    return {
+        "trials_total": len(trials),
+        "history": trial_history(trials),
+        "best": (
+            {
+                "trial_id": best.trial_id,
+                "run_id": best.run_id,
+                "objective_value": best.objective_value,
+                "params": best.params,
+            }
+            if best
+            else None
+        ),
+    }
+
+
+def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    for trial in state.trials:
+        by_status[trial.status] = by_status.get(trial.status, 0) + 1
+    best = best_trial(state, goal.objective.mode)
+    history = trial_history(state.trials)
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
     cost = (
         gpu_hours * goal.budget.gpu_hour_rate

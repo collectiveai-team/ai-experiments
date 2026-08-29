@@ -76,6 +76,34 @@ This works identically on the local backend (the worker tails stdout) and on
 remote Ray clusters with no shared filesystem (metrics are extracted from job
 logs).
 
+## Agent-planned rounds (`strategy: agent`)
+
+The built-in strategies search a fixed space by fixed rules. `strategy: agent`
+asks an agent instead: it reads the goal, the search space, and every trial so
+far — failures and their errors included — and answers with the next batch.
+
+```yaml
+strategy:
+  name: agent
+  fallback: adaptive      # used whenever the agent cannot deliver a round
+agent:
+  command: claude         # claude | codex | any command reading a prompt on stdin
+  timeout_seconds: 600
+  max_calls: 20           # hard ceiling on agent calls for this campaign
+```
+
+The harness never trusts the reply. Every proposal is validated against the
+search space; out-of-range and already-tried params are dropped and recorded.
+If the agent crashes, times out, exceeds `max_calls`, or answers without JSON,
+the round is planned by `strategy.fallback` and the campaign keeps going — an
+agent outage slows a campaign down, it does not stop it. The agent may end the
+campaign deliberately by replying `{"stop": true, "rationale": "..."}`, which
+stops it with `agent_requested_stop`.
+
+The prompt goes to the agent on **stdin**, never as a command-line argument:
+it quotes campaign output, and campaign output is untrusted. Every call leaves
+a transcript under `<campaign_dir>/agents/<role>/<n>/`.
+
 ## Artifacts and reproducibility
 
 Workloads write checkpoints/plots/models to `$IAX_ARTIFACTS_DIR` (or use

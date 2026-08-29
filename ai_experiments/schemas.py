@@ -282,12 +282,29 @@ class BudgetSpec(BaseModel):
 
 
 class StrategySpec(BaseModel):
-    name: Literal["grid", "random", "adaptive"] = "adaptive"
+    name: Literal["grid", "random", "adaptive", "agent"] = "adaptive"
     seed: int = 0
     batch_size: int | None = None
     grid_resolution: int = 4
     exploration: float = 0.3
     top_k: int = 3
+    #: Used when ``name == "agent"`` and the agent cannot deliver a usable
+    #: round. A campaign must keep making progress without a working agent.
+    fallback: Literal["grid", "random", "adaptive"] = "adaptive"
+
+
+class AgentSpec(BaseModel):
+    """How the harness reaches the agent that plans and reviews rounds.
+
+    The command is operator-supplied configuration. It receives the brief on
+    stdin, never as an argument (CONVENTIONS.md §9).
+    """
+
+    command: str = "claude"
+    timeout_seconds: int = 600
+    #: Hard ceiling on agent invocations per campaign. An unattended loop that
+    #: keeps asking is an unattended loop that keeps spending.
+    max_calls: int = 20
 
 
 class AnalysisSpec(BaseModel):
@@ -309,6 +326,7 @@ class GoalSpec(BaseModel):
     workload: WorkloadSpec
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
+    agent: AgentSpec = Field(default_factory=AgentSpec)
     analysis: AnalysisSpec = Field(default_factory=AnalysisSpec)
     backend: BackendName = "local"
     backend_address: str | None = None
@@ -388,3 +406,5 @@ class CampaignState(BaseModel):
     trials: list[TrialRecord] = Field(default_factory=list)
     best_trial_id: str | None = None
     rounds: int = 0
+    #: Agent invocations spent on this campaign, capped by ``GoalSpec.agent.max_calls``.
+    agent_calls: int = 0

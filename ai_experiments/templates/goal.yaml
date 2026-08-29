@@ -31,10 +31,16 @@ budget:
   # gpu_hour_rate: 2.50   # $/GPU-hour, for cost display only
 
 strategy:
-  name: adaptive          # grid | random | adaptive
+  name: adaptive          # grid | random | adaptive | agent
   seed: 7
   exploration: 0.3        # adaptive: fraction of fresh random samples
   top_k: 2                # adaptive: perturb around one of the best k trials
+  # fallback: adaptive    # agent: used when the agent is down or off-contract
+
+# agent:                  # only read when strategy.name is `agent`
+#   command: claude       # claude | codex | any command reading a prompt on stdin
+#   timeout_seconds: 600
+#   max_calls: 20         # hard ceiling on agent calls for this campaign
 
 backend: local            # or `ray` (+ backend_address / cluster)
 
