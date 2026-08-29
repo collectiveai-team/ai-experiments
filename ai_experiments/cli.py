@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+import click
 
 import typer
 from pydantic import BaseModel
+from typer.core import TyperCommand
 
 from ai_experiments.backends.factory import backend_for_run, get_backend
+from ai_experiments.cli_support import IaxError, invalid_input, not_found, report
 from ai_experiments.schemas import ExperimentManifest, GoalSpec
 from ai_experiments.store import FilesystemRunStore
 
@@ -31,6 +35,20 @@ app.add_typer(campaign_app)
 app.add_typer(cluster_app)
 
 
+class IaxCommand(TyperCommand):
+    """Turns an :class:`IaxError` into the CLI's error contract.
+
+    Without this every unknown id surfaced as a python traceback (or, worse,
+    as a silent exit 0), which an agent driving the CLI cannot branch on.
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except IaxError as exc:
+            report(exc, json_mode=bool(ctx.params.get("output_json")))
+
+
 def _echo_json(payload: object) -> None:
     if isinstance(payload, BaseModel):
         typer.echo(json.dumps(payload.model_dump(mode="json"), indent=2))
@@ -38,26 +56,40 @@ def _echo_json(payload: object) -> None:
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _require_run(store: FilesystemRunStore, run_id: str) -> None:
+    if not store.run_dir(run_id).exists():
+        not_found("run", run_id, hint="list them with `iax runs`")
+
+
+def _require_campaign(store: FilesystemRunStore, campaign_id: str) -> None:
+    from ai_experiments.store.campaign import CampaignStore
+
+    if not (
+        CampaignStore(store.root).campaign_dir(campaign_id) / "state.json"
+    ).exists():
+        not_found("campaign", campaign_id, hint="list them with `iax campaign list`")
+
+
 def _backend_for_run(run_id: str, store: FilesystemRunStore):
+    _require_run(store, run_id)
     return backend_for_run(store, run_id)
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def validate(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
     except Exception as exc:
-        typer.echo(f"Error: invalid manifest: {exc}", err=True)
-        raise typer.Exit(code=1)
+        invalid_input(f"invalid manifest {config}: {exc}")
     typer.echo(f"Manifest valid: {config}")
     typer.echo(f"  Experiment: {manifest.experiment}")
     typer.echo(f"  Backend:    {manifest.backend}")
     typer.echo(f"  Workload:   {manifest.workload.entrypoint}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def submit(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
     runs_dir: Optional[Path] = typer.Option(
@@ -73,9 +105,12 @@ def submit(
             store=store,
             address=manifest.backend_address,
         ).submit(manifest)
+    except FileNotFoundError as exc:
+        not_found("manifest", str(config), hint=str(exc))
+    except ValueError as exc:
+        invalid_input(f"submit failed: {exc}")
     except Exception as exc:
-        typer.echo(f"Error: submit failed: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise IaxError(f"submit failed: {exc}", code="backend_unavailable") from exc
 
     if output_json:
         _echo_json(handle)
@@ -84,7 +119,7 @@ def submit(
         typer.echo(f"  Status: {handle.status_uri}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def status(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
@@ -102,7 +137,7 @@ def status(
             typer.echo(f"  Error: {run_status.error}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def logs(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(200, "--tail", help="Number of recent events"),
@@ -122,7 +157,7 @@ def logs(
             )
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def diagnose(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
@@ -140,7 +175,7 @@ def diagnose(
             typer.echo(f"  - {reason}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def monitor(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
@@ -168,19 +203,23 @@ def monitor(
             typer.echo(f"recommendation: {recommendation}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def cancel(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
     _backend_for_run(run_id, store).cancel(run_id)
-    typer.echo(f"Cancelled {run_id}")
+    if output_json:
+        _echo_json({"run_id": run_id, "cancelled": True})
+    else:
+        typer.echo(f"Cancelled {run_id}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def runs(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
@@ -200,7 +239,7 @@ def runs(
         )
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def metrics(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(50, "--tail", help="Number of recent points"),
@@ -211,6 +250,7 @@ def metrics(
 ) -> None:
     """Show metrics reported by a run's workload."""
     store = FilesystemRunStore(runs_dir)
+    _require_run(store, run_id)
     points = store.read_metrics(run_id, tail=tail)
     if output_json:
         _echo_json([point.model_dump(mode="json") for point in points])
@@ -220,7 +260,7 @@ def metrics(
         typer.echo(f"[{point.timestamp.isoformat()}] step={point.step} {values}")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def escalations(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
@@ -233,7 +273,7 @@ def escalations(
     _echo_json([item.model_dump(mode="json") for item in list_escalations(store)])
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def artifacts(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
@@ -243,6 +283,7 @@ def artifacts(
 ) -> None:
     """List files a run's workload wrote to $IAX_ARTIFACTS_DIR."""
     store = FilesystemRunStore(runs_dir)
+    _require_run(store, run_id)
     entries = store.list_artifacts(run_id)
     if output_json:
         _echo_json(entries)
@@ -255,11 +296,14 @@ def artifacts(
         typer.echo(f"  {entry['path']}  ({entry['size_bytes']} bytes)")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def repro(
     run_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(
+        True, "--json", help="Accepted for uniformity; repro always prints JSON"
     ),
 ) -> None:
     """Show the reproducibility bundle captured at submit time (always JSON)."""
@@ -268,13 +312,13 @@ def repro(
     store = FilesystemRunStore(runs_dir)
     context = read_repro(store.run_dir(run_id))
     if context is None:
-        typer.echo(f"Error: no repro bundle for {run_id}", err=True)
-        raise typer.Exit(code=1)
+        _require_run(store, run_id)
+        not_found("repro bundle for run", run_id)
     context["bundle_dir"] = str(store.run_dir(run_id) / "repro")
     _echo_json(context)
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def rerun(
     run_id: str = typer.Argument(..., help="Run to repeat exactly"),
     runs_dir: Optional[Path] = typer.Option(
@@ -289,8 +333,8 @@ def rerun(
     store = FilesystemRunStore(runs_dir)
     manifest = store.read_manifest(run_id)
     if manifest is None:
-        typer.echo(f"Error: no persisted manifest for {run_id}", err=True)
-        raise typer.Exit(code=1)
+        _require_run(store, run_id)
+        not_found("persisted manifest for run", run_id)
 
     recorded = read_repro(store.run_dir(run_id)) or {}
     recorded_sha = recorded.get("git_sha")
@@ -319,7 +363,7 @@ def rerun(
         typer.echo(f"Resubmitted as {handle.run_id} (from {run_id})")
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def leaderboard(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
@@ -372,7 +416,7 @@ def leaderboard(
         )
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def daemon(
     interval: int = typer.Option(30, "--interval", help="Seconds between ticks"),
     once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
@@ -400,7 +444,7 @@ def daemon(
     monitor_daemon.run_forever(interval_seconds=interval)
 
 
-@app.command()
+@app.command(cls=IaxCommand)
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8585, "--port"),
@@ -414,18 +458,17 @@ def serve(
 
         from ai_experiments.server.app import create_app
     except ImportError as exc:
-        typer.echo(
-            "Error: the dashboard needs the server extra: "
+        raise IaxError(
+            "the dashboard needs the server extra: "
             "pip install 'ai-experiments[server]'",
-            err=True,
-        )
-        raise typer.Exit(code=1) from exc
+            code="invalid_input",
+        ) from exc
 
     store = FilesystemRunStore(runs_dir)
     uvicorn.run(create_app(store), host=host, port=port, log_level="warning")
 
 
-@app.command("run")
+@app.command("run", cls=IaxCommand)
 def run_goal(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
     interval: int = typer.Option(10, "--interval", help="Seconds between ticks"),
@@ -447,8 +490,7 @@ def run_goal(
     try:
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
-        typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        invalid_input(f"invalid goal {config}: {exc}")
 
     store = FilesystemRunStore(runs_dir)
     monitor_daemon = MonitorDaemon(store)
@@ -536,15 +578,14 @@ def _orchestrator(runs_dir: Optional[Path]):
     return CampaignOrchestrator(store)
 
 
-@campaign_app.command("validate")
+@campaign_app.command("validate", cls=IaxCommand)
 def campaign_validate(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
 ) -> None:
     try:
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
-        typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        invalid_input(f"invalid goal {config}: {exc}")
     typer.echo(f"Goal valid: {config}")
     typer.echo(f"  Goal:      {goal.goal}")
     typer.echo(
@@ -562,7 +603,7 @@ def campaign_validate(
     typer.echo(f"  Backend:   {goal.backend}")
 
 
-@campaign_app.command("start")
+@campaign_app.command("start", cls=IaxCommand)
 def campaign_start(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
@@ -574,10 +615,14 @@ def campaign_start(
     """
     try:
         goal = GoalSpec.from_yaml(config)
+    except Exception as exc:
+        invalid_input(f"invalid goal {config}: {exc}")
+    try:
         state = _orchestrator(runs_dir).start(goal)
     except Exception as exc:
-        typer.echo(f"Error: campaign start failed: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise IaxError(
+            f"campaign start failed: {exc}", code="backend_unavailable"
+        ) from exc
     if output_json:
         _echo_json(state)
     else:
@@ -586,7 +631,7 @@ def campaign_start(
         typer.echo("Run `iax daemon` to drive the experiment loop.")
 
 
-@campaign_app.command("list")
+@campaign_app.command("list", cls=IaxCommand)
 def campaign_list(
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
@@ -605,7 +650,7 @@ def campaign_list(
         )
 
 
-@campaign_app.command("status")
+@campaign_app.command("status", cls=IaxCommand)
 def campaign_status(
     campaign_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
@@ -615,6 +660,7 @@ def campaign_status(
     from ai_experiments.store.campaign import CampaignStore
 
     store = FilesystemRunStore(runs_dir)
+    _require_campaign(store, campaign_id)
     campaign_store = CampaignStore(store.root)
     state = campaign_store.read_state(campaign_id)
     goal = campaign_store.read_goal(campaign_id)
@@ -646,13 +692,14 @@ def campaign_status(
         typer.echo(f"          params={best['params']}")
 
 
-@campaign_app.command("advance")
+@campaign_app.command("advance", cls=IaxCommand)
 def campaign_advance(
     campaign_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Run one orchestrator step now (what the daemon does every tick)."""
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     state = _orchestrator(runs_dir).advance(campaign_id)
     if output_json:
         _echo_json(state)
@@ -660,70 +707,86 @@ def campaign_advance(
         typer.echo(f"{state.campaign_id}: {state.status} ({len(state.trials)} trials)")
 
 
-@campaign_app.command("stop")
+@campaign_app.command("stop", cls=IaxCommand)
 def campaign_stop(
     campaign_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
 ) -> None:
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     state = _orchestrator(runs_dir).stop(campaign_id)
-    typer.echo(f"Stopped {state.campaign_id}")
+    if output_json:
+        _echo_json(state)
+    else:
+        typer.echo(f"Stopped {state.campaign_id}")
 
 
-@campaign_app.command("pause")
+@campaign_app.command("pause", cls=IaxCommand)
 def campaign_pause(
     campaign_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Stop scheduling new trials (active ones keep running). Resume later."""
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     try:
-        _orchestrator(runs_dir).pause(campaign_id)
+        state = _orchestrator(runs_dir).pause(campaign_id)
     except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
-    typer.echo(
-        f"Paused {campaign_id} — edit the goal with `iax campaign edit`, "
-        "then `iax campaign resume`."
-    )
+        invalid_input(str(exc))
+    if output_json:
+        _echo_json(state)
+    else:
+        typer.echo(
+            f"Paused {campaign_id} — edit the goal with `iax campaign edit`, "
+            "then `iax campaign resume`."
+        )
 
 
-@campaign_app.command("resume")
+@campaign_app.command("resume", cls=IaxCommand)
 def campaign_resume(
     campaign_id: str = typer.Argument(...),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
 ) -> None:
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     try:
         state = _orchestrator(runs_dir).resume(campaign_id)
     except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
-    typer.echo(f"Resumed {state.campaign_id} ({state.status})")
+        invalid_input(str(exc))
+    if output_json:
+        _echo_json(state)
+    else:
+        typer.echo(f"Resumed {state.campaign_id} ({state.status})")
 
 
-@campaign_app.command("edit")
+@campaign_app.command("edit", cls=IaxCommand)
 def campaign_edit(
     campaign_id: str = typer.Argument(...),
     goal_file: Path = typer.Argument(..., help="New goal YAML to apply"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Replace the campaign's goal mid-flight (search space, budget, strategy).
 
     Existing trial history is kept and feeds the strategy under the new goal.
     The objective metric cannot change. Typical flow: pause -> edit -> resume.
     """
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     try:
         new_goal = GoalSpec.from_yaml(goal_file)
     except Exception as exc:
-        typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        invalid_input(f"invalid goal {goal_file}: {exc}")
     try:
         _orchestrator(runs_dir).edit_goal(campaign_id, new_goal)
     except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
-    typer.echo(f"Updated goal for {campaign_id}.")
+        invalid_input(str(exc))
+    if output_json:
+        _echo_json({"campaign_id": campaign_id, "goal_updated": True})
+    else:
+        typer.echo(f"Updated goal for {campaign_id}.")
 
 
-@campaign_app.command("suggest")
+@campaign_app.command("suggest", cls=IaxCommand)
 def campaign_suggest(
     campaign_id: str = typer.Argument(...),
     params: str = typer.Option(
@@ -731,6 +794,7 @@ def campaign_suggest(
     ),
     note: str = typer.Option("", "--note", help="Why this trial is worth running"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Queue an agent/human-suggested trial for the next planning round."""
     try:
@@ -738,20 +802,22 @@ def campaign_suggest(
         if not isinstance(parsed, dict):
             raise ValueError("params must be a JSON object")
     except (json.JSONDecodeError, ValueError) as exc:
-        typer.echo(f"Error: invalid --params: {exc}", err=True)
-        raise typer.Exit(code=1)
+        invalid_input(f"invalid --params: {exc}")
+    _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     try:
         trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note)
     except ValueError as exc:
-        typer.echo(f"Error: suggestion rejected: {exc}", err=True)
-        raise typer.Exit(code=2)
-    typer.echo(f"Queued {trial.trial_id} with params {trial.params}")
+        invalid_input(f"suggestion rejected: {exc}")
+    if output_json:
+        _echo_json(trial)
+    else:
+        typer.echo(f"Queued {trial.trial_id} with params {trial.params}")
 
 
 # --- cluster commands ---------------------------------------------------------
 
 
-@cluster_app.command("list")
+@cluster_app.command("list", cls=IaxCommand)
 def cluster_list(
     config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
@@ -765,7 +831,7 @@ def cluster_list(
         typer.echo(f"{profile.name:<16} {profile.provider:<6} {profile.address or '-'}")
 
 
-@cluster_app.command("status")
+@cluster_app.command("status", cls=IaxCommand)
 def cluster_status_cmd(
     name: str = typer.Argument(...),
     config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
@@ -775,7 +841,7 @@ def cluster_status_cmd(
     _echo_json(cluster_status(get_cluster(name, config)))
 
 
-@cluster_app.command("up")
+@cluster_app.command("up", cls=IaxCommand)
 def cluster_up_cmd(
     name: str = typer.Argument(...),
     config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
@@ -790,7 +856,7 @@ def cluster_up_cmd(
         raise typer.Exit(code=result.returncode)
 
 
-@cluster_app.command("down")
+@cluster_app.command("down", cls=IaxCommand)
 def cluster_down_cmd(
     name: str = typer.Argument(...),
     config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),

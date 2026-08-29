@@ -59,6 +59,22 @@ metadata:
   project_id: example
 ```
 
+## Reading exit codes
+
+Every command accepts `--json` and reports failures the same way, so branch on
+the exit code instead of on the message text:
+
+| exit | `code` | what to do |
+|---|---|---|
+| 0 | — | success; parse stdout as JSON |
+| 1 | `not_found` | the id is wrong — list with `iax runs` / `iax campaign list` |
+| 2 | `invalid_input` | fix the manifest, the goal, or the params and retry |
+| 3 | `backend_unavailable` | the backend is unreachable; check Ray, then retry |
+
+With `--json`, the failure is one object on stdout: `{"error": ..., "code":
+..., "details": {...}}`. Without it, one line on stderr. Never treat a non-zero
+exit as an empty result.
+
 ## Common validation errors
 
 | Symptom | Cause | Fix |

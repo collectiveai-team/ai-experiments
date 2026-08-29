@@ -69,7 +69,7 @@ def test_validate_rejects_malformed_backend_address(tmp_path):
 
     result = runner.invoke(app, ["validate", str(path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # invalid input, per the CLI error contract
     assert "invalid manifest" in result.stderr
 
 

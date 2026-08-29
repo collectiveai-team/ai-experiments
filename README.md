@@ -316,6 +316,31 @@ iax serve --port 8585           # dashboard + REST API  (needs [server] extra)
 iax cluster list / status / up / down
 ```
 
+### Exit codes and errors
+
+Every command takes `--json` and every failure follows one contract, so an
+agent can branch on the result instead of parsing prose:
+
+| exit | code | meaning |
+|---|---|---|
+| 0 | — | success |
+| 1 | `not_found` | the run, campaign, or bundle does not exist |
+| 2 | `invalid_input` | bad manifest, bad goal, params outside the search space |
+| 3 | `backend_unavailable` | the execution backend could not be reached |
+
+With `--json` the error is one object on **stdout**; without it, one line on
+**stderr**. Successful output always goes to stdout.
+
+```console
+$ iax status run_nope --json; echo "exit=$?"
+{
+  "error": "unknown run 'run_nope'; list them with `iax runs`",
+  "code": "not_found",
+  "details": {"run": "run_nope"}
+}
+exit=1
+```
+
 `iax monitor --quiet-when-waiting` is the Workbench scheduler integration point. It prints nothing while the run should keep waiting. It emits JSON only when the run has completed, failed, looks stuck, or needs delegated review.
 
 ## Example agent prompts
