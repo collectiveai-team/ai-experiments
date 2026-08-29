@@ -273,3 +273,51 @@ def test_failed_trials_recorded_and_loop_continues(tmp_path):
     assert state.status == "completed"
     assert sum(1 for t in state.trials if t.status == "failed") == 1
     assert sum(1 for t in state.trials if t.status == "completed") == 5
+
+
+def test_failed_trial_never_wins_the_campaign(tmp_path):
+    """A crashed trial can report a metric before dying. Its value must not
+    end the campaign as `target_reached` (#12)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+
+    def dying_inspect(run_id: str) -> RunStatus:
+        status = backend.store.read_status(run_id)
+        if status.status in {"submitted", "running"}:
+            backend.store.append_metric(
+                run_id, MetricPoint(step=1, values={"loss": 0.0})
+            )
+            return backend.store.update_status(
+                run_id, status="failed", error="OOM", completed_at=utc_now()
+            )
+        return status
+
+    backend.inspect = dying_inspect  # type: ignore[method-assign]
+    state = orchestrator.start(
+        _goal(objective=ObjectiveSpec(metric="loss", mode="min", target=0.5))
+    )
+    state = orchestrator.advance(state.campaign_id)
+
+    assert any(t.status == "failed" for t in state.trials)
+    assert state.stop_reason != "target_reached"
+    assert state.best_trial_id is None
+
+
+def test_failed_trial_value_still_visible_to_the_agent(tmp_path):
+    """Excluding failures from `best` must not hide them from the history the
+    agent reasons over."""
+    from ai_experiments.planner.analysis import summarize_campaign
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    goal = _goal()
+    state = orchestrator.start(goal)
+    state.trials[0].status = "failed"
+    state.trials[0].objective_value = 0.001
+    state.trials[0].error = "OOM"
+
+    summary = summarize_campaign(state, goal)
+
+    failed = [
+        h for h in summary["history"] if h["trial_id"] == state.trials[0].trial_id
+    ]
+    assert failed and failed[0]["status"] == "failed"
+    assert failed[0]["error"] == "OOM"

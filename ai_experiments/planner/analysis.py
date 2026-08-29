@@ -34,10 +34,20 @@ def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool
 
 
 def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
+    """The best *completed* trial.
+
+    A crashed trial can report a good value moments before it dies — an OOM
+    kill mid-epoch, a diverging run that prints one lucky step. Letting such a
+    value win would end the campaign on a result nobody can reproduce, so only
+    trials that ran to completion are eligible (#12). Failed trials stay in
+    the history the agent reasons over; they just cannot be the answer.
+    """
     scored = [
         t
         for t in state.trials
-        if t.objective_value is not None and math.isfinite(t.objective_value)
+        if t.status == "completed"
+        and t.objective_value is not None
+        and math.isfinite(t.objective_value)
     ]
     if not scored:
         return None
@@ -57,11 +67,13 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     history = [
         {
             "trial_id": t.trial_id,
+            "status": t.status,
             "objective_value": t.objective_value,
             "params": t.params,
+            "error": t.error,
         }
         for t in state.trials
-        if t.objective_value is not None
+        if t.objective_value is not None or t.error is not None
     ]
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
     cost = (
