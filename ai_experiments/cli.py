@@ -42,10 +42,37 @@ def _backend_for_run(run_id: str, store: FilesystemRunStore):
     return backend_for_run(store, run_id)
 
 
+def _worker_log(
+    store: FilesystemRunStore, run_id: str, tail: int, output_json: bool
+) -> None:
+    """The supervisor's own stdout/stderr.
+
+    Anything that kills a supervisor before it can report leaves its traceback
+    here and nowhere else, so this file has to be reachable without knowing
+    the run store's layout.
+    """
+    recorded = store.read_status(run_id).details.get("log_path")
+    path = Path(str(recorded)) if recorded else store.run_dir(run_id) / "worker.log"
+    if not path.exists():
+        typer.echo(f"Error: no worker log for {run_id} ({path})", err=True)
+        raise typer.Exit(code=1)
+    lines = path.read_text(errors="replace").splitlines()[-tail:]
+    if output_json:
+        _echo_json({"path": str(path), "lines": lines})
+    else:
+        for line in lines:
+            typer.echo(line)
+
+
 @app.command()
 def validate(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Fail on warnings, not just on invalid manifests"
+    ),
 ) -> None:
+    from ai_experiments.preflight import workload_warnings
+
     try:
         manifest = ExperimentManifest.from_yaml(config)
     except Exception as exc:
@@ -55,6 +82,13 @@ def validate(
     typer.echo(f"  Experiment: {manifest.experiment}")
     typer.echo(f"  Backend:    {manifest.backend}")
     typer.echo(f"  Workload:   {manifest.workload.entrypoint}")
+
+    warnings = workload_warnings(manifest)
+    for warning in warnings:
+        typer.echo(f"Warning: {warning}", err=True)
+    if warnings and strict:
+        typer.echo("Error: manifest has warnings and --strict is set", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -109,9 +143,17 @@ def logs(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    worker: bool = typer.Option(
+        False,
+        "--worker",
+        help="Show the supervisor's own log instead of the run's events",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
+    if worker:
+        _worker_log(store, run_id, tail=tail, output_json=output_json)
+        return
     events = _backend_for_run(run_id, store).logs(run_id, tail=tail)
     if output_json:
         _echo_json([event.model_dump(mode="json") for event in events])
@@ -177,7 +219,13 @@ def cancel(
 ) -> None:
     store = FilesystemRunStore(runs_dir)
     _backend_for_run(run_id, store).cancel(run_id)
-    typer.echo(f"Cancelled {run_id}")
+    # Cancelling a run that already ended leaves it alone, so report what the
+    # run actually is rather than what was asked for.
+    final = store.read_status(run_id).status
+    if final == "cancelled":
+        typer.echo(f"Cancelled {run_id}")
+    else:
+        typer.echo(f"{run_id} was not cancelled: it is already {final}")
 
 
 @app.command()
@@ -280,14 +328,26 @@ def rerun(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    portable: bool = typer.Option(
+        False,
+        "--portable",
+        help="Resubmit the manifest as it was authored, re-resolving a "
+        "relative working_dir against the current directory, instead of "
+        "repeating the exact paths recorded at submit time",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Resubmit a run's persisted manifest (params are baked in), warning when
-    the current git state differs from the one recorded at submit time."""
+    the current git state differs from the one recorded at submit time.
+
+    By default this repeats the run exactly, on the paths it actually used.
+    ``--portable`` is for the other machine: it takes the manifest as
+    submitted, whose relative ``working_dir`` is what makes it movable.
+    """
     from ai_experiments.repro import current_git_sha, read_repro
 
     store = FilesystemRunStore(runs_dir)
-    manifest = store.read_manifest(run_id)
+    manifest = store.read_manifest(run_id, source=portable)
     if manifest is None:
         typer.echo(f"Error: no persisted manifest for {run_id}", err=True)
         raise typer.Exit(code=1)

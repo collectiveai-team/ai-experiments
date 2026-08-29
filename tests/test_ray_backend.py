@@ -202,3 +202,44 @@ def test_local_submit_preserves_the_mlflow_linkage(tmp_path):
     assert status.details["mlflow_run_id"]
     assert status.backend == "local"
     assert status.error is None
+
+
+# -- cancelling must not rewrite how a job actually ended ----------------------
+
+
+def test_ray_cancel_does_not_rewrite_a_job_that_already_failed(tmp_path):
+    """A Ray run has no local supervisor, so its stored status is only as
+    fresh as the last inspect. Cancelling used to stamp `cancelled` over a job
+    that had failed on its own -- and the MLflow mirror then reported KILLED,
+    "someone stopped this on purpose", in the one place an operator looks to
+    find out why training died."""
+    store = FilesystemRunStore(tmp_path / "runs")
+    client = FakeRayClient(status="RUNNING")
+    backend = RayBackend(store=store, client_factory=lambda _address: client)
+    handle = backend.submit(_manifest(tmp_path))
+    assert store.read_status(handle.run_id).status == "submitted"
+
+    # The job fails on the cluster. Nothing has inspected it since, so the
+    # store still says the run is live.
+    client.status = "FAILED"
+    client.message = "the workload raised"
+
+    backend.cancel(handle.run_id)
+
+    status = store.read_status(handle.run_id)
+    assert status.status == "failed"
+    assert status.error == "the workload raised"
+    assert client.stopped == []  # nothing to stop; nothing was signalled
+
+
+def test_ray_cancel_still_stops_a_running_job(tmp_path):
+    """The control: cancellation of a live job must keep working."""
+    store = FilesystemRunStore(tmp_path / "runs")
+    client = FakeRayClient(status="RUNNING")
+    backend = RayBackend(store=store, client_factory=lambda _address: client)
+    handle = backend.submit(_manifest(tmp_path))
+
+    backend.cancel(handle.run_id)
+
+    assert client.stopped == ["ray-job-1"]
+    assert store.read_status(handle.run_id).status == "cancelled"

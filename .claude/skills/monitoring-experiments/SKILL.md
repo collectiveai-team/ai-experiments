@@ -46,12 +46,14 @@ Each run lives under `<runs_dir>/<run_id>/`:
 
 | File | Contents |
 |---|---|
-| `manifest.yaml` | The submitted manifest. |
+| `manifest.yaml` | What was executed: the submitted manifest with `workload.working_dir` resolved to an absolute path, so it means the same thing from any directory. |
+| `manifest.source.yaml` | What was submitted, verbatim — the portable form, present only when the author wrote a relative `working_dir`. `iax rerun --portable` resubmits this one. |
 | `status.json` | Current `RunStatus` (status, exit_code, error, details, timestamps). |
 | `events.jsonl` | One JSON `RunEvent` per line; what `iax logs` reads. |
 | `metrics.jsonl` | `MetricPoint`s parsed from the workload's `IAX_METRIC` stdout lines; what `iax metrics` reads. Present on both backends once the workload reports. |
 | `escalation.json` | Escalation-ladder state (suspicious tick count, agent-call budget) written by the daemon. |
-| `worker.log` | Local backend only: raw stdout/stderr from the workload. Ray run dirs lack it. |
+| `cancel.requested` | Local backend only: created by `iax cancel` before it signals. Its presence is what lets the supervisor report a stop it was asked for as `cancelled`, and one it was not (a kernel OOM kill) as `failed`. |
+| `worker.log` | Local backend only: the *supervisor's* own stdout/stderr, including any traceback that killed it — `iax logs <run> --worker` prints it. The workload's output goes to `events.jsonl`. Ray run dirs lack it. |
 
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
 `outputs/experiments/runs`.

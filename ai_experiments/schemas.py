@@ -21,6 +21,11 @@ RunState = Literal[
     "unknown",
 ]
 
+#: States a run can still be acted on in. Cancelling anything else would
+#: rewrite how the run actually ended, so both backends and the daemon gate on
+#: this same set rather than on their own copies of it.
+ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
+
 BackendName = Literal["local", "ray"]
 
 

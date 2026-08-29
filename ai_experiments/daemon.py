@@ -35,7 +35,12 @@ from ai_experiments.monitoring.escalation import (
 )
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
-from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
+from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
+    MonitorPolicy,
+    RunEvent,
+    utc_now,
+)
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
@@ -48,7 +53,16 @@ NOTIFY_ACTIONS = {
     "reaped_dead_process",
 }
 
-ACTIVE_RUN_STATES = {"submitted", "running"}
+#: How each reap outcome reads in a run's ``error``. Outcomes that mean the
+#: workload was already gone say nothing -- there is nothing to report.
+_ORPHAN_SUMMARY = {
+    "terminated": "terminated",
+    "killed": "killed (it ignored SIGTERM)",
+    "identity_unverifiable": "left running: its pid could not be verified",
+    "identity_mismatch": "already gone (its pid has been reused)",
+    "kill_failed": "could not be killed and may still be running",
+    "reap_failed": "could not be reaped",
+}
 
 
 class RunAction(BaseModel):
@@ -56,6 +70,7 @@ class RunAction(BaseModel):
     decision: str
     action: str
     reasons: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class TickReport(BaseModel):
@@ -198,22 +213,39 @@ class MonitorDaemon:
         policy: MonitorPolicy,
     ) -> RunAction:
         if "process_dead" in decision.reasons:
-            # The worker is already gone; reap instead of cancelling.
+            # The worker is already gone; reap instead of cancelling. The
+            # workload it was supervising can easily have outlived it -- it is
+            # a separate process -- so reaping the *run* without also dealing
+            # with the workload reports a clean death over a live GPU job.
+            try:
+                reaped = backend.reap(run_id)
+            except Exception as exc:
+                reaped = {"outcome": "reap_failed", "error": str(exc)}
+            error = "worker process died without reporting a final status"
+            summary = _ORPHAN_SUMMARY.get(str(reaped.get("outcome")))
+            if summary:
+                error = f"{error}; orphaned workload {summary}"
             self.run_store.update_status(
                 run_id,
                 status="failed",
                 completed_at=utc_now(),
-                error="worker process died without reporting a final status",
+                error=error,
+                details={"workload_reap": reaped},
             )
             self.run_store.append_event(
                 run_id,
-                RunEvent(level="error", message="run reaped: worker process dead"),
+                RunEvent(
+                    level="error",
+                    message="run reaped: worker process dead",
+                    details={"workload_reap": reaped},
+                ),
             )
             return RunAction(
                 run_id=run_id,
                 decision="kill",
                 action="reaped_dead_process",
                 reasons=decision.reasons,
+                details={"workload_reap": reaped},
             )
         if policy.auto_kill:
             backend.cancel(run_id)

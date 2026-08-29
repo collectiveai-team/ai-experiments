@@ -53,6 +53,10 @@ print("workload logged to mlflow directly", flush=True)
 
 FAILING = "import sys; print('boom', flush=True); sys.exit(3)"
 SLEEPER = "import time; print('sleeping', flush=True); time.sleep(300)"
+OOM_KILLED = (
+    "import os, signal; print('training', flush=True); "
+    "os.kill(os.getpid(), signal.SIGKILL)"
+)
 
 
 def _run(tmp_path, mlflow_uri, script: str, name: str):
@@ -174,6 +178,26 @@ def test_daemon_mirrors_a_failed_run_as_failed(tmp_path, mlflow_uri, mlflow_api)
     final = _wait_terminal(store, handle.run_id)
     assert final.status == "failed"
     assert final.exit_code == 3
+
+    MonitorDaemon(store).tick()
+
+    run = mlflow_api("runs/get", run_id=mlflow_run_id)["run"]
+    assert run["info"]["status"] == "FAILED"
+
+
+def test_daemon_mirrors_an_oom_killed_run_as_failed(tmp_path, mlflow_uri, mlflow_api):
+    """A SIGKILLed workload is a failure, and MLflow has to say so.
+
+    It used to be recorded as `cancelled` -> `KILLED`, which is how MLflow
+    marks a run someone stopped on purpose: the one place an operator would
+    look to find out why training died told them a person did it.
+    """
+    store, handle = _run(tmp_path, mlflow_uri, OOM_KILLED, "oom")
+    mlflow_run_id = store.read_status(handle.run_id).details["mlflow_run_id"]
+
+    final = _wait_terminal(store, handle.run_id)
+    assert final.status == "failed"
+    assert "signal 9" in (final.error or "")
 
     MonitorDaemon(store).tick()
 
