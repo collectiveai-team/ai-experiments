@@ -529,7 +529,7 @@ agent can branch on the result instead of parsing prose:
 | 0 | — | success |
 | 1 | `not_found` | the run, campaign, or bundle does not exist |
 | 2 | `invalid_input` | bad manifest, bad goal, params outside the search space |
-| 3 | `backend_unavailable` | the execution backend could not be reached |
+| 3 | `backend_unavailable` | the execution backend could not be reached — for `iax loop`, no trial could start |
 | 4 | — | `iax loop` only: the loop ran, the objective was not reached |
 
 With `--json` the error is one object on **stdout**; without it, one line on
