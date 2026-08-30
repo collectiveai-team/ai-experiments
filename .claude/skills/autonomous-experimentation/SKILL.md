@@ -76,6 +76,10 @@ ending the campaign. Continue the same one — history and all — with:
 iax loop goal.yaml --resume <campaign_id> --json
 ```
 
+A report with a non-empty `pending_trials` stopped with work still running.
+Those trials have no value recorded yet, so resume before you conclude
+anything — the best trial may be one the loop never got to read.
+
 From python, the same loop is `ai_experiments.api.run_loop(goal)`. Use it when
 you are composing the goal in code rather than in a file.
 
