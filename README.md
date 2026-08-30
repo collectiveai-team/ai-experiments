@@ -403,6 +403,11 @@ opt-in points:
 - **Campaign review** — set `analysis.agent_review: true` and each round drops
   a review request with the trial history; the agent queues better trials with
   `iax campaign suggest <campaign_id> --params '{"lr": 3e-4}'`.
+- **Development hand-off** — a review that answers `needs_change` stops the
+  campaign with `blocked_on_change` and files a ticket. `iax handoff` turns
+  that ticket into an issue on a fresh `exp/<campaign>-<digest>` worktree and
+  calls a development flow (`orq-lite intake` by default). The fix never lands
+  on the branch the campaign measured, so before and after stay comparable.
 
 ## Install
 
@@ -547,6 +552,7 @@ iax leaderboard
 # one goal in, one answer out (the agent entry point)
 iax loop goal.yaml --json --max-rounds 20    # exit 0 = target reached, 4 = not
 iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
+iax handoff <campaign_id> --dry-run          # a defect blocks the goal: file it as development work
 
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml

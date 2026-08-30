@@ -34,14 +34,22 @@ Rules:
 REVIEW_CONTRACT = """Reply with one JSON object, last thing in your message:
 
 {
-  "verdict": "continue" | "stop" | "change_goal",
+  "verdict": "continue" | "stop" | "change_goal" | "needs_change",
   "reason": "one sentence",
   "observations": ["what the evidence actually shows"],
-  "suggested_changes": {"search_space": {}, "budget": {}}
+  "suggested_changes": {"search_space": {}, "budget": {}},
+  "change": {"title": "", "files": [], "acceptance": ""}
 }
 
 Use "stop" when further trials cannot reach the target, and "change_goal" when
-the search space or the budget is what blocks it."""
+the search space or the budget is what blocks it.
+
+Use "needs_change" only when no choice of parameters can help, because the
+defect is in the code — every trial failing on the same error, a workload that
+reports no metric, a harness that returns NaN at the edge of the space. It
+stops the campaign and sends a ticket to a developer, so it costs more than a
+wrong "continue". Fill "change": point "files" at what the evidence names, and
+write "acceptance" as the single check that would prove the fix."""
 
 
 def round_brief(goal: GoalSpec, summary: dict[str, Any], max_trials: int) -> str:
