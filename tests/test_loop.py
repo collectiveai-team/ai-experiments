@@ -311,3 +311,64 @@ def test_loop_command_rejects_an_invalid_goal(tmp_path):
     result = runner.invoke(app, ["loop", str(path)])
 
     assert result.exit_code == 2
+
+
+def test_max_rounds_collects_the_round_it_already_paid_for(tmp_path):
+    """A trial that finished before the limit must not be thrown away.
+
+    `FakeBackend` completes a run on the next inspect, exactly like a real
+    backend whose process ends between two ticks. Stopping without that final
+    read left the trial `submitted` forever, and its measured value unread
+    (found by a real campaign on vjepa-experiment: a GPU trial ran, completed,
+    and never entered the leaderboard).
+    """
+    orchestrator, store = _harness(tmp_path)
+    goal = _goal(objective={"metric": "loss", "mode": "min", "target": 1e-12})
+
+    report = run_loop(
+        goal, store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+
+    state = CampaignStore(store.root).read_state(report.campaign_id)
+    assert state.trials
+    assert [t.status for t in state.trials] == ["completed"] * len(state.trials)
+    assert all(t.objective_value is not None for t in state.trials)
+    assert report.pending_trials == []
+    assert report.best is not None
+
+
+def test_the_report_names_the_trials_it_could_not_collect(tmp_path):
+    """A campaign with work in flight is not an answer, and must not read as one."""
+
+    class SlowBackend(FakeBackend):
+        def inspect(self, run_id):  # never finishes
+            return self.store.read_status(run_id)
+
+    store = FilesystemRunStore(tmp_path / "runs")
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: SlowBackend(store),
+    )
+
+    report = run_loop(
+        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+
+    assert report.loop_stop == "max_rounds"
+    assert report.pending_trials
+    assert not report.target_reached
+
+
+def test_reconcile_finishes_a_campaign_whose_last_trial_met_the_target(tmp_path):
+    """The target can be met by the very round the limit interrupted."""
+    orchestrator, store = _harness(tmp_path)
+
+    run_loop(
+        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+    campaign_id = CampaignStore(store.root).list_campaigns()[0]
+    state = orchestrator.reconcile(campaign_id)
+
+    assert state.status in {"running", "completed"}
+    assert all(t.status != "submitted" for t in state.trials)
