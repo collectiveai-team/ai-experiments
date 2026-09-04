@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -44,6 +45,16 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def with_resolved_working_dir(manifest: ExperimentManifest) -> ExperimentManifest:
+    """Copy of ``manifest`` whose ``workload.working_dir`` is absolute."""
+    working_dir = Path(manifest.workload.working_dir)
+    if working_dir.is_absolute():
+        return manifest
+    resolved = manifest.model_copy(deep=True)
+    resolved.workload.working_dir = str(working_dir.resolve())
+    return resolved
+
+
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
@@ -56,17 +67,38 @@ class FilesystemRunStore:
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
+        """Persist ``manifest`` into a fresh run directory.
+
+        The run directory keeps two manifests when they differ, because they
+        answer two different questions:
+
+        ``manifest.yaml`` -- **what was executed**. ``working_dir`` is resolved
+        here, once, against the submitting process's CWD, the only process
+        that knows what a relative path in the manifest means. Everything
+        downstream (the detached worker, the Ray runtime_env upload, ``iax
+        rerun``) reads it from a different CWD, so a relative path stored
+        verbatim would be resolved a second time against the wrong directory.
+
+        ``manifest.source.yaml`` -- **what was submitted**, byte for byte. A
+        relative ``working_dir`` is what makes a manifest portable: it is the
+        form that can be shared, committed, and submitted on another machine.
+        Resolving is necessary to run the thing; destroying the authored form
+        while doing so would trade one kind of reproducibility for another.
+        """
+        resolved = with_resolved_working_dir(manifest)
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         run_dir = self.root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
-        (run_dir / "manifest.yaml").write_text(manifest.to_yaml())
+        (run_dir / "manifest.yaml").write_text(resolved.to_yaml())
+        if resolved is not manifest:
+            (run_dir / "manifest.source.yaml").write_text(manifest.to_yaml())
         (run_dir / "events.jsonl").touch()
         (run_dir / "artifacts").mkdir()
         if self.capture_repro:
             from ai_experiments.repro import capture_repro
 
             try:
-                capture_repro(run_dir, manifest.workload.working_dir)
+                capture_repro(run_dir, resolved.workload.working_dir)
             except Exception:
                 pass  # reproducibility capture must never block a submit
         return run_id, run_dir
@@ -157,19 +189,42 @@ class FilesystemRunStore:
         self.write_status(updated)
         return updated
 
+    def cancel_marker_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "cancel.requested"
+
+    def request_cancel(self, run_id: str) -> None:
+        """Record that *iax* asked this run to stop.
+
+        A separate, create-once file rather than a field in ``status.json``:
+        the canceller is a different process from the run's supervisor, and
+        ``update_status`` is an unlocked read-modify-write, so a flag written
+        there can be silently clobbered by the supervisor's next heartbeat
+        (see ``.scratch/proposals/concurrent-status-writes.md``). This file
+        has exactly one writer and one meaning, so nothing can lose it.
+        """
+        try:
+            fd = os.open(
+                self.cancel_marker_path(run_id),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            return  # already requested; the first request is the one that counts
+        with os.fdopen(fd, "w") as fh:
+            fh.write(utc_now().isoformat() + "\n")
+
+    def cancel_requested(self, run_id: str) -> bool:
+        """Whether a cancellation was requested for this run."""
+        return self.cancel_marker_path(run_id).exists()
+
     def append_event(self, run_id: str, event: RunEvent) -> None:
         events_path = self.run_dir(run_id) / "events.jsonl"
         with events_path.open("a") as fh:
             fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def read_events(self, run_id: str, tail: int | None = None) -> list[RunEvent]:
-        events_path = self.run_dir(run_id) / "events.jsonl"
-        if not events_path.exists():
-            return []
-        lines = events_path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [RunEvent(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.run_dir(run_id) / "events.jsonl", tail)
+        return [RunEvent(**json.loads(line)) for line in lines]
 
     def metrics_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "metrics.jsonl"
@@ -185,13 +240,8 @@ class FilesystemRunStore:
         )
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
-        path = self.metrics_path(run_id)
-        if not path.exists():
-            return []
-        lines = path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [MetricPoint(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.metrics_path(run_id), tail)
+        return [MetricPoint(**json.loads(line)) for line in lines]
 
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
@@ -217,8 +267,26 @@ class FilesystemRunStore:
             )
         return entries
 
-    def read_manifest(self, run_id: str) -> ExperimentManifest | None:
-        path = self.run_dir(run_id) / "manifest.yaml"
+    def manifest_path(self, run_id: str) -> Path:
+        """What was executed: absolute ``working_dir``, safe from any CWD."""
+        return self.run_dir(run_id) / "manifest.yaml"
+
+    def source_manifest_path(self, run_id: str) -> Path:
+        """What was submitted, verbatim. Absent when the two are identical."""
+        return self.run_dir(run_id) / "manifest.source.yaml"
+
+    def read_manifest(
+        self, run_id: str, source: bool = False
+    ) -> ExperimentManifest | None:
+        """The run's manifest; ``source=True`` for the portable original.
+
+        ``source`` falls back to the executed manifest when no separate
+        original was kept, so callers that want "the manifest as the author
+        wrote it" always get the closest available answer.
+        """
+        path = self.source_manifest_path(run_id) if source else Path()
+        if not path.is_file():
+            path = self.manifest_path(run_id)
         if not path.exists():
             return None
         return ExperimentManifest.from_yaml(path)
@@ -233,3 +301,18 @@ class FilesystemRunStore:
             for path in self.root.iterdir()
             if path.is_dir() and not path.name.startswith("_")
         )
+
+
+def _read_lines(path: Path, tail: int | None) -> list[str]:
+    """The non-empty lines of an append-only file, at most ``tail`` of them.
+
+    Both these files grow without bound while a run does, and every monitoring
+    tick reads the last few. Streaming into a bounded deque keeps that read
+    proportional to what the caller asked for, not to how long the run has
+    been going.
+    """
+    if not path.exists():
+        return []
+    with path.open() as handle:
+        lines = deque(handle, maxlen=tail) if tail is not None else handle.readlines()
+    return [line for line in lines if line.strip()]

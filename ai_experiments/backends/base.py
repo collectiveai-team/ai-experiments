@@ -31,3 +31,12 @@ class ExperimentBackend(ABC):
     @abstractmethod
     def diagnose(self, run_id: str) -> DiagnosisReport:
         raise NotImplementedError
+
+    def reap(self, run_id: str) -> dict[str, object]:
+        """Clean up whatever a run left behind when its supervisor died.
+
+        Called instead of :meth:`cancel` when there is no supervisor left to
+        ask. Backends whose runs cannot outlive their supervision (Ray tracks
+        the job itself) need do nothing.
+        """
+        return {"outcome": "unsupported"}
