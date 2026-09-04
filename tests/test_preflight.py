@@ -84,7 +84,7 @@ def test_validate_strict_fails_on_warnings(tmp_path):
 
     result = runner.invoke(app, ["validate", str(path), "--strict"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # invalid input, per the CLI error contract
     assert "is not on PATH" in result.stderr
 
 
@@ -192,7 +192,7 @@ def test_submit_strict_refuses_and_creates_no_run(tmp_path):
         app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"]
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "is not on PATH" in result.stderr
     listed = runner.invoke(app, ["runs", "--runs-dir", str(runs_dir), "--json"])
     assert json.loads(listed.stdout) == []
@@ -219,7 +219,7 @@ def test_campaign_start_strict_refuses_and_creates_no_campaign(tmp_path):
         ["campaign", "start", str(path), "--runs-dir", str(runs_dir), "--strict"],
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     listed = runner.invoke(
         app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"]
     )

@@ -98,7 +98,8 @@ def test_ray_failed_status_records_error(tmp_path):
 
     status = backend.inspect(handle.run_id)
     assert status.status == "failed"
-    assert status.error == "worker crashed"
+    # The prefix says where the failure came from; the tail says what it was.
+    assert status.error == "Ray job failed: worker crashed"
 
     report = backend.diagnose(handle.run_id)
     assert report.decision.decision == "training_failed"
@@ -228,7 +229,8 @@ def test_ray_cancel_does_not_rewrite_a_job_that_already_failed(tmp_path):
 
     status = store.read_status(handle.run_id)
     assert status.status == "failed"
-    assert status.error == "the workload raised"
+    # The message is the job's own, trimmed to the part that explains it.
+    assert "the workload raised" in str(status.error)
     assert client.stopped == []  # nothing to stop; nothing was signalled
 
 

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
@@ -94,6 +94,9 @@ class EscalationLadder:
 
 
 class EscalationRequest(BaseModel):
+    """One suspicious run, waiting for an agent to diagnose it."""
+
+    kind: Literal["run"] = "run"
     run_id: str
     created_at: datetime = Field(default_factory=utc_now)
     decision: MonitorDecision
@@ -103,6 +106,29 @@ class EscalationRequest(BaseModel):
         "Diagnose with the diagnosing-experiments skill; cancel via "
         "`iax cancel <run_id>` if it cannot recover."
     )
+
+
+class CampaignReview(BaseModel):
+    """One campaign asking an agent to reshape its search.
+
+    Written by the orchestrator when ``analysis.agent_review`` is on. It shares
+    the ``_escalations/`` inbox with run escalations but has none of their
+    fields, so both kinds carry a ``kind`` discriminator and the inbox reader
+    dispatches on the filename (#4).
+    """
+
+    kind: Literal["campaign"] = "campaign"
+    type: str = "campaign_review"
+    campaign_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    summary: dict = Field(default_factory=dict)
+    note: str = ""
+
+
+EscalationItem = EscalationRequest | CampaignReview
+
+#: Filename prefix that marks a campaign review inside the escalation inbox.
+CAMPAIGN_PREFIX = "campaign_"
 
 
 def escalate(
@@ -146,14 +172,39 @@ def clear_escalation(store: FilesystemRunStore, run_id: str) -> None:
     path.unlink(missing_ok=True)
 
 
-def list_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
+def clear_campaign_review(store: FilesystemRunStore, campaign_id: str) -> None:
+    path = store.root / "_escalations" / f"{CAMPAIGN_PREFIX}{campaign_id}.json"
+    path.unlink(missing_ok=True)
+
+
+def list_escalations(store: FilesystemRunStore) -> list[EscalationItem]:
+    """Every open work item for an agent: suspicious runs and campaign reviews.
+
+    This is the agent's inbox, so it must never raise. A file it cannot parse
+    is skipped — one malformed payload used to break every later read.
+    """
     escalations_dir = store.root / "_escalations"
     if not escalations_dir.exists():
         return []
-    requests = []
+    items: list[EscalationItem] = []
     for path in sorted(escalations_dir.glob("*.json")):
-        requests.append(EscalationRequest(**json.loads(path.read_text())))
-    return requests
+        try:
+            payload = json.loads(path.read_text())
+            if path.name.startswith(CAMPAIGN_PREFIX):
+                items.append(CampaignReview(**payload))
+            else:
+                items.append(EscalationRequest(**payload))
+        except (json.JSONDecodeError, ValidationError, OSError):
+            continue
+    return items
+
+
+def list_run_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
+    return [i for i in list_escalations(store) if isinstance(i, EscalationRequest)]
+
+
+def list_campaign_reviews(store: FilesystemRunStore) -> list[CampaignReview]:
+    return [i for i in list_escalations(store) if isinstance(i, CampaignReview)]
 
 
 def _in_cooldown(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+import pytest
+
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.orchestrator import CampaignOrchestrator
@@ -273,3 +275,189 @@ def test_failed_trials_recorded_and_loop_continues(tmp_path):
     assert state.status == "completed"
     assert sum(1 for t in state.trials if t.status == "failed") == 1
     assert sum(1 for t in state.trials if t.status == "completed") == 5
+
+
+def test_failed_trial_never_wins_the_campaign(tmp_path):
+    """A crashed trial can report a metric before dying. Its value must not
+    end the campaign as `target_reached` (#12)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+
+    def dying_inspect(run_id: str) -> RunStatus:
+        status = backend.store.read_status(run_id)
+        if status.status in {"submitted", "running"}:
+            backend.store.append_metric(
+                run_id, MetricPoint(step=1, values={"loss": 0.0})
+            )
+            return backend.store.update_status(
+                run_id, status="failed", error="OOM", completed_at=utc_now()
+            )
+        return status
+
+    backend.inspect = dying_inspect  # type: ignore[method-assign]
+    state = orchestrator.start(
+        _goal(objective=ObjectiveSpec(metric="loss", mode="min", target=0.5))
+    )
+    state = orchestrator.advance(state.campaign_id)
+
+    assert any(t.status == "failed" for t in state.trials)
+    assert state.stop_reason != "target_reached"
+    assert state.best_trial_id is None
+
+
+def test_failed_trial_value_still_visible_to_the_agent(tmp_path):
+    """Excluding failures from `best` must not hide them from the history the
+    agent reasons over."""
+    from ai_experiments.planner.analysis import summarize_campaign
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    goal = _goal()
+    state = orchestrator.start(goal)
+    state.trials[0].status = "failed"
+    state.trials[0].objective_value = 0.001
+    state.trials[0].error = "OOM"
+
+    summary = summarize_campaign(state, goal)
+
+    failed = [
+        h for h in summary["history"] if h["trial_id"] == state.trials[0].trial_id
+    ]
+    assert failed and failed[0]["status"] == "failed"
+    assert failed[0]["error"] == "OOM"
+
+
+def test_typod_objective_metric_is_reported_on_the_trial(tmp_path):
+    """A workload that reports metrics but not *the* objective metric must
+    say so on the trial and in the events (#11)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(objective=ObjectiveSpec(metric="val_loss")))
+    state = orchestrator.advance(state.campaign_id)
+
+    finished = [t for t in state.trials if t.status in {"completed", "failed"}]
+    assert finished
+    assert all(t.objective_value is None for t in finished)
+    assert all("val_loss" in (t.error or "") for t in finished)
+    assert all("loss" in (t.error or "") for t in finished)
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    assert any(e.level == "warning" and "objective" in e.message for e in events)
+
+
+def test_objective_never_reported_stops_the_campaign_early(tmp_path):
+    """The budget must not be burned silently on a metric nobody reports."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(
+        _goal(
+            objective=ObjectiveSpec(metric="val_loss"),
+            budget=BudgetSpec(max_trials=20, max_parallel=2),
+        )
+    )
+    for _ in range(20):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+
+    assert state.status == "failed"
+    assert state.stop_reason == "objective_not_reported"
+    assert len(state.trials) < 20
+
+
+def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
+    """No metrics at all is a different diagnosis from the wrong metric name."""
+    orchestrator, backend = _orchestrator(tmp_path)
+
+    def silent_inspect(run_id: str) -> RunStatus:
+        status = backend.store.read_status(run_id)
+        if status.status in {"submitted", "running"}:
+            return backend.store.update_status(
+                run_id, status="completed", completed_at=utc_now()
+            )
+        return status
+
+    backend.inspect = silent_inspect  # type: ignore[method-assign]
+    state = orchestrator.start(_goal())
+    state = orchestrator.advance(state.campaign_id)
+
+    finished = [t for t in state.trials if t.status == "completed"]
+    assert finished
+    assert all("no metrics" in (t.error or "") for t in finished)
+
+
+def test_exhausted_search_space_ends_the_campaign(tmp_path):
+    """A grid smaller than max_trials must terminate, not sit in `running`
+    forever with the planner returning [] every tick (#15)."""
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(
+        _goal(
+            search_space={"x": {"type": "choice", "values": [1.0, 2.0, 3.0]}},
+            budget=BudgetSpec(max_trials=50, max_parallel=2),
+            strategy=StrategySpec(name="grid", seed=1),
+        )
+    )
+    for _ in range(20):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+
+    assert state.status == "completed"
+    assert state.stop_reason == "search_space_exhausted"
+    assert len(state.trials) == 3
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    assert any("search space" in e.message for e in events)
+
+
+def test_suggest_rejects_params_outside_the_search_space(tmp_path):
+    """An unknown key would become a literal --not_a_param flag on the
+    workload's command line and crash it as a failed trial (#13)."""
+    from ai_experiments.planner.validation import ParamValidationError
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+
+    with pytest.raises(ParamValidationError):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0, "not_a_param": 42})
+    with pytest.raises(ParamValidationError):
+        orchestrator.suggest(state.campaign_id, {"x": 99.0})
+
+    assert not [
+        t
+        for t in orchestrator.campaign_store.read_state(state.campaign_id).trials
+        if t.source == "agent"
+    ]
+
+
+def test_suggest_respects_max_trials(tmp_path):
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(budget=BudgetSpec(max_trials=1, max_parallel=1)))
+
+    with pytest.raises(ValueError, match="budget"):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0})
+
+    for _ in range(5):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status != "running":
+            break
+    assert len(backend.submitted) == 1
+
+
+def test_suggest_rejects_a_finished_campaign(tmp_path):
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal())
+    orchestrator.stop(state.campaign_id)
+
+    with pytest.raises(ValueError, match="stopped"):
+        orchestrator.suggest(state.campaign_id, {"x": 1.0})
+
+
+def test_agent_review_round_keeps_the_escalation_inbox_readable(tmp_path):
+    """End-to-end guard for #4: a campaign with agent_review on must not
+    poison `iax escalations`."""
+    from ai_experiments.monitoring.escalation import list_escalations
+
+    orchestrator, backend = _orchestrator(tmp_path)
+    state = orchestrator.start(_goal(analysis={"agent_review": True}))
+    state = orchestrator.advance(state.campaign_id)
+
+    items = list_escalations(orchestrator.run_store)
+    assert [i.kind for i in items] == ["campaign"]
+    assert items[0].summary["campaign_id"] == state.campaign_id

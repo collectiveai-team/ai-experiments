@@ -16,3 +16,7 @@ manual_test/
 .scratch
 .agents
 .serena/
+.orquestalite/
+team.json
+*.pyc
+*.pyo
