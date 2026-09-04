@@ -63,6 +63,21 @@ AgentRunnerFactory = Callable[[GoalSpec, str], AgentRunner]
 #: Stop reason recorded when the agent itself says more trials cannot help.
 AGENT_STOP_REASON = "agent_requested_stop"
 
+#: Every reason a campaign can end with, and what the reader should do about
+#: it. This is the contract the skills and the README document, so a new reason
+#: added without a line here fails `tests/test_stop_reasons.py`.
+STOP_REASONS: dict[str, str] = {
+    "target_reached": "the objective target was met; the best trial is the answer",
+    "budget_exhausted": "max_trials were run without reaching the target",
+    "max_hours_exceeded": "budget.max_hours elapsed",
+    "gpu_hours_exhausted": "budget.max_gpu_hours were spent",
+    "search_space_exhausted": "the planner ran out of points; widen the goal",
+    "backend_unavailable": "no trial could be submitted; start the cluster",
+    "objective_not_reported": "trials ran but never reported the objective metric",
+    AGENT_STOP_REASON: "the reviewing agent judged the campaign hopeless",
+    "user_requested": "`iax campaign stop`",
+}
+
 
 class CampaignOrchestrator:
     def __init__(
