@@ -17,6 +17,7 @@ The loop always terminates. It stops on a terminal campaign status, on
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any, Callable
 
@@ -26,12 +27,16 @@ from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
+from ai_experiments.monitoring.escalation import ChangeRequest, record_change_request
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import CampaignState, GoalSpec
 from ai_experiments.store import FilesystemRunStore
 
 TERMINAL_STATUSES = {"completed", "stopped", "failed"}
+
+#: The campaign stopped because the code, not the search, is what blocks it.
+BLOCKED_ON_CHANGE = "blocked_on_change"
 
 #: Why the loop returned. Only ``target_reached`` means the goal was met.
 LoopStop = str
@@ -52,6 +57,8 @@ class LoopReport(BaseModel):
     #: Trials still in flight when the loop returned. Non-empty means the
     #: campaign has unread work: resume it before you conclude anything.
     pending_trials: list[str] = Field(default_factory=list)
+    #: Set when the loop stopped because the blocker is a defect, not the search.
+    change_request: dict[str, Any] | None = None
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -85,6 +92,7 @@ def run_loop(
         state = orchestrator.advance(campaign_id)
 
     reviews: list[dict[str, Any]] = []
+    change_request: dict[str, Any] | None = None
     loop_stop = "campaign_finished"
     iterations = 0
 
@@ -105,10 +113,20 @@ def run_loop(
         state = orchestrator.advance(state.campaign_id)
 
         if state.rounds > rounds_before and state.status not in TERMINAL_STATUSES:
-            verdict = _review(orchestrator, state, reviews)
+            review = _review(orchestrator, state, reviews)
+            verdict = str(review.get("verdict", ""))
             if verdict == "stop":
                 state = orchestrator.stop(state.campaign_id, "agent_review_stop")
                 loop_stop = "agent_review_stop"
+                break
+            if verdict == "needs_change":
+                # No parameter fixes a defect. Spending the rest of the budget
+                # would only buy more copies of the same failure.
+                change = _change_request(state, review)
+                record_change_request(store, change)
+                change_request = change.model_dump(mode="json")
+                state = orchestrator.stop(state.campaign_id, BLOCKED_ON_CHANGE)
+                loop_stop = "needs_change"
                 break
 
     if loop_stop in {"max_rounds", "max_seconds"}:
@@ -134,6 +152,7 @@ def run_loop(
         elapsed_seconds=round(now() - started, 3),
         loop_stop=loop_stop,
         pending_trials=pending,
+        change_request=change_request,
         objective=summary["objective"],
         best=summary["best"],
         history=summary["history"],
@@ -145,18 +164,18 @@ def _review(
     orchestrator: CampaignOrchestrator,
     state: CampaignState,
     reviews: list[dict[str, Any]],
-) -> str:
+) -> dict[str, Any]:
     """Ask the agent whether the campaign is still worth running.
 
-    Returns the verdict, or ``""`` when no review happened — reviews are
-    opt-in, budgeted like any other agent call, and a failed review never
-    stops a campaign that is otherwise making progress.
+    Returns the reply, or ``{}`` when no review happened — reviews are opt-in,
+    budgeted like any other agent call, and a failed review never stops a
+    campaign that is otherwise making progress.
     """
     goal = orchestrator.campaign_store.read_goal(state.campaign_id)
     if not goal.analysis.review_between_rounds:
-        return ""
+        return {}
     if state.agent_calls >= goal.agent.max_calls:
-        return ""
+        return {}
 
     runner: AgentRunner = orchestrator.agent_runner(goal, state.campaign_id)
     summary = summarize_campaign(state, goal)
@@ -168,12 +187,54 @@ def _review(
     RoundLog(orchestrator.campaign_store.campaign_dir(state.campaign_id)).append(record)
     reviews.append(record.outcome)
     if not result.ok:
-        return ""
+        return {}
 
     verdict = str(result.payload.get("verdict", ""))
     if verdict == "change_goal" and goal.analysis.apply_agent_changes:
         _apply_changes(orchestrator, state, goal, result.payload)
-    return verdict
+    return result.payload
+
+
+def _change_request(state: CampaignState, review: dict[str, Any]) -> ChangeRequest:
+    """Turn a `needs_change` verdict into a ticket a development flow can take.
+
+    The agent supplies the diagnosis; the evidence comes from the campaign
+    record, so a reader can check the claim instead of trusting it. The failed
+    trials are the evidence that matters: a defect the search cannot route
+    around shows up as the same error, trial after trial.
+    """
+    change = review.get("change") or {}
+    failed = [t for t in state.trials if t.status == "failed"]
+    title = str(change.get("title") or "").strip() or (
+        f"{state.name}: the campaign cannot proceed without a code change"
+    )
+    files = [str(f) for f in (change.get("files") or [])]
+    # A digest over what the ticket is about, not when it was raised: the same
+    # defect escalated twice must produce the same key, so a connector can
+    # refuse to start a second development flow for it.
+    digest = hashlib.sha256("\x00".join([title, *sorted(files)]).encode()).hexdigest()
+    return ChangeRequest(
+        campaign_id=state.campaign_id,
+        title=title,
+        rationale=str(review.get("reason", "")),
+        files=files,
+        trial_ids=[t.trial_id for t in failed],
+        run_ids=[t.run_id for t in failed if t.run_id],
+        error_tail=_error_tail(failed),
+        acceptance=str(change.get("acceptance", "")),
+        source_key=f"iax:{state.campaign_id}:{digest[:12]}",
+    )
+
+
+#: How much workload output a ticket carries. Enough to name the failure,
+#: little enough that an inbox stays readable.
+ERROR_TAIL_CHARS = 2000
+
+
+def _error_tail(failed: list[Any]) -> str:
+    """The errors of the failed trials, newest last, bounded in size."""
+    lines = [f"{t.trial_id}: {t.error}" for t in failed if t.error]
+    return "\n".join(lines)[-ERROR_TAIL_CHARS:]
 
 
 def _review_record(

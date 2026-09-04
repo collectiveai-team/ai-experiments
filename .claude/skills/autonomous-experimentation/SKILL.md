@@ -141,7 +141,31 @@ the rest of the budget proving it is hopeless.
 `agent.max_calls` is a cost ceiling. Set it deliberately: every call is a
 model invocation the user pays for.
 
-## 6. Report
+## 6. When the code is the blocker, not the parameters
+
+Some campaigns cannot be saved by any parameter: every trial dies on the same
+error, the workload reports no metric at all, or the harness returns NaN at
+the edge of the space. A review that sees this answers `needs_change` instead
+of `stop`. The loop then stops the campaign with `blocked_on_change` and files
+a ticket with the evidence — failed trials, run ids, the error tail.
+
+```bash
+iax escalations                       # the ticket, with kind "change"
+iax handoff <campaign_id> --dry-run   # what branch and issue it would create
+iax handoff <campaign_id> --repo /path/to/workload
+```
+
+`iax handoff` creates `exp/<campaign>-<digest>` in its own worktree and hands
+the issue to a development flow. The default plans the work and stops; `--run`
+lets the flow execute it, and it spends tokens, so ask the user first.
+
+The fix goes on that branch and nowhere else. Trials measured before a code
+change and trials measured after it are not comparable, so the campaign that
+found the defect stays closed. When the fix lands, start a new campaign from
+the same goal inside the worktree, and compare the two campaigns, never the
+trials across them.
+
+## 7. Report
 
 Say four things, in this order, and nothing else:
 
@@ -162,3 +186,5 @@ Attach the campaign id. Everything you claim must be readable from
   running — resume it, so the evidence stays in one place.
 - Never paste a `repro/diff.patch` into a report or an issue. It is the user's
   uncommitted work and may contain anything.
+- Never fix a defect on the branch the campaign ran on. Use the branch
+  `iax handoff` created, so the before and after stay separable.

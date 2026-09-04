@@ -19,6 +19,7 @@ from ai_experiments.cli_support import (
     not_found,
     report,
 )
+from ai_experiments.handoff import HandoffResult
 from ai_experiments.schemas import ExperimentManifest, GoalSpec
 from ai_experiments.store import FilesystemRunStore
 
@@ -383,6 +384,101 @@ def escalations(
 
     store = FilesystemRunStore(runs_dir)
     _echo_json([item.model_dump(mode="json") for item in list_escalations(store)])
+
+
+@app.command(cls=IaxCommand)
+def handoff(
+    campaign_id: Optional[str] = typer.Argument(
+        None, help="Blocked campaign to hand off; default every pending one"
+    ),
+    repo: Path = typer.Option(
+        Path("."), "--repo", help="Git repository the code change belongs to"
+    ),
+    base: str = typer.Option(
+        "HEAD", "--base", help="Commit the experimentation branch starts from"
+    ),
+    worktree_root: Optional[Path] = typer.Option(
+        None, "--worktree-root", help="Where to check the branch out"
+    ),
+    command: Optional[str] = typer.Option(
+        None,
+        "--command",
+        help="Development flow to call; {issue} and {branch} are substituted",
+    ),
+    run_flow: bool = typer.Option(
+        False, "--run", help="Let the flow execute the work, not only plan it"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would happen and change nothing"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Hand off again even if this ticket was handled"
+    ),
+    runs_dir: Optional[Path] = typer.Option(
+        None, "--runs-dir", help="Override run store root"
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+) -> None:
+    """Turn a blocked campaign into development work on an experimentation branch.
+
+    A campaign that stopped with `blocked_on_change` needs code, not
+    parameters. This creates `exp/<campaign>-<digest>` in its own worktree and
+    gives the ticket to a development flow. Exit 3 means the flow failed.
+    """
+    import shlex
+
+    from ai_experiments.handoff import DEFAULT_COMMAND, hand_off
+    from ai_experiments.monitoring.escalation import list_change_requests
+
+    store = FilesystemRunStore(runs_dir)
+    pending = list_change_requests(store)
+    if campaign_id:
+        pending = [r for r in pending if r.campaign_id == campaign_id]
+        if not pending:
+            not_found("blocked campaign", campaign_id, "see `iax escalations`")
+
+    flow = shlex.split(command) if command else list(DEFAULT_COMMAND)
+    if run_flow and not command:
+        flow = [part for part in flow if part != "--no-run"]
+
+    results = [
+        hand_off(
+            store,
+            request,
+            repo=repo,
+            base=base,
+            worktree_root=worktree_root,
+            command=flow,
+            dry_run=dry_run,
+            force=force,
+        )
+        for request in pending
+    ]
+
+    if output_json:
+        _echo_json([r.model_dump(mode="json") for r in results])
+    elif not results:
+        typer.echo("No campaign is blocked on a code change.")
+    else:
+        for result in results:
+            _print_handoff(result)
+
+    if any(r.status == "failed" for r in results):
+        raise typer.Exit(code=EXIT_BACKEND_UNAVAILABLE)
+
+
+def _print_handoff(result: HandoffResult) -> None:
+    typer.echo(f"{result.plan.campaign_id}: {result.status}")
+    typer.echo(f"  Branch:   {result.plan.branch}")
+    typer.echo(f"  Worktree: {result.plan.worktree}")
+    typer.echo(f"  Issue:    {result.plan.issue_path}")
+    if result.status == "already_handled":
+        typer.echo("  Handed off before; pass --force to do it again")
+    if result.error:
+        typer.echo(f"  Error:    {result.error}")
+    if result.output:
+        typer.echo(f"  Output:   {result.output.strip().splitlines()[-1]}")
+    typer.echo(f"  Next:     {result.next_step}")
 
 
 @app.command(cls=IaxCommand)
@@ -1291,5 +1387,11 @@ def _print_loop_report(report) -> None:
         typer.echo(
             f"  Pending: {len(report.pending_trials)} trial(s) still in flight "
             f"({', '.join(report.pending_trials)}); resume to collect them"
+        )
+    if report.change_request:
+        # The loop is telling the reader to stop searching and start developing.
+        typer.echo(f"  Blocked: {report.change_request['title']}")
+        typer.echo(
+            "           no parameter fixes this; the ticket is in `iax escalations`"
         )
     typer.echo(f"  Rounds:  iax campaign rounds {report.campaign_id}")
