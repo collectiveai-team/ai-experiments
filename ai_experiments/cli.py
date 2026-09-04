@@ -64,6 +64,25 @@ def _worker_log(
             typer.echo(line)
 
 
+def _preflight(
+    source: ExperimentManifest | GoalSpec, strict: bool, refusal: str
+) -> None:
+    """Warn on a workload that cannot start, and stop when asked to.
+
+    Warnings go to stderr so `--json` stdout stays parseable, and they stay
+    warnings by default: a Ray workload resolves its entrypoint on the
+    cluster, so a binary missing here can still be right (#32).
+    """
+    from ai_experiments.preflight import WARNING_PREFIX, workload_warnings
+
+    warnings = workload_warnings(source)
+    for warning in warnings:
+        typer.echo(f"{WARNING_PREFIX}{warning}", err=True)
+    if warnings and strict:
+        typer.echo(f"Error: {refusal}", err=True)
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def validate(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
@@ -71,8 +90,6 @@ def validate(
         False, "--strict", help="Fail on warnings, not just on invalid manifests"
     ),
 ) -> None:
-    from ai_experiments.preflight import workload_warnings
-
     try:
         manifest = ExperimentManifest.from_yaml(config)
     except Exception as exc:
@@ -83,12 +100,7 @@ def validate(
     typer.echo(f"  Backend:    {manifest.backend}")
     typer.echo(f"  Workload:   {manifest.workload.entrypoint}")
 
-    warnings = workload_warnings(manifest)
-    for warning in warnings:
-        typer.echo(f"Warning: {warning}", err=True)
-    if warnings and strict:
-        typer.echo("Error: manifest has warnings and --strict is set", err=True)
-        raise typer.Exit(code=1)
+    _preflight(manifest, strict, "manifest has warnings and --strict is set")
 
 
 @app.command()
@@ -98,9 +110,18 @@ def submit(
         None, "--runs-dir", help="Override run store root"
     ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Refuse to submit a workload that looks unable to start"
+    ),
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
+    except Exception as exc:
+        typer.echo(f"Error: submit failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+    # Before the run exists: a refused submit must leave no run behind.
+    _preflight(manifest, strict, "workload has warnings and --strict is set")
+    try:
         store = FilesystemRunStore(runs_dir)
         handle = get_backend(
             manifest.backend,
@@ -627,6 +648,9 @@ def campaign_start(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Refuse to start a workload that looks unable to run"
+    ),
 ) -> None:
     """Create a campaign from a goal and submit the first batch of trials.
 
@@ -634,6 +658,12 @@ def campaign_start(
     """
     try:
         goal = GoalSpec.from_yaml(config)
+    except Exception as exc:
+        typer.echo(f"Error: campaign start failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+    # Every trial runs this one workload, so one check answers for all of them.
+    _preflight(goal, strict, "workload has warnings and --strict is set")
+    try:
         state = _orchestrator(runs_dir).start(goal)
     except Exception as exc:
         typer.echo(f"Error: campaign start failed: {exc}", err=True)
