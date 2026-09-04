@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
-    RunStatus,
+    RunHandle,
     WorkloadSpec,
 )
 from ai_experiments.server.app import create_app
@@ -29,8 +29,8 @@ def _seed_run(store: FilesystemRunStore) -> str:
         workload=WorkloadSpec(entrypoint="python train.py"),
     )
     run_id, run_dir = store.create_run(manifest)
-    store.write_status(
-        RunStatus(
+    store.write_handle(
+        RunHandle(
             run_id=run_id,
             backend="local",
             status="running",
