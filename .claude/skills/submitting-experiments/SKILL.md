@@ -48,7 +48,7 @@ Those upload progress logs go to stderr; JSON output remains clean on stdout.
 experiment: demand_forecast_baseline
 backend: local
 workload:
-  entrypoint: python3
+  entrypoint: "uv run"
   args:
     - -m
     - ts_agents_lab.cli

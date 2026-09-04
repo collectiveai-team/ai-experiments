@@ -16,7 +16,7 @@ search_space:
   x0: { type: uniform, low: -5.0, high: 5.0 }
 
 workload:
-  entrypoint: "python examples/toy_train.py"
+  entrypoint: "uv run examples/toy_train.py"
   args: ["--steps", "20", "--sleep", "0.2"]
   working_dir: "."
 

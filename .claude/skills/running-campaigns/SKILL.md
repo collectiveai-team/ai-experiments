@@ -29,7 +29,7 @@ search_space:
   layers: { type: int, low: 1, high: 4 }
   dropout: { type: uniform, low: 0.0, high: 0.5 }
 workload:
-  entrypoint: "python train.py"
+  entrypoint: "uv run train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
   working_dir: .                # params without placeholders appended as --name value
 budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0,

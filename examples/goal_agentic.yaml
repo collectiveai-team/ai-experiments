@@ -28,7 +28,7 @@ search_space:
   batch: { type: choice, values: [16, 32, 64, 128] }
 
 workload:
-  entrypoint: "python examples/agentic_train.py"
+  entrypoint: "uv run examples/agentic_train.py"
   args: ["--steps", "15", "--sleep", "0.05"]
   working_dir: "."
 
