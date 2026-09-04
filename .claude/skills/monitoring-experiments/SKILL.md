@@ -57,7 +57,9 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `worker.log` | Local backend only: the *supervisor's* own stdout/stderr, including any traceback that killed it — `iax logs <run> --worker` prints it. The workload's output goes to `events.jsonl`. Ray run dirs lack it. |
 
 `runs_dir` resolves from `--runs-dir`, else `$IAX_RUNS_DIR`, else
-`outputs/experiments/runs`.
+`outputs/experiments/runs` under the nearest project root above the current
+directory. A not-found error prints the store it read; check that path before
+concluding a run is gone.
 
 **Orphan reaping needs Linux or the `psutil` extra.** The daemon kills a
 workload whose supervisor died only when it can prove the recorded pid still
