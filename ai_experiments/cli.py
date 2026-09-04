@@ -1285,4 +1285,11 @@ def _print_loop_report(report) -> None:
     for review in report.reviews:
         if review.get("verdict"):
             typer.echo(f"  Review:  {review['verdict']} — {review.get('reason', '')}")
+    if report.pending_trials:
+        # The loop hit a limit while trials were still running. Saying nothing
+        # here invites the reader to treat an unfinished campaign as an answer.
+        typer.echo(
+            f"  Pending: {len(report.pending_trials)} trial(s) still in flight "
+            f"({', '.join(report.pending_trials)}); resume to collect them"
+        )
     typer.echo(f"  Rounds:  iax campaign rounds {report.campaign_id}")

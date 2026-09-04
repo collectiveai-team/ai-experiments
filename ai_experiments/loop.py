@@ -26,7 +26,7 @@ from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
-from ai_experiments.orchestrator import CampaignOrchestrator
+from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import CampaignState, GoalSpec
 from ai_experiments.store import FilesystemRunStore
@@ -49,6 +49,9 @@ class LoopReport(BaseModel):
     agent_calls: int = 0
     elapsed_seconds: float = 0.0
     loop_stop: LoopStop = "campaign_finished"
+    #: Trials still in flight when the loop returned. Non-empty means the
+    #: campaign has unread work: resume it before you conclude anything.
+    pending_trials: list[str] = Field(default_factory=list)
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -108,9 +111,16 @@ def run_loop(
                 loop_stop = "agent_review_stop"
                 break
 
+    if loop_stop in {"max_rounds", "max_seconds"}:
+        # The last round was submitted and paid for. Leaving without reading it
+        # loses a finished trial and leaves the campaign claiming work in
+        # flight that nothing will ever collect.
+        state = orchestrator.reconcile(state.campaign_id)
+
     if on_state is not None:
         on_state(state)
 
+    pending = [t.trial_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
     goal = orchestrator.campaign_store.read_goal(state.campaign_id)
     summary = summarize_campaign(state, goal)
     return LoopReport(
@@ -123,6 +133,7 @@ def run_loop(
         agent_calls=state.agent_calls,
         elapsed_seconds=round(now() - started, 3),
         loop_stop=loop_stop,
+        pending_trials=pending,
         objective=summary["objective"],
         best=summary["best"],
         history=summary["history"],

@@ -316,6 +316,36 @@ class CampaignOrchestrator:
         self.campaign_store.write_state(state)
         return state
 
+    def reconcile(self, campaign_id: str) -> CampaignState:
+        """Collect what already finished, and plan nothing new.
+
+        `iax loop --max-rounds` stops between rounds, while the trials of the
+        round it just paid for may already have finished. `advance` would
+        submit another round; doing nothing leaves those trials `submitted`
+        forever and throws away work that ran. This reads their results, and
+        finishes the campaign when they turn out to have met the target.
+        """
+        self.last_decision = None
+        self.last_submit_errors = []
+        state = self.campaign_store.read_state(campaign_id)
+        if state.status in {"completed", "stopped", "failed", "paused"}:
+            return state
+        goal = self.campaign_store.read_goal(campaign_id)
+        backend = self._backend_factory(goal)
+
+        self._recover_lost_trials(state, backend)
+        finished_now = self._refresh_trials(state, goal, backend)
+        self._update_best(state, goal)
+
+        stop_reason = self._stop_reason(state, goal)
+        if stop_reason:
+            return self._finish(state, goal, backend, stop_reason)
+
+        if finished_now:
+            self._record_evaluation(state, goal, finished_now)
+        self.campaign_store.write_state(state)
+        return state
+
     def _exhausted_reason(self, submitted: list[TrialRecord]) -> str:
         """Name the reason the campaign has nothing left to do.
 
