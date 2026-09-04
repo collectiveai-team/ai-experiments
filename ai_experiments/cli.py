@@ -87,9 +87,52 @@ def _backend_for_run(run_id: str, store: FilesystemRunStore):
     return backend_for_run(store, run_id)
 
 
+def _worker_log(
+    store: FilesystemRunStore, run_id: str, tail: int, output_json: bool
+) -> None:
+    """The supervisor's own stdout/stderr.
+
+    Anything that kills a supervisor before it can report leaves its traceback
+    here and nowhere else, so this file has to be reachable without knowing
+    the run store's layout.
+    """
+    recorded = store.read_status(run_id).details.get("log_path")
+    path = Path(str(recorded)) if recorded else store.run_dir(run_id) / "worker.log"
+    if not path.exists():
+        typer.echo(f"Error: no worker log for {run_id} ({path})", err=True)
+        raise typer.Exit(code=1)
+    lines = path.read_text(errors="replace").splitlines()[-tail:]
+    if output_json:
+        _echo_json({"path": str(path), "lines": lines})
+    else:
+        for line in lines:
+            typer.echo(line)
+
+
+def _preflight(
+    source: ExperimentManifest | GoalSpec, strict: bool, refusal: str
+) -> None:
+    """Warn on a workload that cannot start, and stop when asked to.
+
+    Warnings go to stderr so `--json` stdout stays parseable, and they stay
+    warnings by default: a Ray workload resolves its entrypoint on the
+    cluster, so a binary missing here can still be right (#32).
+    """
+    from ai_experiments.preflight import WARNING_PREFIX, workload_warnings
+
+    warnings = workload_warnings(source)
+    for warning in warnings:
+        typer.echo(f"{WARNING_PREFIX}{warning}", err=True)
+    if warnings and strict:
+        invalid_input(refusal, details={"warnings": warnings})
+
+
 @app.command(cls=IaxCommand)
 def validate(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Fail on warnings, not just on invalid manifests"
+    ),
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
@@ -100,6 +143,8 @@ def validate(
     typer.echo(f"  Backend:    {manifest.backend}")
     typer.echo(f"  Workload:   {manifest.workload.entrypoint}")
 
+    _preflight(manifest, strict, "manifest has warnings and --strict is set")
+
 
 @app.command(cls=IaxCommand)
 def submit(
@@ -108,9 +153,18 @@ def submit(
         None, "--runs-dir", help="Override run store root"
     ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Refuse to submit a workload that looks unable to start"
+    ),
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
+    except Exception as exc:
+        typer.echo(f"Error: submit failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+    # Before the run exists: a refused submit must leave no run behind.
+    _preflight(manifest, strict, "workload has warnings and --strict is set")
+    try:
         store = FilesystemRunStore(runs_dir)
         handle = get_backend(
             manifest.backend,
@@ -156,9 +210,17 @@ def logs(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    worker: bool = typer.Option(
+        False,
+        "--worker",
+        help="Show the supervisor's own log instead of the run's events",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
+    if worker:
+        _worker_log(store, run_id, tail=tail, output_json=output_json)
+        return
     events = _backend_for_run(run_id, store).logs(run_id, tail=tail)
     if output_json:
         _echo_json([event.model_dump(mode="json") for event in events])
@@ -225,10 +287,17 @@ def cancel(
 ) -> None:
     store = FilesystemRunStore(runs_dir)
     _backend_for_run(run_id, store).cancel(run_id)
+    # Cancelling a run that already ended leaves it alone, so report what the
+    # run actually is rather than what was asked for.
+    final = store.read_status(run_id).status
     if output_json:
-        _echo_json({"run_id": run_id, "cancelled": True})
-    else:
+        _echo_json(
+            {"run_id": run_id, "cancelled": final == "cancelled", "status": final}
+        )
+    elif final == "cancelled":
         typer.echo(f"Cancelled {run_id}")
+    else:
+        typer.echo(f"{run_id} was not cancelled: it is already {final}")
 
 
 @app.command(cls=IaxCommand)
@@ -336,14 +405,26 @@ def rerun(
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
+    portable: bool = typer.Option(
+        False,
+        "--portable",
+        help="Resubmit the manifest as it was authored, re-resolving a "
+        "relative working_dir against the current directory, instead of "
+        "repeating the exact paths recorded at submit time",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Resubmit a run's persisted manifest (params are baked in), warning when
-    the current git state differs from the one recorded at submit time."""
+    the current git state differs from the one recorded at submit time.
+
+    By default this repeats the run exactly, on the paths it actually used.
+    ``--portable`` is for the other machine: it takes the manifest as
+    submitted, whose relative ``working_dir`` is what makes it movable.
+    """
     from ai_experiments.repro import current_git_sha, read_repro
 
     store = FilesystemRunStore(runs_dir)
-    manifest = store.read_manifest(run_id)
+    manifest = store.read_manifest(run_id, source=portable)
     if manifest is None:
         _require_run(store, run_id)
         not_found("persisted manifest for run", run_id)
@@ -620,6 +701,9 @@ def campaign_start(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Refuse to start a workload that looks unable to run"
+    ),
 ) -> None:
     """Create a campaign from a goal and submit the first batch of trials.
 
@@ -629,6 +713,8 @@ def campaign_start(
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
         invalid_input(f"invalid goal {config}: {exc}")
+    # Every trial runs this one workload, so one check answers for all of them.
+    _preflight(goal, strict, "workload has warnings and --strict is set")
     try:
         state = _orchestrator(runs_dir).start(goal)
     except Exception as exc:

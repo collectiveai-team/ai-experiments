@@ -27,6 +27,7 @@ from ai_experiments.planner.analysis import (
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
 from ai_experiments.planner.strategies import get_strategy
 from ai_experiments.planner.validation import validate_params
+from ai_experiments.preflight import workload_warnings
 from ai_experiments.schemas import (
     CampaignState,
     GoalSpec,
@@ -107,6 +108,20 @@ class CampaignOrchestrator:
             state.campaign_id,
             RunEvent(message="campaign created", details={"goal": goal.goal}),
         )
+        # Every trial runs this one workload. A campaign started from the API,
+        # the server or the daemon never passes through the CLI's check, and a
+        # workload that cannot start would otherwise fail max_trials times
+        # with nothing saying why up front (#32).
+        warnings = workload_warnings(goal)
+        if warnings:
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="warning",
+                    message="workload may not start",
+                    details={"warnings": warnings},
+                ),
+            )
         return self.advance(state.campaign_id)
 
     def stop(self, campaign_id: str, reason: str = "user_requested") -> CampaignState:

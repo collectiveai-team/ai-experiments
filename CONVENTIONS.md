@@ -81,6 +81,11 @@ Rules:
 - **All state writes go through `atomic_write_text`** (`store/filesystem.py`).
   A partially written `state.json` is a corrupted campaign. Never open a state
   file with a plain `open(..., "w")`.
+- `atomic_write_text` makes a write *indivisible*, not a read-modify-write
+  *serializable*. `FilesystemRunStore.update_status` is the only mutation path
+  for an existing status, and it takes `fcntl.flock` on the per-run
+  `status.lock` sidecar. Do not add a mutation path that bypasses it, and
+  prove a cross-process claim with a test that forks processes.
 - Events are append-only JSONL. Never rewrite or truncate an event log to
   correct history; append a corrective event.
 - Run and campaign directory layouts are a public contract — external agents

@@ -28,6 +28,12 @@ schema: `ai_experiments/schemas.py`. Full field reference: `reference/manifest.m
    iax submit experiment.yaml --json
    ```
 
+   Both commands check that the entrypoint resolves and the `working_dir`
+   exists, and print `Warning:` lines on **stderr**; stdout stays parseable.
+   They are warnings because a Ray workload resolves its entrypoint on the
+   cluster, not here. Pass `--strict` to refuse instead of warn — use it when
+   the backend is `local`, where a warning is always a failure a second later.
+
 5. **Capture the run handle.** `submit --json` prints a `RunHandle`. Record
    `run_id` (everything downstream keys off it), `run_dir`, and `status_uri`. If you
    pass `--runs-dir <dir>`, pass the same `--runs-dir` to every later command, or set

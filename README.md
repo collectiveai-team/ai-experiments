@@ -401,6 +401,11 @@ uv pip install "ai-experiments[ray] @ git+https://github.com/collectiveai-team/a
 Pin `@v0.1.0` to the tag matching the `version` in `pyproject.toml`; use `@main` or a
 commit SHA to track unreleased work.
 
+On macOS or Windows, add the `psutil` extra as well. The daemon kills a workload whose
+supervisor died only when it can prove the recorded pid still names the same process.
+It reads that proof from `/proc`, which those platforms do not have, and `psutil`
+supplies it instead. Without it the orphan is reported and left running.
+
 ### Agent skills
 
 The repo also ships agent skills (under `.claude/skills/`) that teach a Claude Code
@@ -487,8 +492,8 @@ iax new manifest experiment.yaml
 iax new manifest next.yaml --from-run <run_id>   # reuse a run that worked
 
 # single runs
-iax validate experiment.yaml
-iax submit experiment.yaml --json
+iax validate experiment.yaml           # add --strict to fail on warnings
+iax submit experiment.yaml --json      # warns on the same checks; --strict refuses
 iax runs
 iax status <run_id> --json
 iax logs <run_id> --tail 200
@@ -508,7 +513,7 @@ iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
 
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
-iax campaign start goal.yaml
+iax campaign start goal.yaml           # --strict refuses a workload that cannot start
 iax campaign list / status / advance / suggest / pause / edit / resume / stop
 iax campaign trials <campaign_id>          # every trial: status, value, run, error
 iax campaign rounds <campaign_id> --json   # why each round tried what it tried

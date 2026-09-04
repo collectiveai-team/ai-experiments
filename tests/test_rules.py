@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ai_experiments.monitoring.rules import diagnose_run
-from ai_experiments.schemas import ExperimentManifest, RunState, RunStatus, WorkloadSpec
+from ai_experiments.schemas import ExperimentManifest, RunHandle, RunState, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -17,16 +17,17 @@ def _store_with_status(
         workload=WorkloadSpec(entrypoint="python train.py"),
     )
     run_id, run_dir = store.create_run(manifest)
-    store.write_status(
-        RunStatus(
+    store.write_handle(
+        RunHandle(
             run_id=run_id,
             backend="local",
             status=status,
             status_uri=str(store.status_path(run_id)),
             run_dir=str(run_dir),
-            details=details or {},
         )
     )
+    if details:
+        store.update_status(run_id, details=details)
     return store, run_id
 
 
