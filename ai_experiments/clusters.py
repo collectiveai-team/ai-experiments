@@ -30,12 +30,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import ValidationError
+
+from ai_experiments.schema_errors import describe
+from ai_experiments.schemas import ConfigModel
 
 ClusterProvider = Literal["local", "aws", "gcp", "azure"]
 
 
-class ClusterProfile(BaseModel):
+class ClusterProfile(ConfigModel):
     name: str
     provider: ClusterProvider = "local"
     address: str | None = None
@@ -77,7 +80,12 @@ def load_clusters(path: str | Path | None = None) -> dict[str, ClusterProfile]:
         )
     profiles: dict[str, ClusterProfile] = {}
     for name, body in entries.items():
-        profiles[str(name)] = ClusterProfile(name=str(name), **(body or {}))
+        try:
+            profiles[str(name)] = ClusterProfile(name=str(name), **(body or {}))
+        except ValidationError as exc:
+            raise ClusterConfigError(
+                f"{config_path}: cluster '{name}': {describe(ClusterProfile, exc)}"
+            ) from exc
     return profiles
 
 
