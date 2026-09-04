@@ -161,6 +161,28 @@ def test_trials_command_lists_every_trial_with_its_run_id(tmp_path):
             assert trial.run_id in result.stdout
 
 
+def test_trials_command_says_who_chose_each_trial(tmp_path):
+    """Without `source`, nobody can tell the agent's picks from the search."""
+    orchestrator, store = _harness(tmp_path)
+    state = orchestrator.start(_goal())
+    suggested = orchestrator.suggest(state.campaign_id, {"x": 2.0})
+
+    result = runner.invoke(
+        app,
+        ["campaign", "trials", state.campaign_id, "--runs-dir", str(store.root)],
+    )
+
+    assert result.exit_code == 0
+    assert "SOURCE" in result.stdout
+    rows = {
+        line.split()[0]: line.split()[1]
+        for line in result.stdout.splitlines()[1:]
+        if line and not line.startswith(" ")
+    }
+    assert rows[suggested.trial_id] == "agent"
+    assert set(rows.values()) >= {"agent", "strategy"}
+
+
 def test_campaign_status_reports_when_the_loop_last_advanced(tmp_path):
     orchestrator, store = _harness(tmp_path)
     state = _drive(orchestrator, orchestrator.start(_goal()))

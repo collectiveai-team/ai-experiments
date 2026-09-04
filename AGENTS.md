@@ -41,7 +41,7 @@ Read the loop back before changing anything:
 
 ```bash
 iax campaign rounds <campaign_id> --json    # what each round tried, and why
-iax campaign trials <campaign_id>           # per-trial value, status, error
+iax campaign trials <campaign_id>           # per-trial source, value, status, error
 ```
 
 From python, the same loop is `ai_experiments.api.run_loop(goal)`. The full
