@@ -229,7 +229,8 @@ def test_ray_cancel_does_not_rewrite_a_job_that_already_failed(tmp_path):
 
     status = store.read_status(handle.run_id)
     assert status.status == "failed"
-    assert status.error == "the workload raised"
+    # The message is the job's own, trimmed to the part that explains it.
+    assert "the workload raised" in str(status.error)
     assert client.stopped == []  # nothing to stop; nothing was signalled
 
 
