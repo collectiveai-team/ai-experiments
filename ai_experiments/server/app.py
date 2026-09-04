@@ -3,10 +3,17 @@
 The server is read-mostly: it reads the same filesystem stores the daemon and
 CLI write, so it can run on any machine that sees the run store. Mutations are
 limited to cancelling runs and stopping campaigns.
+
+There is no authentication. On the default loopback bind that is fine -- the
+only caller is the person at the keyboard. Bound to a reachable address it is
+not: anyone who can route to the port could cancel a week of training. So a
+non-loopback bind refuses mutations unless the operator asks for them by name
+(#24).
 """
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +30,46 @@ from ai_experiments.store.campaign import CampaignStore
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+#: What the operator has to pass to `iax serve` to mutate over the network.
+ALLOW_REMOTE_FLAG = "--allow-remote-mutations"
 
-def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
+
+def is_loopback(host: str) -> bool:
+    """Is this bind address reachable only from this machine?
+
+    A name that is not an address cannot be checked here, so it counts as
+    remote: refusing a mutation is recoverable, allowing a stranger's is not.
+    """
+    if host in {"localhost", ""}:
+        return host == "localhost"
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def create_app(
+    store: FilesystemRunStore | None = None,
+    host: str = "127.0.0.1",
+    allow_remote_mutations: bool = False,
+) -> FastAPI:
     run_store = store or FilesystemRunStore()
     campaign_store = CampaignStore(run_store.root)
+    mutations_allowed = allow_remote_mutations or is_loopback(host)
 
     app = FastAPI(title="iax dashboard", version="1.0")
+
+    def _require_mutations() -> None:
+        if mutations_allowed:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"this dashboard is bound to {host} and has no authentication, "
+                f"so it serves reads only; restart with {ALLOW_REMOTE_FLAG} to "
+                "allow cancel/stop/pause/resume from the network"
+            ),
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -36,7 +77,11 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "runs_root": str(run_store.root)}
+        return {
+            "status": "ok",
+            "runs_root": str(run_store.root),
+            "mutations": "allowed" if mutations_allowed else "read-only",
+        }
 
     @app.get("/api/runs")
     def runs() -> list[dict[str, Any]]:
@@ -73,6 +118,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.post("/api/runs/{run_id}/cancel")
     def run_cancel(run_id: str) -> dict[str, Any]:
+        _require_mutations()
         _ensure_run(run_store, run_id)
         backend_for_run(run_store, run_id).cancel(run_id)
         return {"run_id": run_id, "cancelled": True}
@@ -158,6 +204,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.post("/api/campaigns/{campaign_id}/stop")
     def campaign_stop(campaign_id: str) -> dict[str, Any]:
+        _require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         state = orchestrator.stop(campaign_id)
@@ -165,6 +212,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.post("/api/campaigns/{campaign_id}/pause")
     def campaign_pause(campaign_id: str) -> dict[str, Any]:
+        _require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:
@@ -174,6 +222,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.post("/api/campaigns/{campaign_id}/resume")
     def campaign_resume(campaign_id: str) -> dict[str, Any]:
+        _require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:

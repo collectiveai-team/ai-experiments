@@ -575,11 +575,20 @@ def daemon(
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8585, "--port"),
+    allow_remote_mutations: bool = typer.Option(
+        False,
+        "--allow-remote-mutations",
+        help="Serve cancel/stop/pause/resume to the network. No authentication.",
+    ),
     runs_dir: Optional[Path] = typer.Option(
         None, "--runs-dir", help="Override run store root"
     ),
 ) -> None:
-    """Web dashboard + REST API over the run and campaign stores."""
+    """Web dashboard + REST API over the run and campaign stores.
+
+    The dashboard has no authentication. Bound to anything but loopback it
+    serves reads only, unless you pass --allow-remote-mutations.
+    """
     try:
         import uvicorn
 
@@ -591,8 +600,29 @@ def serve(
             code="invalid_input",
         ) from exc
 
+    from ai_experiments.server.app import is_loopback
+
     store = FilesystemRunStore(runs_dir)
-    uvicorn.run(create_app(store), host=host, port=port, log_level="warning")
+    if not is_loopback(host):
+        if allow_remote_mutations:
+            typer.echo(
+                f"WARNING: {host}:{port} serves unauthenticated cancel/stop/pause "
+                "to anyone who can reach it. Put it behind a proxy that "
+                "authenticates, or bind 127.0.0.1 and use an SSH tunnel.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"Bound to {host}: serving reads only. "
+                "Pass --allow-remote-mutations to allow cancel/stop/pause.",
+                err=True,
+            )
+    uvicorn.run(
+        create_app(store, host=host, allow_remote_mutations=allow_remote_mutations),
+        host=host,
+        port=port,
+        log_level="warning",
+    )
 
 
 @app.command("run", cls=IaxCommand)

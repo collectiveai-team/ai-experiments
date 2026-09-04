@@ -566,6 +566,12 @@ iax serve --port 8585           # dashboard + REST API  (needs [server] extra)
 iax cluster list / status / up / down
 ```
 
+The dashboard has no authentication. On the default `127.0.0.1` bind it serves
+everything, reads and mutations alike. Bound to any other address it serves
+**reads only**, and cancel/stop/pause/resume return 403 until you pass
+`--allow-remote-mutations` — at which point anyone who can reach the port can
+stop your training. Prefer an SSH tunnel to a loopback bind.
+
 ### Exit codes and errors
 
 Every command takes `--json` and every failure follows one contract, so an
