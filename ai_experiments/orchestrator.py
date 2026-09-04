@@ -43,7 +43,7 @@ from ai_experiments.store.campaign import CampaignStore
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
 
 #: Stop reasons that mean the campaign broke rather than finished.
-FAILURE_STOP_REASONS = {"objective_not_reported"}
+FAILURE_STOP_REASONS = {"objective_not_reported", "backend_unavailable"}
 
 #: How many trials may complete without a usable objective before the
 #: campaign is declared broken instead of merely unlucky.
@@ -80,6 +80,10 @@ class CampaignOrchestrator:
         self._agent_runner_factory = agent_runner_factory or self._default_agent_runner
         #: The agent decision made during the current `advance()`, if any.
         self.last_decision: AgentDecision | None = None
+        #: Why the backend refused the submits of the current `advance()`. A
+        #: backend that accepts nothing looks exactly like an exhausted search
+        #: space from the campaign's side, and the two need opposite answers.
+        self.last_submit_errors: list[str] = []
 
     def agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
         """The agent this campaign talks to. One place, so every role — planner,
@@ -239,12 +243,14 @@ class CampaignOrchestrator:
 
     def advance(self, campaign_id: str) -> CampaignState:
         self.last_decision = None
+        self.last_submit_errors = []
         state = self.campaign_store.read_state(campaign_id)
         if state.status in {"completed", "stopped", "failed", "paused"}:
             return state
         goal = self.campaign_store.read_goal(campaign_id)
         backend = self._backend_factory(goal)
 
+        self._recover_lost_trials(state, backend)
         finished_now = self._refresh_trials(state, goal, backend)
         self._update_best(state, goal)
 
@@ -269,7 +275,11 @@ class CampaignOrchestrator:
                 campaign_id,
                 RunEvent(
                     level="warning",
-                    message="planner exhausted the search space",
+                    message=(
+                        "no trial could start"
+                        if self.last_submit_errors
+                        else "planner exhausted the search space"
+                    ),
                     details={
                         "trials": len(state.trials),
                         "max_trials": goal.budget.max_trials,
@@ -279,21 +289,108 @@ class CampaignOrchestrator:
                             if self.last_decision is not None
                             else ""
                         ),
+                        "submit_errors": self.last_submit_errors,
                     },
                 ),
             )
-            exhausted_reason = (
-                AGENT_STOP_REASON
-                if self.last_decision is not None and self.last_decision.stop
-                else "search_space_exhausted"
-            )
-            return self._finish(state, goal, backend, exhausted_reason)
+            return self._finish(state, goal, backend, self._exhausted_reason(submitted))
 
         if finished_now and goal.analysis.agent_review:
             self._request_agent_review(state, goal)
 
         self.campaign_store.write_state(state)
         return state
+
+    def _exhausted_reason(self, submitted: list[TrialRecord]) -> str:
+        """Name the reason the campaign has nothing left to do.
+
+        `search_space_exhausted` means the planner ran out of points, and the
+        answer is to widen the goal. A backend that refused every submit ran
+        out of nothing, and the answer is to start the cluster (#36).
+        """
+        if self.last_submit_errors and not submitted:
+            return "backend_unavailable"
+        if self.last_decision is not None and self.last_decision.stop:
+            return AGENT_STOP_REASON
+        return "search_space_exhausted"
+
+    def _recover_lost_trials(
+        self, state: CampaignState, backend: ExperimentBackend
+    ) -> None:
+        """Reconcile the state file with the runs the backend actually holds.
+
+        `advance` submits real runs and persists the state after each one, so
+        a crash in between leaves a run executing that no trial references
+        (#5). The next tick would re-plan the same trial -- same seed, same
+        params -- and submit it again: two runs for one trial, one of them
+        never scored, never cancelled, invisible in `campaign status`.
+
+        The campaign's own event log is the record that survives the crash: a
+        "trial submitted" event carries the trial id, the run id and the
+        params, and it is appended before the state is written. So a lost
+        trial is rebuilt from it, and a run that some other trial has already
+        replaced is cancelled rather than left burning a GPU.
+        """
+        known = {trial.trial_id: trial for trial in state.trials}
+        for event in self.campaign_store.read_events(state.campaign_id):
+            if event.message != "trial submitted":
+                continue
+            trial_id = str(event.details.get("trial_id", ""))
+            run_id = str(event.details.get("run_id", ""))
+            if not trial_id or not run_id:
+                continue
+            trial = known.get(trial_id)
+            if trial is None:
+                restored = TrialRecord(
+                    trial_id=trial_id,
+                    params=dict(event.details.get("params") or {}),
+                    run_id=run_id,
+                    status="submitted",
+                    submitted_at=event.timestamp,
+                )
+                state.trials.append(restored)
+                known[trial_id] = restored
+                self._log_recovery(state, "recovered a trial the crash lost", restored)
+            elif trial.run_id != run_id:
+                self._cancel_orphan(state, backend, trial_id, run_id)
+        state.trials.sort(key=lambda trial: trial.trial_id)
+
+    def _log_recovery(
+        self, state: CampaignState, message: str, trial: TrialRecord
+    ) -> None:
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="warning",
+                message=message,
+                details={"trial_id": trial.trial_id, "run_id": trial.run_id},
+            ),
+        )
+
+    def _cancel_orphan(
+        self,
+        state: CampaignState,
+        backend: ExperimentBackend,
+        trial_id: str,
+        run_id: str,
+    ) -> None:
+        """Stop a run that a trial no longer claims. Idempotent: a run that has
+        already stopped is left alone, so a replayed event cancels once."""
+        try:
+            status = self.run_store.read_status(run_id)
+        except FileNotFoundError:
+            return
+        if status.status not in ACTIVE_TRIAL_STATES:
+            return
+        backend.cancel(run_id)
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="warning",
+                message="cancelled a run no trial claims",
+                details={"trial_id": trial_id, "run_id": run_id},
+            ),
+        )
 
     def _has_work(self, state: CampaignState) -> bool:
         return any(
@@ -614,23 +711,24 @@ class CampaignOrchestrator:
                     working_dir=self._variant_dir(state.campaign_id, trial.variant_id),
                     variant_id=trial.variant_id,
                 )
+            except Exception as exc:
+                # The goal cannot describe this trial. Nothing about the
+                # backend is implied, so this must not read as one being down.
+                self._fail_to_submit(state, trial, f"invalid trial manifest: {exc}")
+                continue
+            try:
                 handle = backend.submit(manifest)
             except Exception as exc:
-                trial.status = "failed"
-                trial.error = f"submit failed: {exc}"
-                trial.completed_at = utc_now()
-                self.campaign_store.append_event(
-                    state.campaign_id,
-                    RunEvent(
-                        level="error",
-                        message="trial submit failed",
-                        details={"trial_id": trial.trial_id, "error": str(exc)},
-                    ),
-                )
+                self._fail_to_submit(state, trial, f"submit failed: {exc}")
+                self.last_submit_errors.append(str(exc))
                 continue
             trial.run_id = handle.run_id
             trial.status = "submitted"
             submitted.append(trial)
+            # Persist before submitting the next one. A crash here used to
+            # lose every submit of the tick; now it loses at most this one,
+            # and `_recover_lost_trials` rebuilds even that from the event
+            # appended below (#5).
             self.campaign_store.append_event(
                 state.campaign_id,
                 RunEvent(
@@ -642,7 +740,23 @@ class CampaignOrchestrator:
                     },
                 ),
             )
+            self.campaign_store.write_state(state)
         return submitted
+
+    def _fail_to_submit(
+        self, state: CampaignState, trial: TrialRecord, error: str
+    ) -> None:
+        trial.status = "failed"
+        trial.error = error
+        trial.completed_at = utc_now()
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="error",
+                message="trial submit failed",
+                details={"trial_id": trial.trial_id, "error": error},
+            ),
+        )
 
     def _cancel_active(self, state: CampaignState, backend: ExperimentBackend) -> None:
         for trial in state.trials:

@@ -12,6 +12,7 @@ from typer.core import TyperCommand
 
 from ai_experiments.backends.factory import backend_for_run, get_backend
 from ai_experiments.cli_support import (
+    EXIT_BACKEND_UNAVAILABLE,
     EXIT_GOAL_NOT_REACHED,
     IaxError,
     invalid_input,
@@ -1143,7 +1144,8 @@ def loop_goal(
     This is the command an agent drives: it blocks until the campaign is
     finished (or a limit is hit), prints one report, and exits 0 only when the
     objective's target was actually reached. Exit 4 means the work ran and the
-    target was missed — the report says what the best trial was.
+    target was missed — the report says what the best trial was. Exit 3 means
+    no trial could start, because the backend refused every submit.
     """
     from ai_experiments.loop import run_loop
 
@@ -1169,6 +1171,11 @@ def loop_goal(
         _echo_json(report)
     else:
         _print_loop_report(report)
+    if report.stop_reason == "backend_unavailable":
+        # The work never ran, so this is not "ran and missed the target". The
+        # report already names the submit errors; the code says start the
+        # cluster, not widen the goal.
+        raise typer.Exit(code=EXIT_BACKEND_UNAVAILABLE)
     if not report.target_reached:
         raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
 
