@@ -47,7 +47,7 @@ search_space:
 
 ```yaml
 workload:
-  entrypoint: python
+  entrypoint: "uv run"
   args: ["train.py", "--lr", "{lr}"]   # {param} is substituted per trial
   working_dir: "."                     # relative paths resolve from here
   env: { CUDA_VISIBLE_DEVICES: "0" }

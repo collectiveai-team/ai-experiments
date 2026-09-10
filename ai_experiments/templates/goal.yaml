@@ -22,7 +22,7 @@ search_space:
   # layers: { type: int, low: 2, high: 8 }
 
 workload:
-  entrypoint: python
+  entrypoint: "uv run"    # or "python3" if you do not use uv
   args: ["train.py"]
   working_dir: "."
 

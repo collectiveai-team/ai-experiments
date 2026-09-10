@@ -507,7 +507,7 @@ print('IAX_METRIC {"step": 12, "loss": 0.0734}')
 experiment: demand_forecast_baseline
 backend: ray
 workload:
-  entrypoint: python
+  entrypoint: "uv run"
   args:
     - -m
     - ts_agents_lab.cli
@@ -621,7 +621,7 @@ run, and watches it for you.
 **On the local Ray cluster:**
 
 > Launch the demand-forecast training on the Ray backend with 4 CPUs and 1 GPU
-> (entrypoint `python -m forecast.train configs/base.yaml`). Keep monitoring it and only
+> (entrypoint `uv run -m forecast.train configs/base.yaml`). Keep monitoring it and only
 > ping me if it fails or looks stuck — otherwise summarize the results when it completes.
 
 ## Local Ray cluster
@@ -649,6 +649,12 @@ iax status <run_id> --json   # mirrors the Ray job state
 
 Add worker nodes from other machines with `ray start --address=<head-host>:6379`. Tear
 the cluster down with `ray stop`.
+
+A Ray workload resolves its entrypoint on the node that runs it, not on yours, so
+`uv run` needs `uv` installed on every worker. `iax validate` cannot check that —
+its preflight only sees the submitting machine, which is why a missing entrypoint is
+a warning there and not an error. Pin a `python3` entrypoint instead if the cluster
+image has no `uv`.
 
 ## Composition With Workbench
 
