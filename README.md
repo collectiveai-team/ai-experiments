@@ -17,6 +17,9 @@ goal.yaml ──> planner ──> trials ──> backend (local | ray @ aws/gcp/
                                                     (kill / escalate)
 ```
 
+📖 **[docs/architecture.md](docs/architecture.md)** — the full reference: every
+component, flow diagram, state machine, on-disk layout and contract in one page.
+
 ## Responsibilities
 
 - Understand a goal manifest: objective metric, search space, budget, strategy.
