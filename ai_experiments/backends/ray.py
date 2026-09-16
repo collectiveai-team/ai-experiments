@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Callable
 
@@ -67,8 +68,11 @@ class RayBackend(ExperimentBackend):
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
+        # Ray takes a shell string, so every argument has to survive the
+        # shell's own word splitting. `" ".join` did not: an argument with a
+        # space arrived at the workload as two.
         entrypoint = " ".join(
-            [manifest.workload.entrypoint, *manifest.workload.args]
+            [manifest.workload.entrypoint, shlex.join(manifest.workload.args)]
         ).strip()
 
         # Establish the real status *first*. `begin_tracking` below records the
