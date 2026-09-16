@@ -9,12 +9,13 @@ from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.failures import failure_message
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
 from ai_experiments.monitoring.rules import diagnose_run
-from ai_experiments.report import parse_metric_line
+from ai_experiments.report import parse_metric_line, parse_result_line
 from ai_experiments.schemas import (
     ACTIVE_RUN_STATES,
     DiagnosisReport,
     ExperimentManifest,
     MetricPoint,
+    ResultRecord,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -71,9 +72,27 @@ class RayBackend(ExperimentBackend):
         # Ray takes a shell string, so every argument has to survive the
         # shell's own word splitting. `" ".join` did not: an argument with a
         # space arrived at the workload as two.
-        entrypoint = " ".join(
-            [manifest.workload.entrypoint, shlex.join(manifest.workload.args)]
-        ).strip()
+        args = shlex.join(manifest.workload.args)
+        # The handoff directory is created once, inside the job's working dir,
+        # and both phases see the same absolute path.
+        commands = ["mkdir -p iax_work", "export IAX_WORK_DIR=$PWD/iax_work"]
+        for phase, command in manifest.workload.phases():
+            data_env = manifest.workload.data.env_for(phase)
+            prefix = " ".join(
+                f"{name}={shlex.quote(value)}"
+                for name, value in sorted({**data_env, "IAX_PHASE": phase}.items())
+            )
+            # `_sync_results_from_logs` has no supervisor process to ask which
+            # phase is running -- Ray shares no filesystem with the client, so
+            # this echoed marker is the only phase signal that survives the
+            # trip through `get_job_logs`. The env prefix on the next line is
+            # what the workload itself reads; the two are read by different
+            # sides of the same rule.
+            commands.append(f"echo IAX_PHASE={phase}")
+            commands.append(f"{prefix} {command} {args}".strip())
+        # `&&` and not `;`: a training phase that failed must not be followed
+        # by an evaluation that would score whatever was left behind.
+        entrypoint = " && ".join(commands)
 
         # Establish the real status *first*. `begin_tracking` below records the
         # MLflow linkage via update_status, and the Ray job id is only known
@@ -111,9 +130,18 @@ class RayBackend(ExperimentBackend):
         from ai_experiments.tracking import begin_tracking
 
         tracking_env = begin_tracking(self.store, run_id, manifest)
+        # IAX_ARTIFACTS_DIR is left out on purpose: on Ray artifacts live in
+        # cluster storage, and that transport is a later phase of the spec.
+        # IAX_RUN_ID is the one variable the local worker injects that a
+        # phase command cannot set for itself (it names the run, not the
+        # phase), so it goes on the job rather than into each phase's prefix.
         runtime_env = {
             "working_dir": str(Path(manifest.workload.working_dir).resolve()),
-            "env_vars": {**manifest.workload.env, **tracking_env},
+            "env_vars": {
+                **manifest.workload.env,
+                **tracking_env,
+                "IAX_RUN_ID": run_id,
+            },
         }
         external_id = client.submit_job(entrypoint=entrypoint, runtime_env=runtime_env)
         handle.external_id = external_id
@@ -187,6 +215,7 @@ class RayBackend(ExperimentBackend):
                 details["last_metric_at"] = last_point.timestamp.isoformat()
                 details["last_step"] = last_point.step
                 details["last_metrics"] = last_point.values
+            self._sync_results_from_logs(run_id, lines)
 
         details["ray_condition"] = classify_ray_condition(details)
         return details
@@ -207,6 +236,55 @@ class RayBackend(ExperimentBackend):
             last = MetricPoint(step=metric["step"], values=metric["values"])
             self.store.append_metric(run_id, last)
         return last
+
+    def _sync_results_from_logs(self, run_id: str, lines: list[str]) -> None:
+        """Ingest IAX_RESULT lines from Ray job logs, enforcing the phase rule.
+
+        Ray has no supervisor process in the loop, so the phase a given log
+        line belongs to has to be reconstructed from the log text itself: the
+        entrypoint echoes an ``IAX_PHASE=<phase>`` marker line ahead of each
+        phase, and this walks the log in order, tracking the most recent
+        marker as it goes. A result seen while the current phase is "train"
+        is discarded with the same warning `worker.py` writes for the local
+        backend -- otherwise Ray would be the cheap way to route around the
+        rule this branch exists to enforce.
+
+        Idempotent like `_sync_metrics_from_logs`, but counted differently: a
+        discarded (train-phase) result never reaches `store.read_results`, so
+        `len(existing)` alone would under-count and the same line would be
+        reprocessed -- and re-warned -- on every inspect. A status detail
+        tracks how many IAX_RESULT lines (accepted or discarded) have already
+        been handled instead.
+        """
+        status = self.store.read_status(run_id)
+        already_seen = int(status.details.get("ray_results_seen", 0))
+        phase = "evaluate"  # matches _Supervisor's own single-phase default
+        seen = 0
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("IAX_PHASE="):
+                phase = stripped[len("IAX_PHASE=") :]
+                continue
+            result = parse_result_line(line)
+            if result is None:
+                continue
+            seen += 1
+            if seen <= already_seen:
+                continue
+            if phase == "train":
+                self.store.append_event(
+                    run_id,
+                    RunEvent(
+                        level="warning",
+                        message="result reported from the train phase; discarded",
+                        details={"values": result},
+                    ),
+                )
+            else:
+                self.store.append_result(run_id, ResultRecord(values=result))
+                self.store.update_status(run_id, details={"result": result})
+        if seen > already_seen:
+            self.store.update_status(run_id, details={"ray_results_seen": seen})
 
     def logs(self, run_id: str, tail: int = 200) -> list[RunEvent]:
         return self.store.read_events(run_id, tail=tail)

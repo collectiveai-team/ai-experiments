@@ -6,7 +6,12 @@ import pytest
 
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import ExperimentManifest, TrackingSpec, WorkloadSpec
+from ai_experiments.schemas import (
+    DataSpec,
+    ExperimentManifest,
+    TrackingSpec,
+    WorkloadSpec,
+)
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -273,3 +278,158 @@ def test_an_argument_with_spaces_stays_one_argument(tmp_path):
     backend.submit(manifest)
 
     assert "--label 'hello world'" in captured["entrypoint"]
+
+
+def test_a_two_phase_workload_chains_both_phases_remotely(tmp_path):
+    captured = {}
+
+    class _Client:
+        def submit_job(self, **kwargs):
+            captured.update(kwargs)
+            return "raysubmit_2"
+
+    backend = RayBackend(
+        address="http://fake:8265",
+        store=FilesystemRunStore(tmp_path),
+        client_factory=lambda _address: _Client(),
+    )
+    manifest = ExperimentManifest(
+        experiment="e",
+        backend="ray",
+        workload=WorkloadSpec(
+            entrypoint="python train.py",
+            train="python train.py",
+            evaluate="python evaluate.py",
+            working_dir=str(tmp_path),
+            data=DataSpec(train="data/train", test="data/test"),
+        ),
+    )
+
+    backend.submit(manifest)
+
+    entrypoint = captured["entrypoint"]
+    assert "python train.py" in entrypoint
+    assert "python evaluate.py" in entrypoint
+    assert entrypoint.index("train.py") < entrypoint.index("evaluate.py")
+    assert "&&" in entrypoint
+
+
+def test_each_phase_is_preceded_by_an_echoed_phase_marker(tmp_path):
+    """`_sync_results_from_logs` has no supervisor to ask which phase is
+    running, so the entrypoint has to echo it for the client-side log parser.
+    The ingestion tests below hand-craft their own log text, so they would
+    stay green even if this echo were dropped from `submit` -- this is the
+    one test that would actually catch that regression.
+    """
+    captured = {}
+
+    class _Client:
+        def submit_job(self, **kwargs):
+            captured.update(kwargs)
+            return "raysubmit_4"
+
+    backend = RayBackend(
+        address="http://fake:8265",
+        store=FilesystemRunStore(tmp_path),
+        client_factory=lambda _address: _Client(),
+    )
+    manifest = ExperimentManifest(
+        experiment="e",
+        backend="ray",
+        workload=WorkloadSpec(
+            entrypoint="python train.py",
+            train="python train.py",
+            evaluate="python evaluate.py",
+            working_dir=str(tmp_path),
+            data=DataSpec(train="data/train", test="data/test"),
+        ),
+    )
+
+    backend.submit(manifest)
+
+    entrypoint = captured["entrypoint"]
+    assert "echo IAX_PHASE=train" in entrypoint
+    assert "echo IAX_PHASE=evaluate" in entrypoint
+    assert (
+        entrypoint.index("echo IAX_PHASE=train")
+        < entrypoint.index("python train.py")
+        < entrypoint.index("echo IAX_PHASE=evaluate")
+        < entrypoint.index("python evaluate.py")
+    )
+
+
+def test_the_remote_run_carries_the_harness_variables(tmp_path):
+    captured = {}
+
+    class _Client:
+        def submit_job(self, **kwargs):
+            captured.update(kwargs)
+            return "raysubmit_3"
+
+    backend = RayBackend(
+        address="http://fake:8265",
+        store=FilesystemRunStore(tmp_path),
+        client_factory=lambda _address: _Client(),
+    )
+    manifest = ExperimentManifest(
+        experiment="e",
+        backend="ray",
+        workload=WorkloadSpec(entrypoint="python toy.py", working_dir=str(tmp_path)),
+    )
+
+    handle = backend.submit(manifest)
+
+    assert captured["runtime_env"]["env_vars"]["IAX_RUN_ID"] == handle.run_id
+
+
+def test_a_result_after_the_evaluate_marker_is_scored(tmp_path):
+    client = FakeRayClient(
+        status="RUNNING",
+        logs='IAX_PHASE=evaluate\nIAX_RESULT {"acc": 0.9}\n',
+    )
+    backend = RayBackend(
+        store=FilesystemRunStore(tmp_path), client_factory=lambda _address: client
+    )
+    handle = backend.submit(_manifest(tmp_path))
+
+    backend.inspect(handle.run_id)
+
+    results = backend.store.read_results(handle.run_id)
+    assert [r.values for r in results] == [{"acc": 0.9}]
+
+
+def test_a_result_after_the_train_marker_is_discarded_with_a_warning(tmp_path):
+    client = FakeRayClient(
+        status="RUNNING",
+        logs='IAX_PHASE=train\nIAX_RESULT {"acc": 0.9}\n',
+    )
+    backend = RayBackend(
+        store=FilesystemRunStore(tmp_path), client_factory=lambda _address: client
+    )
+    handle = backend.submit(_manifest(tmp_path))
+
+    backend.inspect(handle.run_id)
+
+    assert backend.store.read_results(handle.run_id) == []
+    events = backend.store.read_events(handle.run_id)
+    assert any(
+        event.level == "warning"
+        and event.message == "result reported from the train phase; discarded"
+        for event in events
+    )
+
+
+def test_two_inspects_of_the_same_logs_do_not_duplicate_the_result(tmp_path):
+    client = FakeRayClient(
+        status="RUNNING",
+        logs='IAX_PHASE=evaluate\nIAX_RESULT {"acc": 0.9}\n',
+    )
+    backend = RayBackend(
+        store=FilesystemRunStore(tmp_path), client_factory=lambda _address: client
+    )
+    handle = backend.submit(_manifest(tmp_path))
+
+    backend.inspect(handle.run_id)
+    backend.inspect(handle.run_id)
+
+    assert len(backend.store.read_results(handle.run_id)) == 1
