@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from ai_experiments.daemon import supervise_once
+from ai_experiments.daemon import MonitorDaemon, SupervisionReport, supervise_once
 from ai_experiments.loop import run_loop
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.schemas import (
@@ -54,7 +54,7 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
 
     def _spy(run_store, run_ids, notifier=None):
         calls.append(list(run_ids))
-        return []
+        return SupervisionReport()
 
     monkeypatch.setattr("ai_experiments.loop.supervise_once", _spy)
 
@@ -126,10 +126,96 @@ def test_supervise_once_auto_kills_a_timed_out_run_like_the_daemon_does(tmp_path
         store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None
     )
 
-    actions = supervise_once(store, [run_id])
+    report = supervise_once(store, [run_id])
 
-    assert len(actions) == 1
-    assert actions[0].run_id == run_id
-    assert actions[0].action == "auto_killed"
-    assert "timeout_exceeded" in actions[0].reasons
+    assert len(report.actions) == 1
+    assert report.actions[0].run_id == run_id
+    assert report.actions[0].action == "auto_killed"
+    assert "timeout_exceeded" in report.actions[0].reasons
     assert store.read_status(run_id).status == "cancelled"
+    assert report.errors == []
+
+
+def test_supervise_once_reports_a_run_whose_check_raises_instead_of_hiding_it(
+    tmp_path, monkeypatch
+):
+    """A backend that raises on every diagnose used to fill TickReport.errors
+    before the extraction. supervise_once must still surface it -- a pass that
+    saw nothing wrong must not be indistinguishable from one that blew up on
+    every run it looked at."""
+    store = _store(tmp_path)
+    run_id = _running_run(store, MonitorPolicy())
+
+    def _boom(run_store, run_id, ladder):
+        raise RuntimeError("backend exploded")
+
+    monkeypatch.setattr("ai_experiments.daemon._check_run", _boom)
+
+    report = supervise_once(store, [run_id])
+
+    assert report.actions == []
+    assert len(report.errors) == 1
+    assert run_id in report.errors[0]
+    assert "backend exploded" in report.errors[0]
+
+
+def test_the_daemons_tick_still_reports_a_run_whose_check_raises(tmp_path, monkeypatch):
+    """The same fault, reached through MonitorDaemon.tick() instead of
+    supervise_once directly -- the daemon must still fold supervise_once's
+    errors into its own TickReport.errors."""
+    store = _store(tmp_path)
+    run_id = _running_run(store, MonitorPolicy())
+
+    def _boom(run_store, run_id, ladder):
+        raise RuntimeError("backend exploded")
+
+    monkeypatch.setattr("ai_experiments.daemon._check_run", _boom)
+
+    daemon = MonitorDaemon(store)
+    tick_report = daemon.tick()
+
+    assert len(tick_report.errors) == 1
+    assert run_id in tick_report.errors[0]
+    assert "backend exploded" in tick_report.errors[0]
+
+
+def test_the_loops_report_carries_a_fatal_action_supervision_took(tmp_path):
+    """A loop iteration over a run the rules call fatal ends with that action
+    in report.supervision -- the loop must not throw away what it did.
+
+    The run is backdated the same way `_running_run` backdates one, rather
+    than relying on a real-time timeout race: a budget of exactly one trial
+    means that once supervision cancels it, the campaign has no more work and
+    finishes on its own, so the loop needs no `max_rounds` guess to stop.
+    """
+
+    class SlowBackend(FakeBackend):
+        def inspect(self, run_id):  # never finishes on its own
+            return self.store.read_status(run_id)
+
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: SlowBackend(store),
+    )
+
+    goal = _goal(
+        monitoring=MonitorPolicy(timeout_seconds=60, auto_kill=True),
+        budget=BudgetSpec(max_trials=1, max_parallel=1),
+    )
+    state = orchestrator.start(goal)
+    (run_id,) = [t.run_id for t in state.trials if t.run_id]
+    store.update_status(run_id, started_at=utc_now() - timedelta(minutes=10))
+
+    report = run_loop(
+        goal,
+        store,
+        orchestrator=orchestrator,
+        campaign_id=state.campaign_id,
+        interval_seconds=0,
+        max_seconds=5.0,
+    )
+
+    assert report.supervision, "the loop's fatal action never made it into the report"
+    assert any(action.action == "auto_killed" for action in report.supervision)

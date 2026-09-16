@@ -82,11 +82,23 @@ class TickReport(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class SupervisionReport(BaseModel):
+    """What one supervision pass did, and what it could not do.
+
+    `errors` is not decoration: a pass that diagnosed nothing because every
+    backend raised must not be indistinguishable from a pass that found
+    every run healthy.
+    """
+
+    actions: list[RunAction] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 def supervise_once(
     run_store: FilesystemRunStore,
     run_ids: Iterable[str],
     notifier: Notifier | None = None,
-) -> list[RunAction]:
+) -> SupervisionReport:
     """One supervision pass over the given run ids.
 
     Kept short and free of agent calls on purpose: `iax loop` runs this on
@@ -95,19 +107,28 @@ def supervise_once(
 
     This is the body `MonitorDaemon._check_runs` used to run inline, per run
     id, extracted so both the daemon's tick and `run_loop`'s iteration share
-    it. A run whose status cannot be read, or that is no longer active, is
-    skipped rather than raised -- one bad run must not end the pass for the
-    others, and a caller with no `TickReport` to log into has nowhere to put
-    that noise anyway.
+    it. A run whose status cannot be read, or whose check itself raises, is
+    skipped rather than aborting the whole pass -- one bad run must not end
+    supervision of the rest -- but the failure is recorded in `errors`
+    rather than swallowed; a caller who never sees "3 runs, 3 errors" cannot
+    tell a quiet tick from a broken one.
+
+    `MonitorDaemon._check_runs` already filters to run ids it has confirmed
+    are active before calling this, so the status read below will never hit
+    the "not in ACTIVE_RUN_STATES" branch for the daemon's own call. It is
+    still done here, unconditionally, because this function also has to be
+    correct for `run_loop`, which does not pre-filter against a live status
+    read -- the double read is deliberate, not duplicated by accident.
     """
     ladder = EscalationLadder(run_store)
-    actions: list[RunAction] = []
+    report = SupervisionReport()
     for run_id in run_ids:
         try:
             status = run_store.read_status(run_id)
             if status.details.get(SYNTHETIC_STATUS_KEY):
                 raise RuntimeError(status.error or "status unreadable")
-        except Exception:
+        except Exception as exc:
+            report.errors.append(f"{run_id}: {exc}")
             continue
 
         if status.status not in ACTIVE_RUN_STATES:
@@ -115,12 +136,13 @@ def supervise_once(
 
         try:
             action = _check_run(run_store, run_id, ladder)
-        except Exception:
+        except Exception as exc:
+            report.errors.append(f"{run_id}: {exc}")
             continue
         if action is None:
             continue
 
-        actions.append(action)
+        report.actions.append(action)
         if notifier is not None and action.action in NOTIFY_ACTIONS:
             notifier.send(
                 f"run {action.action}",
@@ -129,7 +151,7 @@ def supervise_once(
                 action=action.action,
                 reasons=action.reasons,
             )
-    return actions
+    return report
 
 
 def _check_run(
@@ -333,9 +355,9 @@ class MonitorDaemon:
             report.runs_checked += 1
             active_run_ids.append(run_id)
 
-        report.actions.extend(
-            supervise_once(self.run_store, active_run_ids, self.notifier)
-        )
+        pass_report = supervise_once(self.run_store, active_run_ids, self.notifier)
+        report.actions.extend(pass_report.actions)
+        report.errors.extend(pass_report.errors)
 
     def _advance_campaigns(self, report: TickReport) -> None:
         for campaign_id in self.campaign_store.list_campaigns():

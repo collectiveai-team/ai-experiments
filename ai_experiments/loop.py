@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
-from ai_experiments.daemon import supervise_once
+from ai_experiments.daemon import RunAction, supervise_once
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
@@ -53,6 +53,10 @@ class LoopReport(BaseModel):
     #: Trials still in flight when the loop returned. Non-empty means the
     #: campaign has unread work: resume it before you conclude anything.
     pending_trials: list[str] = Field(default_factory=list)
+    #: Everything supervision did while the loop was running -- kills, reaps,
+    #: escalations. A loop that killed a run and did not say so is a loop you
+    #: cannot audit in the morning.
+    supervision: list[RunAction] = Field(default_factory=list)
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -86,6 +90,7 @@ def run_loop(
         state = orchestrator.advance(campaign_id)
 
     reviews: list[dict[str, Any]] = []
+    supervision: list[RunAction] = []
     loop_stop = "campaign_finished"
     iterations = 0
 
@@ -104,7 +109,7 @@ def run_loop(
         if interval_seconds > 0 and iterations > 1:
             sleep(interval_seconds)
         state = orchestrator.advance(state.campaign_id)
-        supervise_once(
+        pass_report = supervise_once(
             store,
             [
                 trial.run_id
@@ -112,6 +117,7 @@ def run_loop(
                 if trial.status in ACTIVE_TRIAL_STATES and trial.run_id
             ],
         )
+        supervision.extend(pass_report.actions)
 
         if state.rounds > rounds_before and state.status not in TERMINAL_STATUSES:
             verdict = _review(orchestrator, state, reviews)
@@ -143,6 +149,7 @@ def run_loop(
         elapsed_seconds=round(now() - started, 3),
         loop_stop=loop_stop,
         pending_trials=pending,
+        supervision=supervision,
         objective=summary["objective"],
         best=summary["best"],
         history=summary["history"],
