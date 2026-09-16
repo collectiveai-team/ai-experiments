@@ -469,3 +469,67 @@ def test_an_absent_suggested_changes_records_nothing(tmp_path):
     _apply_changes(orchestrator, state, goal, {})
 
     assert orchestrator.campaign_store.read_events(state.campaign_id) == before
+
+
+def test_the_loop_reports_what_supervision_could_not_do(tmp_path, monkeypatch):
+    """`supervise_once` already returns `errors` beside `actions`, and the
+    loop already lifts `actions`. Dropping the other half means an
+    unattended `iax loop` whose backend raises on every `diagnose()` returns
+    a report that looks exactly like a night on which everything was fine.
+    """
+
+    class StuckBackend(FakeBackend):
+        """Nothing ever finishes, so there are always trials to supervise."""
+
+        def inspect(self, run_id):
+            return self.store.read_status(run_id)
+
+        def diagnose(self, run_id):
+            raise RuntimeError("ray dashboard unreachable")
+
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: StuckBackend(store),
+    )
+    monkeypatch.setattr(
+        "ai_experiments.monitoring.supervision.backend_for_run",
+        lambda run_store, run_id: StuckBackend(run_store),
+    )
+
+    report = run_loop(
+        _goal(),
+        store,
+        orchestrator=orchestrator,
+        interval_seconds=0,
+        max_seconds=0.2,
+    )
+
+    assert report.supervision_errors, (
+        "every diagnose() raised and the loop's report says supervision had "
+        "nothing to report"
+    )
+    assert any(
+        "ray dashboard unreachable" in error for error in report.supervision_errors
+    )
+
+
+def test_a_healthy_loop_reports_no_supervision_errors(tmp_path):
+    """The empty list has to mean "nothing went wrong", not "nobody looked"."""
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: FakeBackend(store),
+    )
+
+    report = run_loop(
+        _goal(),
+        store,
+        orchestrator=orchestrator,
+        interval_seconds=0,
+        max_seconds=5,
+    )
+
+    assert report.supervision_errors == []

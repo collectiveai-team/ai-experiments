@@ -265,7 +265,7 @@ class RayBackend(ExperimentBackend):
             if error_type:
                 details["ray_error_type"] = str(error_type)
 
-        logs = _safe_call(client, "get_job_logs", external_id)
+        logs = self._job_logs(run_id, client, external_id)
         if isinstance(logs, str) and logs:
             lines = logs.splitlines()
             details["ray_log_tail"] = "\n".join(lines[-50:])
@@ -279,6 +279,40 @@ class RayBackend(ExperimentBackend):
 
         details["ray_condition"] = classify_ray_condition(details)
         return details
+
+    def _job_logs(self, run_id: str, client: Any, external_id: str) -> Any:
+        """Read the job's logs, recording a failure instead of swallowing it.
+
+        `_safe_call` is right for `get_job_info`, where a failure costs
+        diagnostics. It is not right here: on Ray the job log is the *only*
+        channel an ``IAX_RESULT`` travels on, so a transient dashboard error
+        turns a trial that declared a number into ``no_result`` and the
+        campaign records a miss that never happened. The fallback is
+        unchanged -- a failed read must still not crash the poll -- but it
+        now leaves the miss and its cause in the same run log.
+        """
+        method = getattr(client, "get_job_logs", None)
+        if method is None:
+            return None
+        try:
+            return method(external_id)
+        except Exception as exc:
+            self.store.append_event(
+                run_id,
+                RunEvent(
+                    level="error",
+                    message=(
+                        "ray job logs could not be read; any result this poll "
+                        "would have carried is missing, not absent"
+                    ),
+                    details={
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "external_id": external_id,
+                    },
+                ),
+            )
+            return None
 
     def _sync_metrics_from_logs(
         self, run_id: str, lines: list[str]

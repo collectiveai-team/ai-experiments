@@ -690,3 +690,38 @@ def test_two_inspects_of_a_discarded_train_result_warn_only_once(tmp_path):
         and event.message == "result reported from the train phase; discarded"
     ]
     assert len(warnings) == 1
+
+
+def test_an_unreadable_job_log_is_recorded_as_an_error(tmp_path):
+    """On Ray the job log is the only channel an `IAX_RESULT` travels on.
+
+    A failed read therefore costs the score, not just the diagnostics: the
+    trial is reported as having declared nothing, which is indistinguishable
+    from a workload that really printed nothing. The poll must still survive
+    the failure -- but it has to leave the cause in the run's own log.
+    """
+
+    class UnreadableLogs(FakeRayClient):
+        def get_job_logs(self, job_id: str) -> str:
+            raise RuntimeError("dashboard returned 500")
+
+    client = UnreadableLogs(status="RUNNING")
+    backend = RayBackend(
+        store=FilesystemRunStore(tmp_path), client_factory=lambda _address: client
+    )
+    handle = backend.submit(_manifest(tmp_path))
+
+    status = backend.inspect(handle.run_id)
+
+    assert status.status == "running", "a failed log read must not break the poll"
+    errors = [
+        event
+        for event in backend.store.read_events(handle.run_id)
+        if event.level == "error" and "job logs could not be read" in event.message
+    ]
+    assert errors, (
+        "a Ray log read failed and the run's log says nothing; the trial will be "
+        "reported as no_result for a reason nobody can find"
+    )
+    assert errors[0].details["error_type"] == "RuntimeError"
+    assert "dashboard returned 500" in errors[0].details["error"]

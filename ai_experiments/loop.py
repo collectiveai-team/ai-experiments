@@ -57,6 +57,12 @@ class LoopReport(BaseModel):
     #: escalations. A loop that killed a run and did not say so is a loop you
     #: cannot audit in the morning.
     supervision: list[RunAction] = Field(default_factory=list)
+    #: What supervision could not do, one line per failure -- a run whose
+    #: status would not read, a backend whose `diagnose()` raised. Empty
+    #: means every pass completed, never "nothing was checked": a loop that
+    #: supervised nothing all night and returned an empty list would be
+    #: indistinguishable from a healthy one.
+    supervision_errors: list[str] = Field(default_factory=list)
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -91,6 +97,7 @@ def run_loop(
 
     reviews: list[dict[str, Any]] = []
     supervision: list[RunAction] = []
+    supervision_errors: list[str] = []
     loop_stop = "campaign_finished"
     iterations = 0
 
@@ -123,6 +130,7 @@ def run_loop(
             ],
         )
         supervision.extend(pass_report.actions)
+        supervision_errors.extend(pass_report.errors)
 
         if state.status in TERMINAL_STATUSES:
             break
@@ -159,6 +167,7 @@ def run_loop(
         loop_stop=loop_stop,
         pending_trials=pending,
         supervision=supervision,
+        supervision_errors=supervision_errors,
         objective=summary["objective"],
         best=summary["best"],
         history=summary["history"],

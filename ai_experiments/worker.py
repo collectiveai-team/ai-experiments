@@ -103,6 +103,31 @@ class _Supervisor:
             raise RuntimeError(f"working_dir does not exist: {working_dir}")
         return working_dir
 
+    def _route_declared_result(self, values: dict[str, float]) -> None:
+        """Keep or discard the result this phase declared, and say which.
+
+        Lifted out of `run` so the rule that decides *which phase may score*
+        has a seam of its own: `run` pumps a stream, and the guarantee this
+        branch carries should not be something a reader has to find inside
+        that pump (CES-8, and CES-110 -- `run` measured 32 with it inline).
+        Behaviour is unchanged; only its address is.
+        """
+        if self.phase == "train":
+            # The trainer is the code an agent may rewrite. Letting it
+            # declare the number it is judged by would make the metric
+            # the cheapest thing in the search space to optimize.
+            self.store.append_event(
+                self.run_id,
+                RunEvent(
+                    level="warning",
+                    message="result reported from the train phase; discarded",
+                    details={"values": values},
+                ),
+            )
+            return
+        self.store.append_result(self.run_id, ResultRecord(values=values))
+        self._update_status(details={"result": values})
+
     def run(self, command: str | None = None, work_dir: Path | None = None) -> int:
         run_dir = self.store.run_dir(self.run_id)
         manifest = load_stored(ExperimentManifest, run_dir / "manifest.yaml")
@@ -208,21 +233,7 @@ class _Supervisor:
                 continue
             result = parse_result_line(line)
             if result is not None:
-                if self.phase == "train":
-                    # The trainer is the code an agent may rewrite. Letting it
-                    # declare the number it is judged by would make the metric
-                    # the cheapest thing in the search space to optimize.
-                    self.store.append_event(
-                        self.run_id,
-                        RunEvent(
-                            level="warning",
-                            message="result reported from the train phase; discarded",
-                            details={"values": result},
-                        ),
-                    )
-                else:
-                    self.store.append_result(self.run_id, ResultRecord(values=result))
-                    self._update_status(details={"result": result})
+                self._route_declared_result(result)
                 continue
 
             metric = parse_metric_line(line)

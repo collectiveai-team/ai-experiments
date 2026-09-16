@@ -9,6 +9,7 @@ import sys
 import textwrap
 from datetime import timedelta
 
+import ai_experiments.phases as phases_module
 import ai_experiments.worker as worker_module
 from ai_experiments.phases import run_phases
 from ai_experiments.schemas import (
@@ -170,6 +171,150 @@ def test_started_at_is_not_moved_by_the_second_phase(tmp_path, monkeypatch):
 
     assert len(started_at_writes) == 2, "expected one started_at write per phase"
     assert started_at_writes[0] == started_at_writes[1]
+
+
+_SENTINEL = """
+    import pathlib
+    pathlib.Path(%r).write_text("ran")
+"""
+
+
+def test_a_cancellation_before_the_first_phase_runs_nothing(tmp_path):
+    """The window `store.cancel_requested` uniquely covers, half one.
+
+    A cancel can land between submit and the first phase -- no workload has
+    started, so there is no pid to signal and no terminal status for the
+    launcher's other guard (phases.py's `ACTIVE_RUN_STATES` check, which only
+    runs *after* a phase) to notice. Only the check at the top of the loop
+    stands between that request and a trainer that was never meant to run,
+    and it has to stand there on the first iteration: weakening it to
+    `index > 0` leaves exactly this window open.
+    """
+    store, run_id = _store_with(
+        tmp_path,
+        _SENTINEL % str(tmp_path / "train.ran"),
+        _SENTINEL % str(tmp_path / "evaluate.ran"),
+    )
+    store.request_cancel(run_id)
+
+    assert run_phases(store, run_id) == 1
+
+    assert not (tmp_path / "train.ran").exists(), (
+        "the train phase ran although cancellation was requested before it"
+    )
+    assert not (tmp_path / "evaluate.ran").exists()
+    skipped = [
+        event
+        for event in store.read_events(run_id)
+        if event.message == "remaining phases skipped: cancellation requested"
+    ]
+    assert len(skipped) == 1, (
+        "a cancellation that skipped every phase left no trace in the run log"
+    )
+    assert skipped[0].level == "warning"
+    assert skipped[0].details["phase"] == "train"
+
+
+def test_a_cancellation_between_the_phases_stops_the_evaluator(tmp_path, monkeypatch):
+    """The window `store.cancel_requested` uniquely covers, half two.
+
+    Here the trainer has already exited, so the supervisor's own SIGTERM
+    handler and its `_cancel_requested()` check are both behind us and there
+    is no process left for anyone to signal. The status is still `running`
+    (a non-final phase does not write `completed`), so the launcher's
+    terminal-status guard sees nothing wrong either. The request is delivered
+    by wrapping `_Supervisor` rather than from inside the workload on
+    purpose: a marker the trainer writes itself is seen by that trainer's own
+    supervisor, which ends the run as `cancelled` and hands the *other* guard
+    the job -- which is precisely why deleting this one went unnoticed.
+    """
+    store, run_id = _store_with(
+        tmp_path,
+        _SENTINEL % str(tmp_path / "train.ran"),
+        _SENTINEL % str(tmp_path / "evaluate.ran"),
+    )
+
+    class _CancelledAfterTheTrainer(phases_module._Supervisor):
+        def run(self, **kwargs):
+            exit_code = super().run(**kwargs)
+            if self.phase == "train":
+                store.request_cancel(run_id)
+            return exit_code
+
+    monkeypatch.setattr(phases_module, "_Supervisor", _CancelledAfterTheTrainer)
+
+    assert run_phases(store, run_id) == 1
+
+    assert (tmp_path / "train.ran").exists(), (
+        "the fixture must let the trainer run, or the gap it tests never opens"
+    )
+    assert not (tmp_path / "evaluate.ran").exists(), (
+        "the evaluator ran although cancellation was requested before it started"
+    )
+    assert store.read_status(run_id).status in {"running", "cancelled"}
+    skipped = [
+        event
+        for event in store.read_events(run_id)
+        if event.message == "remaining phases skipped: cancellation requested"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].level == "warning"
+    assert skipped[0].details["phase"] == "evaluate"
+
+
+_SECOND_RESULT_WARNING = "more than one result declared; the later keys win"
+
+
+def test_a_second_declared_result_is_recorded_as_a_warning(tmp_path):
+    """Every document says a workload prints one `IAX_RESULT`. When one
+    prints two the reader merges them last-wins, and that merge used to
+    happen in silence -- an unreported contract violation on the only
+    channel that scores.
+    """
+    store, run_id = _store_with(
+        tmp_path,
+        "pass",
+        """
+        print('IAX_RESULT {"test_acc": 0.10}')
+        print('IAX_RESULT {"test_acc": 0.99}')
+        """,
+    )
+
+    assert run_phases(store, run_id) == 0
+
+    assert [r.values for r in store.read_results(run_id)] == [
+        {"test_acc": 0.10},
+        {"test_acc": 0.99},
+    ], "the merge semantics are unchanged; only the silence is"
+    warnings = [
+        event
+        for event in store.read_events(run_id)
+        if event.message == _SECOND_RESULT_WARNING
+    ]
+    assert len(warnings) == 1, (
+        "a workload that declared two results said so nowhere in its own log"
+    )
+    assert warnings[0].level == "warning"
+    assert warnings[0].details["results"] == 2
+
+
+def test_one_declared_result_is_not_warned_about(tmp_path):
+    """The normal case must stay quiet, or the warning above means nothing."""
+    store, run_id = _store_with(
+        tmp_path,
+        "pass",
+        """
+        print('IAX_RESULT {"test_acc": 0.99}')
+        """,
+    )
+
+    assert run_phases(store, run_id) == 0
+
+    assert not [
+        event
+        for event in store.read_events(run_id)
+        if event.message == _SECOND_RESULT_WARNING
+    ]
 
 
 def test_a_single_entrypoint_workload_still_runs(tmp_path):
