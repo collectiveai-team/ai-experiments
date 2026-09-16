@@ -62,7 +62,7 @@ class LocalBackend(ExperimentBackend):
         cmd = [
             sys.executable,
             "-m",
-            "ai_experiments.worker",
+            "ai_experiments.phases",
             "--run-id",
             run_id,
             "--runs-dir",

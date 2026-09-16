@@ -42,11 +42,19 @@ class _Supervisor:
     """Runs one workload process, streaming logs/metrics into the run store."""
 
     def __init__(
-        self, store: FilesystemRunStore, run_id: str, phase: str = "evaluate"
+        self,
+        store: FilesystemRunStore,
+        run_id: str,
+        phase: str = "evaluate",
+        final: bool = True,
     ) -> None:
         self.store = store
         self.run_id = run_id
         self.phase = phase
+        # With two phases only the last may declare the run `completed`; a
+        # failing phase still writes `failed`/`cancelled` immediately,
+        # because a broken phase ends the run regardless of which one it was.
+        self.final = final
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._cancelled = False
@@ -94,19 +102,34 @@ class _Supervisor:
             raise RuntimeError(f"working_dir does not exist: {working_dir}")
         return working_dir
 
-    def run(self) -> None:
+    def run(self, command: str | None = None, work_dir: Path | None = None) -> int:
         run_dir = self.store.run_dir(self.run_id)
         manifest = load_stored(ExperimentManifest, run_dir / "manifest.yaml")
 
-        command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
+        # `command` is this phase's own command from `WorkloadSpec.phases()`;
+        # a caller running a single-entrypoint workload leaves it unset and
+        # gets the entrypoint. `args` is shared by every phase (the planner
+        # injects trial parameters through it), so it is appended regardless
+        # of which command ran.
+        entrypoint = command or manifest.workload.entrypoint
+        cmd = [*shlex.split(entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
         env = os.environ.copy()
+        # `workload.env` (IAX_PARAMS included) is shared by every phase too,
+        # so it is merged into each phase's environment rather than only the
+        # single-entrypoint path's.
         env.update(manifest.workload.env)
+        env.update(manifest.workload.data.env_for(self.phase))
+        env["IAX_PHASE"] = self.phase
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)
         artifacts_dir = run_dir / "artifacts"
         artifacts_dir.mkdir(exist_ok=True)
         env["IAX_ARTIFACTS_DIR"] = str(artifacts_dir)
+        if work_dir is not None:
+            # The only handoff channel between train and evaluate: not the
+            # cwd, which a later variant-copy phase will no longer share.
+            env["IAX_WORK_DIR"] = str(work_dir)
 
         # MLflow handoff: workloads that import mlflow attach to the run the
         # harness created at submit time.
@@ -122,12 +145,12 @@ class _Supervisor:
         )
         self.store.append_event(
             self.run_id,
-            RunEvent(message="workload started", details={"command": command}),
+            RunEvent(message="workload started", details={"command": cmd}),
         )
 
         signal.signal(signal.SIGTERM, self._handle_sigterm)
         self.process = subprocess.Popen(
-            command,
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=working_dir,
@@ -208,9 +231,13 @@ class _Supervisor:
         exit_code = self.process.wait()
         self._stop.set()
         if exit_code == 0:
-            self._update_status(
-                status="completed", exit_code=exit_code, completed_at=utc_now()
-            )
+            if self.final:
+                # With two phases only the last may declare the run
+                # completed; a non-final phase that exits 0 just hands off
+                # to the next one, so it leaves status alone here.
+                self._update_status(
+                    status="completed", exit_code=exit_code, completed_at=utc_now()
+                )
             self.store.append_event(self.run_id, RunEvent(message="workload completed"))
         elif exit_code < 0 and self._cancel_requested():
             self._update_status(
@@ -263,6 +290,7 @@ class _Supervisor:
                     details={"exit_code": exit_code},
                 ),
             )
+        return exit_code
 
 
 def _overwrite(raw: str) -> str:
@@ -327,7 +355,7 @@ def main() -> None:
 
     store = FilesystemRunStore(args.runs_dir)
     try:
-        _Supervisor(store, args.run_id, phase=args.phase).run()
+        raise SystemExit(_Supervisor(store, args.run_id, phase=args.phase).run())
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)  # keep the evidence in worker.log
         report_supervisor_failure(store, args.run_id, exc)
