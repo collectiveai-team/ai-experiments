@@ -82,8 +82,10 @@ def _objective_block(goal: GoalSpec) -> str:
     )
     return (
         f"Objective: {goal.objective.mode}imize `{goal.objective.metric}`{target}. "
-        'The workload reports it on stdout as `IAX_METRIC {"step": n, '
-        f'"{goal.objective.metric}": value}}`.'
+        "The workload declares it on stdout as "
+        f'`IAX_RESULT {{"{goal.objective.metric}": value}}`, from its evaluate '
+        "phase. That declared result is the only thing scored; `IAX_METRIC` lines "
+        "are progress only and are never scored."
     )
 
 

@@ -1192,6 +1192,42 @@ git add ai_experiments/backends/ray.py tests/test_ray_backend.py
 git commit -m "feat: run both phases on Ray, with the harness variables present"
 ```
 
+#### Enmienda del controlador (ruling, revisión opus de Task 5)
+
+La revisión de Task 5 encontró que **el backend Ray ya no puede puntuar ningún trial**. Desde que
+sólo `IAX_RESULT` puntúa, y `_sync_metrics_from_logs` (la única ingesta de stdout que tiene Ray)
+parsea sólo `IAX_METRIC`, todo trial en Ray lee `no_result`. Ninguna otra tarea del plan cierra
+esto: el entrypoint encadena los comandos crudos, así que `_Supervisor` — que es quien enruta el
+resultado y aplica la regla de fase — nunca corre en el camino Ray.
+
+Se cierra acá, en Task 9, con dos requisitos adicionales:
+
+1. **Ingesta.** Ray no comparte filesystem con el cliente; su arquitectura es "el proceso remoto
+   imprime, el cliente parsea logs". El resultado se ingesta igual: un pase sobre las mismas
+   `lines` que ya lee `_details`, con `parse_result_line`, que hace `store.append_result(...)`.
+   Idempotente como el de métricas — sólo los registros más allá de `len(store.read_results(run_id))`.
+2. **La regla de fase vale también acá.** Si el train puede declarar resultado en Ray, Ray es la
+   manera barata de saltear el límite que esta rama existe para construir. El entrypoint imprime
+   un marcador antes de cada fase (`echo IAX_PHASE=train`), el parser de logs lleva la fase actual
+   mientras recorre las líneas en orden, y **descarta** todo `IAX_RESULT` visto fuera de `evaluate`,
+   dejando el mismo `RunEvent` de nivel `warning` con el mensaje exacto que usa el worker:
+   `result reported from the train phase; discarded`.
+
+El marcador es una línea más del `&&`-chain, así que las aserciones de contención de los tests de
+Task 6 y Task 9 siguen valiendo sin cambios.
+
+**Tests que agregar a `tests/test_ray_backend.py`** (mismo estilo que los existentes: `_Client`
+falso, logs inyectados por el stub):
+
+- un `IAX_RESULT` en los logs, después del marcador `IAX_PHASE=evaluate`, aparece en
+  `store.read_results(run_id)` con sus valores;
+- el mismo `IAX_RESULT` después de `IAX_PHASE=train` **no** aparece en `read_results`, y sí deja el
+  evento `warning`;
+- dos inspects seguidos sobre los mismos logs no duplican el resultado.
+
+Sin estos tests la tarea no está hecha: el defecto que se está arreglando es exactamente "la suite
+verde no era evidencia de que el camino enviado funcionara".
+
 ---
 
 ### Task 10: Los ejemplos declaran resultado y fases
@@ -1574,6 +1610,67 @@ git commit -m "fix: a review may widen the search space, never the budget"
 
 ---
 
+### Task 14: La documentación enseña el contrato nuevo
+
+**Agregada por el controlador** tras la revisión opus de Task 5. Todo lo que un usuario lee para
+escribir su primer workload sigue enseñando `IAX_METRIC` como el canal que puntúa. Quien siga el
+README hoy escribe un workload que quema el presupuesto entero sin puntuar nada, y el error que
+recibe (`no_result`) no se parece a nada de lo que leyó. Ninguna otra tarea toca estos archivos.
+
+Va al final a propósito: los ejemplos se terminan de asentar en Task 10, y la documentación debe
+describir lo que quedó, no lo que se planeó.
+
+**Files:**
+- Modify: `README.md` (líneas ~50, ~70, ~234, ~492-497), `CONVENTIONS.md:118`,
+  `.claude/skills/running-campaigns/SKILL.md:45`,
+  `.claude/skills/autonomous-experimentation/SKILL.md:34`,
+  `.claude/skills/autonomous-experimentation/reference/goal.md:15`,
+  `.claude/skills/monitoring-experiments/SKILL.md:54`
+- Test: ninguno nuevo. La verificación es ejecutar lo que la doc dice.
+
+**Interfaces:**
+- Consumes: el contrato final tal como quedó implementado — `report_result(**values)` /
+  `IAX_RESULT {json}`, las dos fases `train`/`evaluate`, `IAX_WORK_DIR`, `results.jsonl`.
+- Produces: nada que otra tarea consuma.
+
+- [ ] **Step 1: Leer el estado final, no el plan**
+
+Antes de escribir una línea, leer `ai_experiments/report.py`, `ai_experiments/templates/workload.py`,
+`examples/toy_train.py`, `examples/toy_evaluate.py` y `ai_experiments/phases.py`. La doc describe
+**eso**. Cualquier discrepancia entre lo que dice este plan y lo que hace el código: gana el código,
+y se reporta la discrepancia.
+
+- [ ] **Step 2: Corregir cada sitio**
+
+En cada archivo, el cambio mínimo que deja el texto verdadero. Lo que tiene que quedar dicho, en
+alguna parte de `README.md` y de la skill `running-campaigns`:
+
+- `IAX_METRIC` es progreso: se grafica, se usa para detectar un run enfermo, **no puntúa**.
+- `IAX_RESULT` es el resultado declarado: una línea, desde la fase `evaluate`, y es lo único que
+  puntúa. Un workload que no la imprime no puntúa — falla con `no_result`, no cae al último metric.
+- Un `IAX_RESULT` impreso desde la fase `train` se descarta con un `warning`. No es un detalle de
+  implementación: es el límite que hace que la campaña signifique algo.
+- `results.jsonl` existe al lado de `metrics.jsonl` en el directorio del run
+  (`.claude/skills/monitoring-experiments/SKILL.md:54` hoy sólo nombra `metrics.jsonl`).
+
+`README.md:492` ("`IAX_METRIC` is not a variable...") es el lugar donde el contrato se explica
+entero: ahí van los dos canales, uno al lado del otro, con el ejemplo de cada uno.
+
+- [ ] **Step 3: Verificar ejecutando**
+
+Copiar el snippet de workload del README a un archivo temporal, correrlo, y confirmar que imprime
+las dos clases de línea. Después `grep -rn "IAX_METRIC" README.md CONVENTIONS.md .claude/skills/`
+y revisar una por una: cada aparición que quede tiene que ser sobre progreso, nunca sobre puntaje.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add README.md CONVENTIONS.md .claude/skills/
+git commit -m "docs: teach the result contract, not the progress curve"
+```
+
+---
+
 ## Puerta de salida de la fase 1
 
 Antes de pasar al plan de fase 2, estos criterios del spec deben verificarse a mano sobre `examples/`:
@@ -1585,4 +1682,6 @@ Antes de pasar al plan de fase 2, estos criterios del spec deben verificarse a m
 - [ ] El mismo comando que corre la campaña supervisa (Task 11).
 - [ ] Una cohorte se cierra y se revisa antes de admitir la siguiente (Task 12).
 - [ ] Ninguna revisión aprobada amplía el techo de presupuesto (Task 13).
+- [ ] Un trial en Ray puntúa, y su fase `train` no puede declarar resultado (Task 9).
+- [ ] El workload del README, copiado tal cual, puntúa (Task 14).
 - [ ] `.venv/bin/python -m pytest -q -m 'not integration' --ignore=tests/test_server.py` verde.

@@ -514,7 +514,7 @@ class CampaignOrchestrator:
                             details={
                                 "trial_id": trial.trial_id,
                                 "objective_metric": goal.objective.metric,
-                                "observed_metrics": reading.observed_metrics,
+                                "declared_results": reading.declared_results,
                                 "reason": reading.miss_reason,
                             },
                         ),

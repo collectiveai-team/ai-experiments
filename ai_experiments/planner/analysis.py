@@ -23,7 +23,7 @@ class ObjectiveReading(BaseModel):
 
     value: float | None = None
     final_metrics: dict[str, float] = Field(default_factory=dict)
-    observed_metrics: list[str] = Field(default_factory=list)
+    declared_results: list[str] = Field(default_factory=list)
     miss_reason: Literal["no_result", "metric_absent", "not_finite"] | None = None
 
     def miss_message(self, metric: str) -> str | None:
@@ -34,15 +34,15 @@ class ObjectiveReading(BaseModel):
                 "no result reported: the workload printed no IAX_RESULT line, "
                 f"so objective '{metric}' could not be scored"
             )
-        observed = ", ".join(self.observed_metrics) or "(none)"
+        declared = ", ".join(self.declared_results) or "(none)"
         if self.miss_reason == "metric_absent":
             return (
-                f"objective metric '{metric}' was never reported; "
-                f"observed metrics: {observed}"
+                f"objective metric '{metric}' is not in the declared result; "
+                f"declared: {declared}"
             )
         return (
-            f"objective metric '{metric}' was reported but never finite "
-            f"(NaN/inf only); observed metrics: {observed}"
+            f"objective metric '{metric}' was declared but never finite "
+            f"(NaN/inf only); declared: {declared}"
         )
 
 
@@ -67,18 +67,18 @@ def extract_objective(
     if objective.metric not in values:
         return ObjectiveReading(
             final_metrics=values,
-            observed_metrics=observed,
+            declared_results=observed,
             miss_reason="metric_absent",
         )
     value = values[objective.metric]
     if not math.isfinite(value):
         return ObjectiveReading(
             final_metrics=values,
-            observed_metrics=observed,
+            declared_results=observed,
             miss_reason="not_finite",
         )
     return ObjectiveReading(
-        value=value, final_metrics=values, observed_metrics=observed
+        value=value, final_metrics=values, declared_results=observed
     )
 
 

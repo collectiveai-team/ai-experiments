@@ -179,7 +179,7 @@ def test_a_result_without_the_objective_metric_says_which_ones_it_had(tmp_path):
     )
 
     assert reading.miss_reason == "metric_absent"
-    assert reading.observed_metrics == ["test_acc"]
+    assert reading.declared_results == ["test_acc"]
 
 
 def test_a_non_finite_result_is_not_a_score(tmp_path):
