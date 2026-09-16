@@ -248,6 +248,11 @@ class _Supervisor:
             # silently absorbed (self.process.poll() is not None, nothing
             # happens) and the next phase would start anyway. Restoring the
             # default action lets a bare SIGTERM here kill the supervisor.
+            # The window between `process.wait()` returning and the next
+            # phase's own `signal.signal(...)` call is microseconds wide and
+            # cannot be hit deterministically without a test-only seam in
+            # this hot path, so this line is accepted untested (ledger:
+            # task-8 fix round 3).
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if exit_code == 0:
             if self._cancel_requested():

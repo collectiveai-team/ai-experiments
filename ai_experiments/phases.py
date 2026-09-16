@@ -12,7 +12,12 @@ import argparse
 import sys
 import traceback
 
-from ai_experiments.schemas import ExperimentManifest, RunEvent, load_stored
+from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
+    ExperimentManifest,
+    RunEvent,
+    load_stored,
+)
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.worker import _Supervisor, report_supervisor_failure
 
@@ -60,6 +65,27 @@ def run_phases(store: FilesystemRunStore, run_id: str) -> int:
         exit_code = supervisor.run(command=command, work_dir=work_dir)
         if exit_code != 0:
             return exit_code
+        if index != len(phases) - 1:
+            # `_Supervisor` has its own, independent notion of cancelled
+            # (`_cancelled`, set by its SIGTERM handler) that never touches
+            # the marker `cancel_requested` above reads -- a bare SIGTERM to
+            # this process sets it without `store.request_cancel` ever being
+            # called. A non-final phase that ran normally leaves the status
+            # `running` (that is what the `final` gating is for), so a
+            # terminal status here means something ended the run and the
+            # phase we are about to start must not run on top of it.
+            status = store.read_status(run_id)
+            if status.status not in ACTIVE_RUN_STATES:
+                skipped_phase, _ = phases[index + 1]
+                store.append_event(
+                    run_id,
+                    RunEvent(
+                        level="warning",
+                        message="remaining phases skipped: run already ended",
+                        details={"status": status.status, "phase": skipped_phase},
+                    ),
+                )
+                return 1
     return 0
 
 

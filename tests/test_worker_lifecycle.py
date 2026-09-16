@@ -519,6 +519,79 @@ def test_iax_cancel_stops_the_evaluate_phase_too(tmp_path):
     )
 
 
+def test_bare_sigterm_to_the_supervisor_stops_the_evaluate_phase_too(tmp_path):
+    """The same bug as above, reached through the other door. `run_phases`
+    decides whether to keep going by asking `store.cancel_requested`, the
+    marker `LocalBackend.cancel` writes -- but `_Supervisor._cancel_requested`
+    is `self._cancelled or store.cancel_requested(...)`, and `self._cancelled`
+    is set by *any* SIGTERM the supervisor receives, marker or not. The train
+    phase here signals its own parent (the supervisor process itself, not the
+    backend) directly and exits 0 on its own; nobody ever calls
+    `backend.cancel` or writes the cancel marker. Round 2's fix correctly
+    records `train`'s own exit as `cancelled`; the bug is `run_phases` seeing
+    no marker afterwards and starting `evaluate` anyway.
+    """
+    store = _store(tmp_path)
+    train = _script(
+        tmp_path / "train.py",
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('training', flush=True)\n"
+        "os.kill(os.getppid(), signal.SIGTERM)\n"
+        "time.sleep(0.5)\n",
+    )
+    evaluate = _script(
+        tmp_path / "evaluate.py",
+        "print('IAX_RESULT {\"acc\": 0.61}', flush=True)\n",
+    )
+    manifest = ExperimentManifest(
+        experiment="lifecycle",
+        backend="local",
+        workload=WorkloadSpec(
+            entrypoint=train, train=train, evaluate=evaluate, working_dir=str(tmp_path)
+        ),
+    )
+    backend = LocalBackend(store=store)
+
+    handle = backend.submit(manifest)
+    # Not `_wait_for_terminal`: the bug this pins is a status that looks
+    # terminal (`cancelled`, written when `train` exits) and then changes
+    # again once the un-stopped evaluate phase finishes.
+    status = _wait_for_settled_terminal(store, handle.run_id)
+
+    assert status.status == "cancelled"
+    assert store.read_results(handle.run_id) == []
+    assert not any(
+        event.details.get("phase") == "evaluate" and event.message == "phase started"
+        for event in store.read_events(handle.run_id)
+    )
+
+
+def test_single_phase_workload_that_traps_sigterm_is_still_cancelled(tmp_path):
+    """C1 gap 2 on the single-phase path. `test_iax_cancel_stops_the_evaluate_
+    phase_too` only pins "exit 0 after a requested cancellation is still
+    `cancelled`" for the two-phase launcher; a single-entrypoint workload that
+    traps SIGTERM and shuts down cleanly after `iax cancel` needs the same
+    guarantee, and nothing here was exercising that path.
+    """
+    store = _store(tmp_path)
+    entrypoint = _script(
+        tmp_path / "traps_sigterm.py",
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('training', flush=True)\n"
+        "time.sleep(0.5)\n",
+    )
+    backend = LocalBackend(store=store)
+
+    handle = backend.submit(_manifest(tmp_path, entrypoint, working_dir=str(tmp_path)))
+    _wait_for_event(store, handle.run_id, "training")
+    backend.cancel(handle.run_id)
+    status = _wait_for_settled_terminal(store, handle.run_id)
+
+    assert status.status == "cancelled"
+
+
 # -- #8: an orphaned workload -------------------------------------------------
 
 
