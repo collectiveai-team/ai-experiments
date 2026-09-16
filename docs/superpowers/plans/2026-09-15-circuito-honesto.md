@@ -41,6 +41,8 @@
 
 No es trabajo TDD: es verificación e integración de ramas existentes. El resultado es una rama sobre la que el resto del plan se apoya.
 
+> **Hecho (2026-09-15).** El inventario por archivo que describen los pasos 1–3 no hizo falta: `c4f0453` es el merge-base más un commit, y `fae2c00` es un superconjunto estricto del resto. La base canónica es `fae2c00` + cherry-pick de `c4f0453`, en la rama `feat/honest-circuit`. Detalle en [docs/integration-matrix-2026-09-15.md](../../integration-matrix-2026-09-15.md).
+
 **Files:**
 - Create: `docs/integration-matrix-2026-09-15.md`
 - Branch: `feat/honest-circuit` desde la base canónica resultante
@@ -48,7 +50,7 @@ No es trabajo TDD: es verificación e integración de ramas existentes. El resul
 **Interfaces:**
 - Produces: una rama donde `planner/analysis.py` expone `ObjectiveReading` (con `miss_reason`) y `best_of(trials, mode)` filtrando `status == "completed"`; `improve/variants.py` y `agents/` presentes. Las tareas 5 en adelante lo asumen.
 
-- [ ] **Step 1: Inventariar capacidades por commit**
+- [x] **Step 1: Inventariar capacidades por commit**
 
 Las ramas no son versiones sucesivas: `c4f0453` no contiene todo lo de `fae2c00`. Para cada archivo, registrar qué commit tiene la versión buena.
 
@@ -60,11 +62,11 @@ git show c4f0453:ai_experiments/planner/analysis.py | grep -n "def best_of\|miss
 git show c4f0453:ai_experiments/loop.py | grep -n "reconcile"
 ```
 
-- [ ] **Step 2: Escribir la matriz**
+- [x] **Step 2: Escribir la matriz**
 
 Crear `docs/integration-matrix-2026-09-15.md` con una fila por capacidad y una columna por commit. Mínimo a cubrir: locks por run, preflight de submit, fixes de worker, `ObjectiveReading`/`miss_reason`, `best_of` elegible, validación de params, agotamiento de espacio discreto, reconciliación del último lote, `improve/variants.py`, `agents/`. Cada fila dice qué commit gana y por qué.
 
-- [ ] **Step 3: Construir la rama canónica**
+- [x] **Step 3: Construir la rama canónica**
 
 ```bash
 git checkout -b feat/honest-circuit c4f0453
@@ -73,14 +75,14 @@ git checkout fae2c00 -- <los archivos que la matriz asigna a fae2c00>
 
 No fusionar a ciegas: traer archivo por archivo según la matriz.
 
-- [ ] **Step 4: Verificar que la base pasa**
+- [x] **Step 4: Verificar que la base pasa**
 
 ```bash
 .venv/bin/python -m pytest -q -m 'not integration' --ignore=tests/test_server.py
 ```
 Expected: PASS. Si un test falla, la matriz asignó mal un archivo — corregirla antes de seguir.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/integration-matrix-2026-09-15.md
