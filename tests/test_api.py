@@ -22,6 +22,7 @@ def _goal_dict(tmp_path) -> dict:
         "params = json.loads(os.environ['IAX_PARAMS'])\n"
         "loss = (params['x'] - 2.0) ** 2\n"
         "print('IAX_METRIC ' + json.dumps({'step': 1, 'loss': loss}), flush=True)\n"
+        "print('IAX_RESULT ' + json.dumps({'loss': loss}), flush=True)\n"
     )
     return {
         "goal": "minimize (x-2)^2",

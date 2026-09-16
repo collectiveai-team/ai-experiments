@@ -1,7 +1,8 @@
 """End-to-end: a real campaign on the local backend with a toy objective.
 
-Each trial is a real detached subprocess that reports IAX_METRIC lines; the
-orchestrator plans, submits, collects, and stops on budget exhaustion.
+Each trial is a real detached subprocess that reports IAX_METRIC progress
+lines and one IAX_RESULT; the orchestrator plans, submits, collects, and
+stops on budget exhaustion.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ TOY_SCRIPT = textwrap.dedent(
         loss = (args.x - 2.0) ** 2 + 0.1 / (step + 1)
         print("IAX_METRIC " + json.dumps({"step": step, "loss": loss}))
         sys.stdout.flush()
+
+    print("IAX_RESULT " + json.dumps({"loss": loss}))
+    sys.stdout.flush()
     """
 )
 

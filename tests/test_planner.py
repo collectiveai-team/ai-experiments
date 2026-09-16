@@ -2,16 +2,29 @@ from __future__ import annotations
 
 import json
 
+from ai_experiments.planner.analysis import best_of, extract_objective
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
 from ai_experiments.planner.search_space import params_key
 from ai_experiments.schemas import (
     BudgetSpec,
+    ExperimentManifest,
     GoalSpec,
+    MetricPoint,
     ObjectiveSpec,
+    ResultRecord,
     StrategySpec,
     TrialRecord,
     WorkloadSpec,
 )
+from ai_experiments.store import FilesystemRunStore
+
+
+def _manifest() -> ExperimentManifest:
+    return ExperimentManifest(
+        experiment="store-test",
+        backend="local",
+        workload=WorkloadSpec(entrypoint="python train.py"),
+    )
 
 
 def _goal(**overrides: object) -> GoalSpec:
@@ -116,3 +129,80 @@ def test_adaptive_strategy_exploits_best_region():
     # perturbations live in log-space, so they stay well below the bad region.
     for params in planned:
         assert params["lr"] < 0.05
+
+
+def _run_with(store, metrics, results):
+    run_id, _ = store.create_run(_manifest())
+    for point in metrics:
+        store.append_metric(run_id, point)
+    for record in results:
+        store.append_result(run_id, record)
+    return run_id
+
+
+def test_a_progress_curve_alone_scores_nothing(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id = _run_with(
+        store,
+        [
+            MetricPoint(step=i, values={"loss": v})
+            for i, v in enumerate([0.9, 0.001, 0.8])
+        ],
+        [],
+    )
+
+    reading = extract_objective(store, run_id, ObjectiveSpec(metric="loss", mode="min"))
+
+    assert reading.value is None
+    assert reading.miss_reason == "no_result"
+
+
+def test_the_declared_result_is_the_score(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id = _run_with(
+        store,
+        [MetricPoint(step=0, values={"loss": 0.001})],
+        [ResultRecord(values={"loss": 0.42})],
+    )
+
+    reading = extract_objective(store, run_id, ObjectiveSpec(metric="loss", mode="min"))
+
+    assert reading.value == 0.42
+
+
+def test_a_result_without_the_objective_metric_says_which_ones_it_had(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id = _run_with(store, [], [ResultRecord(values={"test_acc": 0.9})])
+
+    reading = extract_objective(
+        store, run_id, ObjectiveSpec(metric="auroc", mode="max")
+    )
+
+    assert reading.miss_reason == "metric_absent"
+    assert reading.observed_metrics == ["test_acc"]
+
+
+def test_a_non_finite_result_is_not_a_score(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id = _run_with(store, [], [ResultRecord(values={"loss": float("nan")})])
+
+    reading = extract_objective(store, run_id, ObjectiveSpec(metric="loss", mode="min"))
+
+    assert reading.value is None
+    assert reading.miss_reason == "not_finite"
+
+
+def test_a_failed_trial_never_wins():
+    """Regression guard for the eligibility fix Task 1 brought in.
+
+    A run that reported a result and then crashed used to be the best trial
+    in the campaign, because `best_trial` ranked on the value alone.
+    """
+    trials = [
+        TrialRecord(trial_id="t000", params={}, status="failed", objective_value=0.01),
+        TrialRecord(
+            trial_id="t001", params={}, status="completed", objective_value=0.50
+        ),
+    ]
+
+    assert best_of(trials, "min").trial_id == "t001"

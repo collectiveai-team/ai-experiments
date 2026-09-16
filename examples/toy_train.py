@@ -1,8 +1,14 @@
 """Toy training workload: minimizes (x - 2)^2 with noisy gradient steps.
 
-Demonstrates the metric contract: print ``IAX_METRIC {json}`` lines (or use
-ai_experiments.report.report_metric). Works on the local backend and on any
-Ray cluster — the harness extracts metrics from stdout either way.
+Demonstrates both reporting channels: ``IAX_METRIC {json}`` lines (or
+``ai_experiments.report.report_metric``) carry the progress curve, and one
+``IAX_RESULT {json}`` line (or ``report_result``) declares the final loss
+that actually scores the trial. Works on the local backend and on any Ray
+cluster — the harness extracts both from stdout either way.
+
+A later two-phase workload will split evaluation into its own
+``examples/toy_evaluate.py``; for now the single script declares the result
+itself.
 """
 
 from __future__ import annotations
@@ -41,6 +47,8 @@ def main() -> None:
             json.dump({"x": x, "loss": loss}, fh)
 
     print(f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}")
+    print("IAX_RESULT " + json.dumps({"loss": loss}))
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
