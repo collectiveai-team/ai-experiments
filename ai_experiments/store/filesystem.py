@@ -13,6 +13,7 @@ from typing import Iterable, Iterator
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
+    ResultRecord,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -313,6 +314,17 @@ class FilesystemRunStore:
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
         lines = _read_lines(self.metrics_path(run_id), tail)
         return [MetricPoint(**json.loads(line)) for line in lines]
+
+    def results_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "results.jsonl"
+
+    def append_result(self, run_id: str, record: ResultRecord) -> None:
+        with self.results_path(run_id).open("a") as fh:
+            fh.write(json.dumps(record.model_dump(mode="json")) + "\n")
+
+    def read_results(self, run_id: str) -> list[ResultRecord]:
+        lines = _read_lines(self.results_path(run_id), None)
+        return [ResultRecord(**json.loads(line)) for line in lines]
 
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"

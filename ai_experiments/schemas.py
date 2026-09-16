@@ -246,6 +246,18 @@ class MetricPoint(BaseModel):
     values: dict[str, float] = Field(default_factory=dict)
 
 
+class ResultRecord(BaseModel):
+    """The evaluation result of a run: the number that may be scored.
+
+    Separate from :class:`MetricPoint` on purpose. A metric is a point on a
+    curve and picking its best value is a biased estimator; a result is what
+    the protected evaluator declared, and there is at most one that counts.
+    """
+
+    timestamp: datetime = Field(default_factory=utc_now)
+    values: dict[str, float] = Field(default_factory=dict)
+
+
 class MonitorDecision(BaseModel):
     run_id: str
     decision: Literal[
