@@ -89,3 +89,42 @@ def test_local_campaign_end_to_end(tmp_path):
     assert state.best_trial_id is not None
     best = next(t for t in state.trials if t.trial_id == state.best_trial_id)
     assert best.objective_value == min(t.objective_value for t in completed)
+
+
+def test_the_shipped_example_scores_only_from_its_evaluator(tmp_path):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    work = tmp_path / "work"
+    work.mkdir()
+    env = {**os.environ, "IAX_WORK_DIR": str(work)}
+
+    train = subprocess.run(
+        [
+            sys.executable,
+            str(examples / "toy_train.py"),
+            "--steps",
+            "3",
+            "--sleep",
+            "0",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert train.returncode == 0
+    assert "IAX_RESULT" not in train.stdout
+    assert "IAX_METRIC" in train.stdout
+
+    evaluate = subprocess.run(
+        [sys.executable, str(examples / "toy_evaluate.py")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert evaluate.returncode == 0
+    assert "IAX_RESULT" in evaluate.stdout

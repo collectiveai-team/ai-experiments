@@ -1,14 +1,11 @@
 """Toy training workload: minimizes (x - 2)^2 with noisy gradient steps.
 
-Demonstrates both reporting channels: ``IAX_METRIC {json}`` lines (or
-``ai_experiments.report.report_metric``) carry the progress curve, and one
-``IAX_RESULT {json}`` line (or ``report_result``) declares the final loss
-that actually scores the trial. Works on the local backend and on any Ray
-cluster — the harness extracts both from stdout either way.
-
-A later two-phase workload will split evaluation into its own
-``examples/toy_evaluate.py``; for now the single script declares the result
-itself.
+The trainer reports progress via ``IAX_METRIC {json}`` lines (or
+``ai_experiments.report.report_metric``), hands the trained model off through
+``$IAX_WORK_DIR``, but does not declare a result. Declaring the result (the
+final loss that actually scores the trial) is the evaluator's job
+(``examples/toy_evaluate.py``). Works on the local backend and on any Ray
+cluster — the harness extracts metrics and results from both phases' stdout.
 """
 
 from __future__ import annotations
@@ -19,6 +16,7 @@ import os
 import random
 import sys
 import time
+from pathlib import Path
 
 
 def main() -> None:
@@ -39,15 +37,21 @@ def main() -> None:
         sys.stdout.flush()
         time.sleep(args.sleep)
 
-    # "Checkpoint": anything written to $IAX_ARTIFACTS_DIR is listed by
-    # `iax artifacts <run_id>` and downloadable from the dashboard.
+    # The trainer produces an artifact. It does not declare a result: the
+    # number it would be judged by is not its to report.
+    loss = (x - 2.0) ** 2
+    work = Path(os.environ.get("IAX_WORK_DIR", "."))
+    with (work / "model.json").open("w") as fh:
+        json.dump({"x": x}, fh)
+
+    # Anything written to $IAX_ARTIFACTS_DIR is listed by `iax artifacts
+    # <run_id>` and downloadable from the dashboard.
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
     if artifacts:
         with open(os.path.join(artifacts, "model.json"), "w") as fh:
             json.dump({"x": x, "loss": loss}, fh)
 
-    print(f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}")
-    print("IAX_RESULT " + json.dumps({"loss": loss}))
+    print(f"final x={x:.4f} loss={loss:.6f}")
     sys.stdout.flush()
 
 
