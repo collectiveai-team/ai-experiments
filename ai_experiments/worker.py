@@ -20,10 +20,11 @@ from ai_experiments.procs import (
     identity_supported,
     process_identity,
 )
-from ai_experiments.report import parse_metric_line
+from ai_experiments.report import parse_metric_line, parse_result_line
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
+    ResultRecord,
     RunEvent,
     load_stored,
     utc_now,
@@ -40,9 +41,12 @@ NON_TERMINAL_STATES = {"submitted", "running", "unknown"}
 class _Supervisor:
     """Runs one workload process, streaming logs/metrics into the run store."""
 
-    def __init__(self, store: FilesystemRunStore, run_id: str) -> None:
+    def __init__(
+        self, store: FilesystemRunStore, run_id: str, phase: str = "evaluate"
+    ) -> None:
         self.store = store
         self.run_id = run_id
+        self.phase = phase
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._cancelled = False
@@ -167,6 +171,25 @@ class _Supervisor:
             line = _overwrite(raw)
             if not line:
                 continue
+            result = parse_result_line(line)
+            if result is not None:
+                if self.phase == "train":
+                    # The trainer is the code an agent may rewrite. Letting it
+                    # declare the number it is judged by would make the metric
+                    # the cheapest thing in the search space to optimize.
+                    self.store.append_event(
+                        self.run_id,
+                        RunEvent(
+                            level="warning",
+                            message="result reported from the train phase; discarded",
+                            details={"values": result},
+                        ),
+                    )
+                else:
+                    self.store.append_result(self.run_id, ResultRecord(values=result))
+                    self._update_status(details={"result": result})
+                continue
+
             metric = parse_metric_line(line)
             if metric is not None:
                 point = MetricPoint(step=metric["step"], values=metric["values"])
@@ -299,11 +322,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--runs-dir", required=True)
+    parser.add_argument("--phase", default="evaluate", choices=["train", "evaluate"])
     args = parser.parse_args()
 
     store = FilesystemRunStore(args.runs_dir)
     try:
-        _Supervisor(store, args.run_id).run()
+        _Supervisor(store, args.run_id, phase=args.phase).run()
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)  # keep the evidence in worker.log
         report_supervisor_failure(store, args.run_id, exc)
