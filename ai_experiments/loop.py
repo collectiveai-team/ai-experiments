@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
-from ai_experiments.daemon import RunAction, supervise_once
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
+from ai_experiments.monitoring.supervision import RunAction, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import CampaignState, GoalSpec

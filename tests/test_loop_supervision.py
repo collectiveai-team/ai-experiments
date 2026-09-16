@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from ai_experiments.daemon import MonitorDaemon, SupervisionReport, supervise_once
+from ai_experiments.daemon import MonitorDaemon
 from ai_experiments.loop import run_loop
+from ai_experiments.monitoring.supervision import SupervisionReport, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.schemas import (
     BudgetSpec,
@@ -58,8 +59,22 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
 
     monkeypatch.setattr("ai_experiments.loop.supervise_once", _spy)
 
+    # The orchestrator's backend_factory constructs a fresh backend on every
+    # advance()/reconcile() call, so "first run id ever seen" cannot live on
+    # `self` -- it has to survive across instances, hence this closure list.
+    finished_run_id: list[str] = []
+
     class SlowBackend(FakeBackend):
-        def inspect(self, run_id):  # never finishes -- keeps trials in flight
+        """The first run id ever inspected, across every instance this
+        backend factory constructs, finishes for real; every later one is
+        left in flight for the whole test -- a genuinely mixed campaign
+        state, so the active-state filter has something to filter out."""
+
+        def inspect(self, run_id):
+            if not finished_run_id:
+                finished_run_id.append(run_id)
+            if run_id == finished_run_id[0]:
+                return super().inspect(run_id)
             return self.store.read_status(run_id)
 
     store = _store(tmp_path)
@@ -80,6 +95,11 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
     assert calls, "run_loop never supervised the runs it was driving"
 
     state = CampaignStore(store.root).read_state(report.campaign_id)
+    finished = {t.run_id for t in state.trials if t.status not in ACTIVE_TRIAL_STATES}
+    assert finished, (
+        "the fixture must finish at least one trial, or this test cannot tell "
+        "the active-state filter from no filter at all"
+    )
     expected = {t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES}
     assert expected, (
         "the campaign must still have trials in flight for this test to mean anything"
@@ -149,7 +169,7 @@ def test_supervise_once_reports_a_run_whose_check_raises_instead_of_hiding_it(
     def _boom(run_store, run_id, ladder):
         raise RuntimeError("backend exploded")
 
-    monkeypatch.setattr("ai_experiments.daemon._check_run", _boom)
+    monkeypatch.setattr("ai_experiments.monitoring.supervision._check_run", _boom)
 
     report = supervise_once(store, [run_id])
 
@@ -169,7 +189,7 @@ def test_the_daemons_tick_still_reports_a_run_whose_check_raises(tmp_path, monke
     def _boom(run_store, run_id, ladder):
         raise RuntimeError("backend exploded")
 
-    monkeypatch.setattr("ai_experiments.daemon._check_run", _boom)
+    monkeypatch.setattr("ai_experiments.monitoring.supervision._check_run", _boom)
 
     daemon = MonitorDaemon(store)
     tick_report = daemon.tick()
