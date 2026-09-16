@@ -32,6 +32,25 @@ METRIC_PREFIX = "IAX_METRIC "
 RESULT_PREFIX = "IAX_RESULT "
 
 
+def _coerce_numeric_values(payload: dict) -> dict[str, float]:
+    """Extract numeric values from a payload dict, coercing types and handling non-finite values.
+
+    Skips boolean values, converts int/float to float, and parses string
+    representations of non-finite floats (nan, inf, -inf, infinity, -infinity).
+    """
+    values: dict[str, float] = {}
+    for key, value in payload.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            values[str(key)] = float(value)
+        elif isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
+                values[str(key)] = float(lowered.replace("infinity", "inf"))
+    return values
+
+
 def artifacts_dir() -> Path | None:
     """Directory where the workload should write checkpoints/plots/models.
 
@@ -60,9 +79,8 @@ def report_metric(step: int | None = None, **values: float) -> None:
 def report_result(**values: float) -> None:
     """Print the one evaluation result the harness will score.
 
-    Only the ``evaluate`` phase may call this: a result reported from the
-    training phase is discarded. Progress belongs in :func:`report_metric`,
-    which never scores.
+    Only the ``evaluate`` phase may call this. Progress belongs in
+    :func:`report_metric`, which never scores.
     """
     sys.stdout.write(RESULT_PREFIX + json.dumps(dict(values)) + "\n")
     sys.stdout.flush()
@@ -92,16 +110,7 @@ def parse_metric_line(line: str) -> dict[str, Any] | None:
     if isinstance(step_raw, (int, float)) and not isinstance(step_raw, bool):
         step = int(step_raw)
 
-    values: dict[str, float] = {}
-    for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
+    values = _coerce_numeric_values(payload)
     if not values and step is None:
         return None
     return {"step": step, "values": values}
@@ -125,16 +134,7 @@ def parse_result_line(line: str) -> dict[str, float] | None:
         return None
     payload.pop("step", None)
 
-    values: dict[str, float] = {}
-    for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
+    values = _coerce_numeric_values(payload)
     return values or None
 
 
