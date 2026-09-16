@@ -29,7 +29,7 @@ from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.monitoring.supervision import RunAction, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import CampaignState, GoalSpec
+from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent
 from ai_experiments.store import FilesystemRunStore
 
 TERMINAL_STATUSES = {"completed", "stopped", "failed"}
@@ -222,6 +222,12 @@ def _review_record(
     )
 
 
+#: What an accepted review may change on its own. `budget` is deliberately
+#: absent: a loop is an optimizer, and a ceiling it can move is not a ceiling.
+#: Redistributing within the budget is fine; raising it needs the user.
+APPLICABLE_KEYS = ("search_space",)
+
+
 def _apply_changes(
     orchestrator: CampaignOrchestrator,
     state: CampaignState,
@@ -230,15 +236,25 @@ def _apply_changes(
 ) -> None:
     """Merge an accepted review's changes into the goal.
 
-    Only the search space and the budget can move, and only through the same
-    validation `iax campaign edit` uses. An invalid suggestion is recorded and
-    dropped: the campaign continues under the goal it already has.
+    Only the search space can move (see `APPLICABLE_KEYS`), and only through
+    the same validation `iax campaign edit` uses. A change to anything else
+    is refused and recorded rather than silently dropped. An invalid
+    suggestion is separately recorded and dropped: the campaign continues
+    under the goal it already has.
     """
     changes = payload.get("suggested_changes")
     if not isinstance(changes, dict):
         return
+    refused = {
+        key: value for key, value in changes.items() if key not in APPLICABLE_KEYS
+    }
+    if refused:
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _refused_change_event(refused),
+        )
     data = goal.model_dump(mode="json")
-    for key in ("search_space", "budget"):
+    for key in APPLICABLE_KEYS:
         section = changes.get(key)
         if isinstance(section, dict) and section:
             data[key] = {**data[key], **section}
@@ -251,9 +267,19 @@ def _apply_changes(
         )
 
 
-def _rejected_change_event(error: str):
-    from ai_experiments.schemas import RunEvent
+def _refused_change_event(refused: dict[str, Any]) -> RunEvent:
+    return RunEvent(
+        level="warning",
+        message=(
+            "agent review asked to change "
+            f"{', '.join(sorted(refused))}; only {', '.join(APPLICABLE_KEYS)} "
+            "may be changed by a review, not the agent"
+        ),
+        details={"refused": refused},
+    )
 
+
+def _rejected_change_event(error: str) -> RunEvent:
     return RunEvent(
         level="warning",
         message="agent review suggested an invalid goal change; keeping the current goal",

@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.daemon import MonitorDaemon
-from ai_experiments.loop import run_loop
+from ai_experiments.loop import _apply_changes, run_loop
 from ai_experiments.monitoring.escalation import CAMPAIGN_PREFIX, CampaignReview
 from ai_experiments.monitoring.supervision import SupervisionReport, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
@@ -371,3 +371,70 @@ def test_admit_false_still_escalates_a_finished_trial_under_agent_review(tmp_pat
     )
     review = CampaignReview(**json.loads(path.read_text()))
     assert review.campaign_id == report.campaign_id
+
+
+def _started_campaign(tmp_path, goal: GoalSpec) -> tuple[CampaignOrchestrator, object]:
+    """An orchestrator with one live campaign, for exercising `_apply_changes`
+    directly against the real `edit_goal` validation path."""
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: FakeBackend(store),
+    )
+    state = orchestrator.start(goal)
+    return orchestrator, state
+
+
+def test_the_agent_can_widen_the_search_space(tmp_path):
+    goal = _goal()
+    orchestrator, state = _started_campaign(tmp_path, goal)
+
+    _apply_changes(
+        orchestrator,
+        state,
+        goal,
+        {
+            "suggested_changes": {
+                "search_space": {"lr": {"type": "loguniform", "low": 1e-5, "high": 1.0}}
+            }
+        },
+    )
+
+    updated = orchestrator.campaign_store.read_goal(state.campaign_id)
+    assert "lr" in updated.search_space
+
+
+def test_the_agent_cannot_widen_its_own_budget(tmp_path):
+    """An optimizer asked to stay under a ceiling will ask to raise it."""
+    goal = _goal(budget=BudgetSpec(max_trials=6, max_parallel=2))
+    orchestrator, state = _started_campaign(tmp_path, goal)
+
+    _apply_changes(
+        orchestrator,
+        state,
+        goal,
+        {"suggested_changes": {"budget": {"max_trials": goal.budget.max_trials * 100}}},
+    )
+
+    updated = orchestrator.campaign_store.read_goal(state.campaign_id)
+    assert updated.budget == goal.budget, (
+        "the whole budget must round-trip unchanged, not just max_trials"
+    )
+
+
+def test_a_rejected_budget_change_is_recorded(tmp_path):
+    goal = _goal()
+    orchestrator, state = _started_campaign(tmp_path, goal)
+    payload = {"suggested_changes": {"budget": {"max_gpu_hours": 10_000}}}
+
+    _apply_changes(orchestrator, state, goal, payload)
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    refusals = [
+        event for event in events if "budget" in event.details.get("refused", {})
+    ]
+    assert refusals, (
+        "the refused budget change was never recorded in the campaign's events"
+    )
+    assert refusals[0].details["refused"] == payload["suggested_changes"]
