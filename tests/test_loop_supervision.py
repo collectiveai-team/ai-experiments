@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.daemon import MonitorDaemon
 from ai_experiments.loop import run_loop
 from ai_experiments.monitoring.supervision import SupervisionReport, supervise_once
@@ -50,14 +51,19 @@ def _goal(**overrides) -> GoalSpec:
 
 def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
     """The call site: every iteration hands supervise_once the run ids of
-    trials still in flight -- not the finished ones, not the campaign id."""
+    trials still in flight -- not the finished ones, not the campaign id.
+
+    Task 12 moved this call to right after the cohort-closing
+    `advance(admit=False)`, before the trailing `advance()` that admits the
+    next cohort -- reviewing what that trailing call just submitted is
+    exactly the timing hole this branch closes. So a trial it submits is not
+    supervised until the *next* iteration's refresh, by design. Each call is
+    therefore checked against the campaign's active trials as they stood the
+    instant that call was made, not against the campaign's final trials,
+    which can include one submitted after the last call ever happened.
+    """
     calls: list[list[str]] = []
-
-    def _spy(run_store, run_ids, notifier=None):
-        calls.append(list(run_ids))
-        return SupervisionReport()
-
-    monkeypatch.setattr("ai_experiments.loop.supervise_once", _spy)
+    active_at_call: list[set[str]] = []
 
     # The orchestrator's backend_factory constructs a fresh backend on every
     # advance()/reconcile() call, so "first run id ever seen" cannot live on
@@ -78,11 +84,25 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
             return self.store.read_status(run_id)
 
     store = _store(tmp_path)
+    campaign_store = CampaignStore(store.root)
     orchestrator = CampaignOrchestrator(
         store,
-        CampaignStore(store.root),
+        campaign_store,
         backend_factory=lambda goal: SlowBackend(store),
     )
+
+    def _spy(run_store, run_ids, notifier=None):
+        calls.append(list(run_ids))
+        campaigns = campaign_store.list_campaigns()
+        state = campaign_store.read_state(campaigns[0]) if campaigns else None
+        active_at_call.append(
+            {t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES}
+            if state is not None
+            else set()
+        )
+        return SupervisionReport()
+
+    monkeypatch.setattr("ai_experiments.loop.supervise_once", _spy)
 
     report = run_loop(
         _goal(),
@@ -94,17 +114,16 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
 
     assert calls, "run_loop never supervised the runs it was driving"
 
-    state = CampaignStore(store.root).read_state(report.campaign_id)
+    state = campaign_store.read_state(report.campaign_id)
     finished = {t.run_id for t in state.trials if t.status not in ACTIVE_TRIAL_STATES}
     assert finished, (
         "the fixture must finish at least one trial, or this test cannot tell "
         "the active-state filter from no filter at all"
     )
-    expected = {t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES}
-    assert expected, (
+    assert active_at_call[-1], (
         "the campaign must still have trials in flight for this test to mean anything"
     )
-    assert set(calls[-1]) == expected
+    assert set(calls[-1]) == active_at_call[-1]
 
 
 def _running_run(
@@ -239,3 +258,80 @@ def test_the_loops_report_carries_a_fatal_action_supervision_took(tmp_path):
 
     assert report.supervision, "the loop's fatal action never made it into the report"
     assert any(action.action == "auto_killed" for action in report.supervision)
+
+
+def _run_a_reviewed_loop(tmp_path, reviewer):
+    """A loop with one trial in flight at a time, reviewed between rounds,
+    driven entirely by an injected reviewer -- the fixture Task 12's timing
+    test needs."""
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: FakeBackend(store),
+        agent_runner_factory=lambda goal, campaign_id: reviewer,
+    )
+    goal = _goal(
+        analysis={"review_between_rounds": True},
+        budget=BudgetSpec(max_trials=6, max_parallel=1),
+    )
+    return run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
+
+
+def _evidence_lines(prompt: str) -> int:
+    """How many *scored* trials the review prompt shows.
+
+    `review_brief`'s evidence block lists one ``"- <trial_id> ..."`` line per
+    trial that already has an objective value or an error -- a trial that was
+    merely submitted this tick has neither, so it cannot inflate this count.
+    Scoped to the text after the "Evidence so far" marker so a `-` in some
+    other section (e.g. a negative search-space bound) can never be mistaken
+    for one.
+    """
+    _, _, evidence = prompt.partition("Evidence so far")
+    return evidence.count("\n- ")
+
+
+def test_the_review_sees_the_cohort_before_the_next_one_is_submitted(tmp_path):
+    """An agent that says 'stop' must be able to stop something.
+
+    Reviewing after `advance` had already filled capacity meant the verdict
+    arrived when the next cohort was submitted and paid for.
+    """
+    submitted_at_review: list[int] = []
+
+    class _Reviewer:
+        def run(self, prompt, *, role="planner"):
+            submitted_at_review.append(_evidence_lines(prompt))
+            return AgentResult(ok=True, payload={"verdict": "stop", "reason": "done"})
+
+    report = _run_a_reviewed_loop(tmp_path, _Reviewer())
+
+    assert report.loop_stop == "agent_review_stop"
+    assert report.trials == submitted_at_review[0], (
+        "the review ran after a new cohort had already been submitted"
+    )
+
+
+def test_advance_with_admit_false_submits_nothing(tmp_path):
+    """`admit=False` must refresh and score, never call `_fill_capacity` --
+    even when there is spare capacity and budget to fill it with."""
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: FakeBackend(store),
+    )
+    goal = _goal(
+        budget=BudgetSpec(max_trials=6, max_parallel=2),
+        strategy=StrategySpec(name="adaptive", seed=3, batch_size=1),
+    )
+    state = orchestrator.start(goal)
+    before = len(state.trials)
+    assert before < goal.budget.max_parallel, (
+        "the fixture needs spare capacity, or this call proves nothing"
+    )
+
+    state = orchestrator.advance(state.campaign_id, admit=False)
+
+    assert len(state.trials) == before

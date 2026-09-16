@@ -256,7 +256,17 @@ class CampaignOrchestrator:
 
     # -- the loop step ---------------------------------------------------------
 
-    def advance(self, campaign_id: str) -> CampaignState:
+    def advance(self, campaign_id: str, admit: bool = True) -> CampaignState:
+        """Move the campaign one step.
+
+        With ``admit=False`` the campaign refreshes active trials, scores
+        whatever just finished, evaluates the stop condition and updates the
+        best trial -- but does not call `_fill_capacity`, so it submits
+        nothing and `state.rounds` does not advance. That is what lets a
+        caller close a cohort and review it before paying for the next one,
+        instead of only being able to review a cohort that is already
+        running.
+        """
         self.last_decision = None
         self.last_submit_errors = []
         state = self.campaign_store.read_state(campaign_id)
@@ -275,6 +285,10 @@ class CampaignOrchestrator:
 
         if finished_now:
             self._record_evaluation(state, goal, finished_now)
+
+        if not admit:
+            self.campaign_store.write_state(state)
+            return state
 
         submitted = self._fill_capacity(state, goal, backend)
         if submitted:

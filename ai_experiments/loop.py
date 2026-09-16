@@ -105,10 +105,15 @@ def run_loop(
             break
 
         iterations += 1
-        rounds_before = state.rounds
         if interval_seconds > 0 and iterations > 1:
             sleep(interval_seconds)
-        state = orchestrator.advance(state.campaign_id)
+
+        # Close the cohort -- score what finished, evaluate the stop
+        # condition -- without admitting a new one. A review that runs after
+        # the next cohort is already submitted is reviewing something already
+        # running and already paid for; `admit=False` is what keeps the
+        # verdict able to actually stop something.
+        state = orchestrator.advance(state.campaign_id, admit=False)
         pass_report = supervise_once(
             store,
             [
@@ -119,12 +124,16 @@ def run_loop(
         )
         supervision.extend(pass_report.actions)
 
-        if state.rounds > rounds_before and state.status not in TERMINAL_STATUSES:
-            verdict = _review(orchestrator, state, reviews)
-            if verdict == "stop":
-                state = orchestrator.stop(state.campaign_id, "agent_review_stop")
-                loop_stop = "agent_review_stop"
-                break
+        if state.status in TERMINAL_STATUSES:
+            break
+
+        verdict = _review(orchestrator, state, reviews)
+        if verdict == "stop":
+            state = orchestrator.stop(state.campaign_id, "agent_review_stop")
+            loop_stop = "agent_review_stop"
+            break
+
+        state = orchestrator.advance(state.campaign_id)
 
     if loop_stop in {"max_rounds", "max_seconds"}:
         # The last round was submitted and paid for. Leaving without reading it
