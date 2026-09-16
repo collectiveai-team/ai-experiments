@@ -120,6 +120,22 @@ Frente a la alternativa de `editable_paths` obligatorio: esa es una garantía po
 configuración, no por estructura. El evaluador seguiría corriendo dentro de la copia
 del agente, alcanzable por monkeypatching, `sitecustomize.py` o un import intermedio.
 
+> **Addendum (2026-09-16, descubierto implementando el plan 1, Task 9).** «Un solo job,
+> con el lanzador de iax como entrypoint» vale para el backend local y **no** para Ray.
+> El nodo de Ray no comparte filesystem con el cliente, así que no puede abrir el run
+> store: el lanzador no corre ahí, y el entrypoint es una cadena de shell cruda. Sin
+> lanzador dentro del job, la fase de cada línea de stdout se reconstruye del lado del
+> cliente, parseando los logs — y el workload escribe en ese mismo stdout. La versión
+> ingenua (un marcador `IAX_PHASE=<fase>` en texto plano) la falsifica un `print()`
+> desde train. El plan 1 lo mitiga con un token por corrida que el cliente acuña y el
+> parser exige, lo cual sube el costo del ataque de un `print()` a leer el log del
+> driver en el nodo; no lo vuelve estructural. **La garantía de la decisión 2 es
+> estructural en local y defensiva en Ray.** Cerrarla de verdad es fase 4: o el run
+> store se vuelve alcanzable desde el cluster y el lanzador corre dentro del job, o
+> cada fase se envía como su propio job y la atribución vuelve a ser del lado del
+> cliente. Cualquier trabajo que asuma la garantía estructural en Ray antes de eso está
+> asumiendo algo falso.
+
 ### 3. Borde de datos
 
 El split protege el código que puntúa; no protege contra que el candidato entrene con
