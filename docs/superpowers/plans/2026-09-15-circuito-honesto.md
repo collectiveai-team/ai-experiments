@@ -1625,7 +1625,9 @@ describir lo que quedó, no lo que se planeó.
   `.claude/skills/running-campaigns/SKILL.md:45`,
   `.claude/skills/autonomous-experimentation/SKILL.md:34`,
   `.claude/skills/autonomous-experimentation/reference/goal.md:15`,
-  `.claude/skills/monitoring-experiments/SKILL.md:54`
+  `.claude/skills/monitoring-experiments/SKILL.md:54`,
+  `.claude/skills/submitting-experiments/reference/manifest.md:23-24`
+  (**enmienda del controlador**, revisión opus de Task 8: documenta sólo `entrypoint`/`args`, así que el manifiesto de dos fases — `train:`, `evaluate:`, `data:` con `train/val/test` — no está documentado en ningún lado que un autor lea).
 - Test: ninguno nuevo. La verificación es ejecutar lo que la doc dice.
 
 **Interfaces:**
