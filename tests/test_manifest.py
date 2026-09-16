@@ -138,6 +138,17 @@ def test_a_two_phase_workload_runs_train_then_evaluate():
     ]
 
 
+def test_a_phase_dropped_after_construction_is_not_run_silently():
+    workload = WorkloadSpec(
+        entrypoint="python x.py", train="python train.py", evaluate="python evaluate.py"
+    )
+
+    mutated = workload.model_copy(update={"evaluate": None})
+
+    with pytest.raises(ValueError, match="both are required"):
+        mutated.phases()
+
+
 def test_the_train_phase_never_receives_the_test_reference():
     data = DataSpec(train="data/train", val="data/val", test="data/test")
 

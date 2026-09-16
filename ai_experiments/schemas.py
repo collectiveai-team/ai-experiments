@@ -148,8 +148,17 @@ class WorkloadSpec(ConfigModel):
         return self
 
     def phases(self) -> list[tuple[str, str]]:
+        # Re-checked here, not only in the validator: `model_copy(update=...)`
+        # and attribute assignment skip "after" validators, and the planner
+        # builds every trial manifest with model_copy. A half-declared
+        # workload must fail loudly here rather than quietly run one phase.
         if self.train and self.evaluate:
             return [("train", self.train), ("evaluate", self.evaluate)]
+        if self.train or self.evaluate:
+            raise ValueError(
+                "workload declares only one of 'train'/'evaluate'; both are "
+                "required to run as two phases"
+            )
         return [("evaluate", self.entrypoint)]
 
 
