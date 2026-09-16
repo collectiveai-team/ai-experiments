@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
+from ai_experiments.daemon import supervise_once
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
@@ -103,6 +104,14 @@ def run_loop(
         if interval_seconds > 0 and iterations > 1:
             sleep(interval_seconds)
         state = orchestrator.advance(state.campaign_id)
+        supervise_once(
+            store,
+            [
+                trial.run_id
+                for trial in state.trials
+                if trial.status in ACTIVE_TRIAL_STATES and trial.run_id
+            ],
+        )
 
         if state.rounds > rounds_before and state.status not in TERMINAL_STATUSES:
             verdict = _review(orchestrator, state, reviews)

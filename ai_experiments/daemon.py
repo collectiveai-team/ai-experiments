@@ -23,7 +23,7 @@ import json
 import signal
 import time
 from types import FrameType
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, Field
 
@@ -82,6 +82,183 @@ class TickReport(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+def supervise_once(
+    run_store: FilesystemRunStore,
+    run_ids: Iterable[str],
+    notifier: Notifier | None = None,
+) -> list[RunAction]:
+    """One supervision pass over the given run ids.
+
+    Kept short and free of agent calls on purpose: `iax loop` runs this on
+    every iteration, and an overnight loop that pauses for a slow agent is a
+    loop that is not watching anything.
+
+    This is the body `MonitorDaemon._check_runs` used to run inline, per run
+    id, extracted so both the daemon's tick and `run_loop`'s iteration share
+    it. A run whose status cannot be read, or that is no longer active, is
+    skipped rather than raised -- one bad run must not end the pass for the
+    others, and a caller with no `TickReport` to log into has nowhere to put
+    that noise anyway.
+    """
+    ladder = EscalationLadder(run_store)
+    actions: list[RunAction] = []
+    for run_id in run_ids:
+        try:
+            status = run_store.read_status(run_id)
+            if status.details.get(SYNTHETIC_STATUS_KEY):
+                raise RuntimeError(status.error or "status unreadable")
+        except Exception:
+            continue
+
+        if status.status not in ACTIVE_RUN_STATES:
+            continue
+
+        try:
+            action = _check_run(run_store, run_id, ladder)
+        except Exception:
+            continue
+        if action is None:
+            continue
+
+        actions.append(action)
+        if notifier is not None and action.action in NOTIFY_ACTIONS:
+            notifier.send(
+                f"run {action.action}",
+                f"{action.run_id}: {', '.join(action.reasons)}",
+                run_id=action.run_id,
+                action=action.action,
+                reasons=action.reasons,
+            )
+    return actions
+
+
+def _check_run(
+    run_store: FilesystemRunStore, run_id: str, ladder: EscalationLadder
+) -> RunAction | None:
+    backend = backend_for_run(run_store, run_id)
+    diagnosis = backend.diagnose(run_id)
+    decision = diagnosis.decision
+    manifest = run_store.read_manifest(run_id)
+    policy = manifest.monitoring if manifest else MonitorPolicy()
+
+    if decision.decision == "kill":
+        return _handle_fatal(run_store, run_id, backend, decision, policy)
+
+    if decision.decision == "delegate_diagnosis":
+        ladder_action = ladder.observe(run_id, decision, policy.escalation)
+        if ladder_action == "invoke_agent":
+            verdict = escalate(run_store, decision, policy.escalation)
+            if verdict is not None and verdict.verdict == "kill":
+                backend.cancel(run_id)
+                run_store.append_event(
+                    run_id,
+                    RunEvent(
+                        level="error",
+                        message="run killed on agent verdict",
+                        details={"reason": verdict.reason},
+                    ),
+                )
+                return RunAction(
+                    run_id=run_id,
+                    decision=decision.decision,
+                    action="killed_by_agent_verdict",
+                    reasons=decision.reasons,
+                )
+            return RunAction(
+                run_id=run_id,
+                decision=decision.decision,
+                action="escalated",
+                reasons=decision.reasons,
+            )
+        if ladder_action in {"budget_exhausted", "cooling_down"}:
+            return RunAction(
+                run_id=run_id,
+                decision=decision.decision,
+                action=ladder_action,
+                reasons=decision.reasons,
+            )
+        return RunAction(
+            run_id=run_id,
+            decision=decision.decision,
+            action="suspicion_recorded",
+            reasons=decision.reasons,
+        )
+
+    # Healthy or terminal: clear any stale escalation file.
+    clear_escalation(run_store, run_id)
+    return None
+
+
+def _handle_fatal(
+    run_store: FilesystemRunStore,
+    run_id: str,
+    backend: Any,
+    decision: Any,
+    policy: MonitorPolicy,
+) -> RunAction:
+    if "process_dead" in decision.reasons:
+        # The worker is already gone; reap instead of cancelling. The
+        # workload it was supervising can easily have outlived it -- it is
+        # a separate process -- so reaping the *run* without also dealing
+        # with the workload reports a clean death over a live GPU job.
+        try:
+            reaped = backend.reap(run_id)
+        except Exception as exc:
+            reaped = {"outcome": "reap_failed", "error": str(exc)}
+        error = "worker process died without reporting a final status"
+        summary = _ORPHAN_SUMMARY.get(str(reaped.get("outcome")))
+        if summary:
+            error = f"{error}; orphaned workload {summary}"
+        run_store.update_status(
+            run_id,
+            status="failed",
+            completed_at=utc_now(),
+            error=error,
+            details={"workload_reap": reaped},
+        )
+        run_store.append_event(
+            run_id,
+            RunEvent(
+                level="error",
+                message="run reaped: worker process dead",
+                details={"workload_reap": reaped},
+            ),
+        )
+        return RunAction(
+            run_id=run_id,
+            decision="kill",
+            action="reaped_dead_process",
+            reasons=decision.reasons,
+            details={"workload_reap": reaped},
+        )
+    if policy.auto_kill:
+        backend.cancel(run_id)
+        run_store.update_status(
+            run_id, error=f"auto-killed: {', '.join(decision.reasons)}"
+        )
+        run_store.append_event(
+            run_id,
+            RunEvent(
+                level="error",
+                message="run auto-killed by monitor daemon",
+                details={"reasons": decision.reasons},
+            ),
+        )
+        return RunAction(
+            run_id=run_id,
+            decision="kill",
+            action="auto_killed",
+            reasons=decision.reasons,
+        )
+    escalate(run_store, decision, policy.escalation)
+    return RunAction(
+        run_id=run_id,
+        decision="kill",
+        action="escalated_fatal",
+        reasons=decision.reasons,
+    )
+
+
 class MonitorDaemon:
     def __init__(
         self,
@@ -95,7 +272,6 @@ class MonitorDaemon:
         self.orchestrator = orchestrator or CampaignOrchestrator(
             run_store, self.campaign_store
         )
-        self.ladder = EscalationLadder(run_store)
         self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
         self.ticks = 0
@@ -126,6 +302,7 @@ class MonitorDaemon:
     def _check_runs(self, report: TickReport) -> None:
         from ai_experiments.tracking import TrackingSyncError, finalize_tracking
 
+        active_run_ids: list[str] = []
         for run_id in sorted(self.run_store.list_runs()):
             # Reading the status is itself fallible (a torn or truncated
             # status.json), so it belongs inside the guard: one unreadable run
@@ -154,143 +331,10 @@ class MonitorDaemon:
                     report.errors.append(f"{run_id}: mlflow finalize: {exc}")
                 continue
             report.runs_checked += 1
-            try:
-                action = self._check_run(run_id)
-            except Exception as exc:
-                report.errors.append(f"{run_id}: {exc}")
-                continue
-            if action is not None:
-                report.actions.append(action)
-                if action.action in NOTIFY_ACTIONS:
-                    self.notifier.send(
-                        f"run {action.action}",
-                        f"{action.run_id}: {', '.join(action.reasons)}",
-                        run_id=action.run_id,
-                        action=action.action,
-                        reasons=action.reasons,
-                    )
+            active_run_ids.append(run_id)
 
-    def _check_run(self, run_id: str) -> RunAction | None:
-        backend = backend_for_run(self.run_store, run_id)
-        diagnosis = backend.diagnose(run_id)
-        decision = diagnosis.decision
-        manifest = self.run_store.read_manifest(run_id)
-        policy = manifest.monitoring if manifest else MonitorPolicy()
-
-        if decision.decision == "kill":
-            return self._handle_fatal(run_id, backend, decision, policy)
-
-        if decision.decision == "delegate_diagnosis":
-            ladder_action = self.ladder.observe(run_id, decision, policy.escalation)
-            if ladder_action == "invoke_agent":
-                verdict = escalate(self.run_store, decision, policy.escalation)
-                if verdict is not None and verdict.verdict == "kill":
-                    backend.cancel(run_id)
-                    self.run_store.append_event(
-                        run_id,
-                        RunEvent(
-                            level="error",
-                            message="run killed on agent verdict",
-                            details={"reason": verdict.reason},
-                        ),
-                    )
-                    return RunAction(
-                        run_id=run_id,
-                        decision=decision.decision,
-                        action="killed_by_agent_verdict",
-                        reasons=decision.reasons,
-                    )
-                return RunAction(
-                    run_id=run_id,
-                    decision=decision.decision,
-                    action="escalated",
-                    reasons=decision.reasons,
-                )
-            if ladder_action in {"budget_exhausted", "cooling_down"}:
-                return RunAction(
-                    run_id=run_id,
-                    decision=decision.decision,
-                    action=ladder_action,
-                    reasons=decision.reasons,
-                )
-            return RunAction(
-                run_id=run_id,
-                decision=decision.decision,
-                action="suspicion_recorded",
-                reasons=decision.reasons,
-            )
-
-        # Healthy or terminal: clear any stale escalation file.
-        clear_escalation(self.run_store, run_id)
-        return None
-
-    def _handle_fatal(
-        self,
-        run_id: str,
-        backend: Any,
-        decision: Any,
-        policy: MonitorPolicy,
-    ) -> RunAction:
-        if "process_dead" in decision.reasons:
-            # The worker is already gone; reap instead of cancelling. The
-            # workload it was supervising can easily have outlived it -- it is
-            # a separate process -- so reaping the *run* without also dealing
-            # with the workload reports a clean death over a live GPU job.
-            try:
-                reaped = backend.reap(run_id)
-            except Exception as exc:
-                reaped = {"outcome": "reap_failed", "error": str(exc)}
-            error = "worker process died without reporting a final status"
-            summary = _ORPHAN_SUMMARY.get(str(reaped.get("outcome")))
-            if summary:
-                error = f"{error}; orphaned workload {summary}"
-            self.run_store.update_status(
-                run_id,
-                status="failed",
-                completed_at=utc_now(),
-                error=error,
-                details={"workload_reap": reaped},
-            )
-            self.run_store.append_event(
-                run_id,
-                RunEvent(
-                    level="error",
-                    message="run reaped: worker process dead",
-                    details={"workload_reap": reaped},
-                ),
-            )
-            return RunAction(
-                run_id=run_id,
-                decision="kill",
-                action="reaped_dead_process",
-                reasons=decision.reasons,
-                details={"workload_reap": reaped},
-            )
-        if policy.auto_kill:
-            backend.cancel(run_id)
-            self.run_store.update_status(
-                run_id, error=f"auto-killed: {', '.join(decision.reasons)}"
-            )
-            self.run_store.append_event(
-                run_id,
-                RunEvent(
-                    level="error",
-                    message="run auto-killed by monitor daemon",
-                    details={"reasons": decision.reasons},
-                ),
-            )
-            return RunAction(
-                run_id=run_id,
-                decision="kill",
-                action="auto_killed",
-                reasons=decision.reasons,
-            )
-        escalate(self.run_store, decision, policy.escalation)
-        return RunAction(
-            run_id=run_id,
-            decision="kill",
-            action="escalated_fatal",
-            reasons=decision.reasons,
+        report.actions.extend(
+            supervise_once(self.run_store, active_run_ids, self.notifier)
         )
 
     def _advance_campaigns(self, report: TickReport) -> None:
