@@ -128,8 +128,13 @@ del agente, alcanzable por monkeypatching, `sitecustomize.py` o un import interm
 > cliente, parseando los logs — y el workload escribe en ese mismo stdout. La versión
 > ingenua (un marcador `IAX_PHASE=<fase>` en texto plano) la falsifica un `print()`
 > desde train. El plan 1 lo mitiga con un token por corrida que el cliente acuña y el
-> parser exige, lo cual sube el costo del ataque de un `print()` a leer el log del
-> driver en el nodo; no lo vuelve estructural. **La garantía de la decisión 2 es
+> parser exige. Eso sube el costo del ataque, pero menos de lo que parece: el token
+> viaja en el propio entrypoint, así que el workload lo recupera leyendo
+> `/proc/$PPID/cmdline` o pidiendo `get_job_info().entrypoint` a la Jobs API. Lo que
+> compra no es imposibilidad sino **visibilidad**: falsificar una fase deja de ser un
+> `print()` invisible y pasa a ser código que lee el cmdline de su proceso padre, que
+> es evidencia inequívoca de gaming y aparece en el diff de la variante. No lo vuelve
+> estructural. **La garantía de la decisión 2 es
 > estructural en local y defensiva en Ray.** Cerrarla de verdad es fase 4: o el run
 > store se vuelve alcanzable desde el cluster y el lanzador corre dentro del job, o
 > cada fase se envía como su propio job y la atribución vuelve a ser del lado del
