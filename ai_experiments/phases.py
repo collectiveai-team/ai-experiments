@@ -34,6 +34,23 @@ def run_phases(store: FilesystemRunStore, run_id: str) -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
     phases = manifest.workload.phases()
     for index, (phase, command) in enumerate(phases):
+        if store.cancel_requested(run_id):
+            # Checked here, not only inside the running supervisor: a
+            # cancellation that arrives in the gap between two phases has no
+            # process to signal, so without this the next phase starts
+            # anyway. The backend that requested the cancellation already
+            # wrote the `cancelled` status (LocalBackend.cancel does, right
+            # after calling request_cancel); overwriting it here would be
+            # fabricating a second answer to the same question.
+            store.append_event(
+                run_id,
+                RunEvent(
+                    level="warning",
+                    message="remaining phases skipped: cancellation requested",
+                    details={"phase": phase},
+                ),
+            )
+            return 1
         store.append_event(
             run_id, RunEvent(message="phase started", details={"phase": phase})
         )

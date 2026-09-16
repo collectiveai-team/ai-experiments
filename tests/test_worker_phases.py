@@ -64,3 +64,24 @@ def test_the_evaluate_phase_declares_the_result(tmp_path):
     store, run_id = _run(tmp_path, CHEATS, phase="evaluate")
 
     assert [r.values for r in store.read_results(run_id)] == [{"test_acc": 0.99}]
+
+
+def test_a_leaked_iax_data_test_does_not_reach_the_train_phase(tmp_path, monkeypatch):
+    """`DataSpec.env_for` only ever adds keys, so it cannot take one away --
+    `_Supervisor.run` has to scrub the *inherited* environment before adding
+    them back, or a value the parent process already set (`iax daemon` runs
+    with whatever environment the operator started it in) reaches the train
+    phase untouched, letting a trainer read the held-out set directly.
+    """
+    monkeypatch.setenv("IAX_DATA_TEST", "s3://bucket/held-out.parquet")
+    store, run_id = _run(
+        tmp_path,
+        """
+        import os
+        saw_test = 1 if "IAX_DATA_TEST" in os.environ else 0
+        print('IAX_METRIC {"step": 0, "saw_test": %d}' % saw_test)
+        """,
+        phase="train",
+    )
+
+    assert [m.values["saw_test"] for m in store.read_metrics(run_id)] == [0.0]

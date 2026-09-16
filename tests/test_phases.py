@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
+import itertools
 import subprocess
 import sys
 import textwrap
+from datetime import timedelta
 
+import ai_experiments.worker as worker_module
 from ai_experiments.phases import run_phases
-from ai_experiments.schemas import ExperimentManifest, RunHandle, WorkloadSpec
+from ai_experiments.schemas import (
+    ExperimentManifest,
+    RunHandle,
+    WorkloadSpec,
+    utc_now,
+)
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -91,6 +99,77 @@ def test_both_phases_share_one_handoff_directory(tmp_path):
 
     assert run_phases(store, run_id) == 0
     assert [r.values for r in store.read_results(run_id)] == [{"loss": 7.0}]
+
+
+def test_completed_is_not_written_until_the_final_phase(tmp_path, monkeypatch):
+    """`_Supervisor.run` only writes `completed` when `self.final` is True
+    (worker.py's `if self.final:` guard): a train phase that exits 0 hands
+    off to evaluate, it does not finish the run. Checking only the end state
+    (already covered by test_the_evaluator_result_is_the_one_that_counts)
+    would miss a mutant that dropped the guard -- the final status is
+    `completed` either way, only the sequence differs.
+    """
+    store, run_id = _store_with(
+        tmp_path,
+        """
+        print('IAX_RESULT {"test_acc": 0.99}')
+        """,
+        """
+        print('IAX_RESULT {"test_acc": 0.61}')
+        """,
+    )
+    seen_statuses = []
+    original_update_status = store.update_status
+
+    def _recording_update_status(run_id, **updates):
+        result = original_update_status(run_id, **updates)
+        seen_statuses.append(result.status)
+        return result
+
+    monkeypatch.setattr(store, "update_status", _recording_update_status)
+
+    assert run_phases(store, run_id) == 0
+
+    assert "completed" not in seen_statuses[:-1]
+    assert seen_statuses[-1] == "completed"
+
+
+def test_started_at_is_not_moved_by_the_second_phase(tmp_path, monkeypatch):
+    """`started_at` measures the *run's* start, for monitoring's timeout, not
+    each phase's -- `_Supervisor.run` reads the stored value and only falls
+    back to `utc_now()` when there isn't one yet (worker.py). Real wall-clock
+    time is too coarse to trust here (both phases can start in the same
+    tick), so `utc_now` is patched to something that visibly advances on
+    every call: if the second phase wrote its own `started_at`, this would
+    catch it even though real time might not have.
+    """
+    ticks = itertools.count()
+    monkeypatch.setattr(
+        worker_module, "utc_now", lambda: utc_now() + timedelta(hours=next(ticks))
+    )
+    store, run_id = _store_with(
+        tmp_path,
+        """
+        print('IAX_RESULT {"test_acc": 0.99}')
+        """,
+        """
+        print('IAX_RESULT {"test_acc": 0.61}')
+        """,
+    )
+    started_at_writes = []
+    original_update_status = store.update_status
+
+    def _recording_update_status(run_id, **updates):
+        if "started_at" in updates:
+            started_at_writes.append(updates["started_at"])
+        return original_update_status(run_id, **updates)
+
+    monkeypatch.setattr(store, "update_status", _recording_update_status)
+
+    assert run_phases(store, run_id) == 0
+
+    assert len(started_at_writes) == 2, "expected one started_at write per phase"
+    assert started_at_writes[0] == started_at_writes[1]
 
 
 def test_a_single_entrypoint_workload_still_runs(tmp_path):

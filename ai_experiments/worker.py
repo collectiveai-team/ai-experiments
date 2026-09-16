@@ -22,6 +22,7 @@ from ai_experiments.procs import (
 )
 from ai_experiments.report import parse_metric_line, parse_result_line
 from ai_experiments.schemas import (
+    DataSpec,
     ExperimentManifest,
     MetricPoint,
     ResultRecord,
@@ -111,10 +112,16 @@ class _Supervisor:
         # gets the entrypoint. `args` is shared by every phase (the planner
         # injects trial parameters through it), so it is appended regardless
         # of which command ran.
-        entrypoint = command or manifest.workload.entrypoint
+        entrypoint = command if command is not None else manifest.workload.entrypoint
         cmd = [*shlex.split(entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
         env = os.environ.copy()
+        # env_for only ever adds keys, so it cannot take one away: scrub the
+        # inherited environment first, or a value already set on the parent
+        # process (iax daemon runs with whatever environment the operator
+        # started it in) would reach the train phase untouched.
+        for key in DataSpec.ENV_KEYS:
+            env.pop(key, None)
         # `workload.env` (IAX_PARAMS included) is shared by every phase too,
         # so it is merged into each phase's environment rather than only the
         # single-entrypoint path's.
@@ -133,14 +140,19 @@ class _Supervisor:
 
         # MLflow handoff: workloads that import mlflow attach to the run the
         # harness created at submit time.
-        details = self.store.read_status(self.run_id).details
-        if details.get("mlflow_run_id"):
-            env["MLFLOW_RUN_ID"] = str(details["mlflow_run_id"])
-            env["MLFLOW_TRACKING_URI"] = str(details.get("mlflow_tracking_uri", ""))
+        status = self.store.read_status(self.run_id)
+        if status.details.get("mlflow_run_id"):
+            env["MLFLOW_RUN_ID"] = str(status.details["mlflow_run_id"])
+            env["MLFLOW_TRACKING_URI"] = str(
+                status.details.get("mlflow_tracking_uri", "")
+            )
 
         self._update_status(
             status="running",
-            started_at=utc_now(),
+            # started_at is the *run's* start, not this phase's: monitoring
+            # measures the timeout from it, so overwriting it on the second
+            # phase would give a two-phase run roughly double its budget.
+            started_at=status.started_at or utc_now(),
             details={"heartbeat_at": utc_now().isoformat()},
         )
         self.store.append_event(
@@ -230,15 +242,39 @@ class _Supervisor:
 
         exit_code = self.process.wait()
         self._stop.set()
+        if not self.final:
+            # No child process exists for this handler to terminate between
+            # phases, so a SIGTERM landing in that gap would otherwise be
+            # silently absorbed (self.process.poll() is not None, nothing
+            # happens) and the next phase would start anyway. Restoring the
+            # default action lets a bare SIGTERM here kill the supervisor.
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if exit_code == 0:
-            if self.final:
-                # With two phases only the last may declare the run
-                # completed; a non-final phase that exits 0 just hands off
-                # to the next one, so it leaves status alone here.
+            if self._cancel_requested():
+                # Exit 0 does not undo a stop request: a workload that traps
+                # SIGTERM and shuts down cleanly must still be recorded as
+                # cancelled, not completed.
                 self._update_status(
-                    status="completed", exit_code=exit_code, completed_at=utc_now()
+                    status="cancelled",
+                    exit_code=exit_code,
+                    completed_at=utc_now(),
+                    error="workload exited after cancellation was requested",
                 )
-            self.store.append_event(self.run_id, RunEvent(message="workload completed"))
+                self.store.append_event(
+                    self.run_id,
+                    RunEvent(level="warning", message="workload stopped as requested"),
+                )
+            else:
+                if self.final:
+                    # With two phases only the last may declare the run
+                    # completed; a non-final phase that exits 0 just hands
+                    # off to the next one, so it leaves status alone here.
+                    self._update_status(
+                        status="completed", exit_code=exit_code, completed_at=utc_now()
+                    )
+                self.store.append_event(
+                    self.run_id, RunEvent(message="workload completed")
+                )
         elif exit_code < 0 and self._cancel_requested():
             self._update_status(
                 status="cancelled",

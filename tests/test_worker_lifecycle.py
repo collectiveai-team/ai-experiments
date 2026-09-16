@@ -21,6 +21,7 @@ from ai_experiments.daemon import MonitorDaemon
 from ai_experiments import procs
 from ai_experiments.procs import process_identity
 from ai_experiments.schemas import (
+    DataSpec,
     ExperimentManifest,
     RunHandle,
     RunStatus,
@@ -63,6 +64,27 @@ def _wait_for(predicate, timeout: float = 30.0, interval: float = 0.05):
 def _wait_for_terminal(store: FilesystemRunStore, run_id: str) -> RunStatus:
     _wait_for(lambda: store.read_status(run_id).status in TERMINAL)
     return store.read_status(run_id)
+
+
+def _wait_for_settled_terminal(
+    store: FilesystemRunStore, run_id: str, hold: float = 1.0
+) -> RunStatus:
+    """Wait for a terminal status, then keep reading it for ``hold`` seconds.
+
+    `LocalBackend.cancel` writes `cancelled` synchronously, before the signal
+    it sends has had any chance to take effect -- so the first terminal
+    status observed can be that write, moments before a phase that should
+    have been stopped runs anyway and overwrites it to `completed`. Returning
+    the first terminal value seen (as `_wait_for_terminal` does) would let
+    that race read as a pass; this returns whatever is current after the
+    hold instead.
+    """
+    status = _wait_for_terminal(store, run_id)
+    deadline = time.monotonic() + hold
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = store.read_status(run_id)
+    return status
 
 
 def _wait_for_workload_pid(store: FilesystemRunStore, run_id: str) -> int:
@@ -403,6 +425,98 @@ def test_cli_cancel_reports_that_a_finished_run_was_not_cancelled(tmp_path):
 
     assert result.exit_code == 0
     assert "already completed" in result.stdout
+
+
+# -- C2: the production entry point is the two-phase launcher ---------------
+
+
+def test_two_phase_workload_runs_through_the_real_backend_entry_point(tmp_path):
+    """`LocalBackend.submit` spawns `-m ai_experiments.phases`, not
+    `-m ai_experiments.worker`: reverting that one string leaves the whole
+    suite green (454 passed, 0 failed) unless something drives a two-phase
+    workload through this exact path, not `run_phases` called in-process."""
+    store = _store(tmp_path)
+    train = _script(
+        tmp_path / "train.py",
+        "import os, pathlib\n"
+        "seen_test = 'IAX_DATA_TEST' in os.environ\n"
+        "pathlib.Path(os.environ['IAX_WORK_DIR'], 'saw_test.txt')"
+        ".write_text(str(seen_test))\n"
+        "print('IAX_RESULT {\"acc\": 0.99}', flush=True)\n",
+    )
+    evaluate = _script(
+        tmp_path / "evaluate.py",
+        "print('IAX_RESULT {\"acc\": 0.42}', flush=True)\n",
+    )
+    manifest = ExperimentManifest(
+        experiment="lifecycle",
+        backend="local",
+        workload=WorkloadSpec(
+            entrypoint=train,
+            train=train,
+            evaluate=evaluate,
+            working_dir=str(tmp_path),
+            data=DataSpec(test="s3://bucket/held-out.parquet"),
+        ),
+    )
+
+    handle = LocalBackend(store=store).submit(manifest)
+    status = _wait_for_terminal(store, handle.run_id)
+
+    assert status.status == "completed"
+    assert [r.values for r in store.read_results(handle.run_id)] == [{"acc": 0.42}]
+    saw_test = (store.run_dir(handle.run_id) / "work" / "saw_test.txt").read_text()
+    assert saw_test == "False"
+
+
+# -- C1: cancellation must not be reversible by the second phase ------------
+
+
+def test_iax_cancel_stops_the_evaluate_phase_too(tmp_path):
+    """Observed before the fix: `backend.cancel` writes `cancelled`, then the
+    evaluate phase runs to completion and the final status is `completed`
+    with a score -- cancellation was reversible. The train phase here
+    ignores SIGTERM outright and exits 0 on its own a little later, so
+    nothing here depends on how the signal race between `killpg` and the
+    supervisor's own handler happens to resolve: the only way the run can
+    end up `cancelled`, with evaluate never started, is `store.request_cancel`
+    (written before the signal is even sent) being consulted after the exit.
+    """
+    store = _store(tmp_path)
+    train = _script(
+        tmp_path / "train.py",
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('training', flush=True)\n"
+        "time.sleep(0.5)\n",
+    )
+    evaluate = _script(
+        tmp_path / "evaluate.py",
+        "print('IAX_RESULT {\"acc\": 0.61}', flush=True)\n",
+    )
+    manifest = ExperimentManifest(
+        experiment="lifecycle",
+        backend="local",
+        workload=WorkloadSpec(
+            entrypoint=train, train=train, evaluate=evaluate, working_dir=str(tmp_path)
+        ),
+    )
+    backend = LocalBackend(store=store)
+
+    handle = backend.submit(manifest)
+    _wait_for_event(store, handle.run_id, "training")
+    backend.cancel(handle.run_id)
+    # Not `_wait_for_terminal`: the bug this pins is a status that looks
+    # terminal (`cancelled`, written by `cancel` itself) and then changes
+    # again once the un-stopped evaluate phase finishes.
+    status = _wait_for_settled_terminal(store, handle.run_id)
+
+    assert status.status == "cancelled"
+    assert store.read_results(handle.run_id) == []
+    assert not any(
+        event.details.get("phase") == "evaluate" and event.message == "phase started"
+        for event in store.read_events(handle.run_id)
+    )
 
 
 # -- #8: an orphaned workload -------------------------------------------------

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeVar, Union
+from typing import Annotated, Any, ClassVar, Literal, TypeVar, Union
 
 import yaml
 from pydantic import (
@@ -92,10 +92,25 @@ BackendName = Literal["local", "ray"]
 class DataSpec(ConfigModel):
     """Where the workload's data lives, by reference.
 
-    The boundary this draws is the only thing that stops a generated feature
-    from leaking the test set: a training process that has no reference to
-    test cannot read it, however the feature code is written.
+    Guarantee: the train phase's environment never carries ``IAX_DATA_TEST``.
+    ``env_for`` only ever adds keys, so ``worker.py`` scrubs ``ENV_KEYS`` from
+    the *inherited* environment first -- otherwise a value already set on the
+    parent process (``iax daemon`` runs with whatever environment the
+    operator started it in) would pass through untouched. Not yet guaranteed:
+    ``IAX_RUN_DIR`` is exported to every phase, and its ``manifest.yaml``
+    names ``data.test`` literally, so a trainer that goes looking through its
+    own run directory still reaches it (closed by the la-tesis plan, Task 4,
+    not here).
     """
+
+    #: Keys `env_for` may set. The scrub in `worker.py` reads this list
+    #: rather than naming the three keys again, so a new data reference
+    #: cannot drift out of sync with what gets scrubbed.
+    ENV_KEYS: ClassVar[tuple[str, ...]] = (
+        "IAX_DATA_TRAIN",
+        "IAX_DATA_VAL",
+        "IAX_DATA_TEST",
+    )
 
     train: str | None = None
     val: str | None = None
