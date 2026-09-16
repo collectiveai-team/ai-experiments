@@ -24,18 +24,11 @@ class ObjectiveReading(BaseModel):
     value: float | None = None
     final_metrics: dict[str, float] = Field(default_factory=dict)
     observed_metrics: list[str] = Field(default_factory=list)
-    miss_reason: (
-        Literal["no_metrics", "no_result", "metric_absent", "not_finite"] | None
-    ) = None
+    miss_reason: Literal["no_result", "metric_absent", "not_finite"] | None = None
 
     def miss_message(self, metric: str) -> str | None:
         if self.miss_reason is None:
             return None
-        if self.miss_reason == "no_metrics":
-            return (
-                "no metrics reported: the workload printed no IAX_METRIC lines, "
-                f"so objective '{metric}' could not be scored"
-            )
         if self.miss_reason == "no_result":
             return (
                 "no result reported: the workload printed no IAX_RESULT line, "
