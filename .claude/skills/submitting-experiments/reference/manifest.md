@@ -20,10 +20,13 @@ summarizes the fields; if it disagrees with the code, the code wins.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `entrypoint` | string | — (required) | e.g. `python`, `python3`. |
-| `args` | list[string] | `[]` | e.g. `["-m", "pkg.cli", "train", "cfg.yaml"]`. |
+| `entrypoint` | string | — (required) | e.g. `python`, `python3`. Always required by the schema, even when `train`/`evaluate` are set — but then it is never run. |
+| `args` | list[string] | `[]` | e.g. `["-m", "pkg.cli", "train", "cfg.yaml"]`. Appended to **every** phase that runs — `entrypoint` alone, or both `train` and `evaluate` when declared. `{name}` placeholders a campaign substitutes per trial live here, not in `train`/`evaluate` (those two are static strings, never templated). |
+| `train` | string \| null | `null` | Optional first phase's command. Requires `evaluate` too — declaring only one is rejected. When both are set, `entrypoint` is unused and `train`/`evaluate` run instead, in order. May report progress (`IAX_METRIC`); a result (`IAX_RESULT`) it prints is discarded with a warning. |
+| `evaluate` | string \| null | `null` | Optional second phase's command. Requires `train` too. The only phase whose declared result (`IAX_RESULT`) scores. |
 | `working_dir` | string | `.` | Relative paths are resolved against the directory you submit from, once, at submit time; the run stores both the resolved manifest and the original. Keep it relative to stay portable. |
-| `env` | mapping | `{}` | Extra environment variables. |
+| `env` | mapping | `{}` | Extra environment variables, merged into every phase. |
+| `data` | object | all defaults | `train`/`val`/`test` string references (`DataSpec`). Exported as `IAX_DATA_TRAIN`/`IAX_DATA_VAL` to every phase; `IAX_DATA_TEST` only to `evaluate` — a `train` phase never receives it. `data.test` requires an `evaluate` phase. |
 
 ## `resources`
 

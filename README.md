@@ -47,7 +47,7 @@ iax run examples/goal_toy.yaml --open     # dashboard at http://127.0.0.1:8585
 Installed from PyPI, with no repo checkout, scaffold the same two files first:
 
 ```bash
-iax new workload train.py     # a workload that already reports IAX_METRIC
+iax new workload train.py     # a workload that already reports progress and a result
 iax new goal goal.yaml        # a commented goal; point its workload at train.py
 iax run goal.yaml --open
 ```
@@ -64,17 +64,23 @@ iax serve                                      # dashboard for everything in the
 iax campaign status <campaign_id>
 ```
 
-The workload contract is one line of stdout per observation:
+The workload contract is two stdout channels, and only one of them scores:
 
 ```python
-print('IAX_METRIC {"step": 12, "loss": 0.0734}')   # or:
-from ai_experiments.report import report_metric
-report_metric(step=12, loss=0.0734)
+from ai_experiments.report import report_metric, report_result
+
+report_metric(step=12, loss=0.0734)   # progress: plotted, watched for a stuck
+                                       # or diverging run — never scores
+report_result(loss=0.0734)            # the declared result, printed once from
+                                       # the evaluate phase — the only thing
+                                       # that scores a trial
 ```
 
-This works identically on the local backend (the worker tails stdout) and on
-remote Ray clusters with no shared filesystem (metrics are extracted from job
-logs).
+Printing the lines directly (`IAX_METRIC {...}` / `IAX_RESULT {...}`) works
+the same. Both channels work identically on the local backend (the worker
+tails stdout) and on remote Ray clusters with no shared filesystem (both are
+extracted from job logs). Full contract, including the `train`/`evaluate`
+phase split: see [Environment variables](#environment-variables) below.
 
 ## One goal, one answer (`iax loop`)
 
@@ -232,7 +238,11 @@ Two halves:
   at submit (tagged `iax.run_id`, campaign, trial, git commit from the repro
   bundle, with trial params logged), and the daemon finalizes it at terminal
   state — all `IAX_METRIC` points with steps, the local `artifacts/` dir,
-  and the matching terminal status (`FINISHED`/`FAILED`/`KILLED`).
+  and the matching terminal status (`FINISHED`/`FAILED`/`KILLED`). The
+  declared result (`IAX_RESULT`) is **not** mirrored as an MLflow metric —
+  it only ever lives in `results.jsonl` and `status.details.result`; read it
+  from there or from `iax campaign status`/`iax leaderboard`, which is what a
+  campaign actually scores a trial on.
 - **Workload handoff (solves remote artifacts)**: the workload env gets
   `MLFLOW_RUN_ID` + `MLFLOW_TRACKING_URI` — on the local backend and inside
   Ray `runtime_env`. A workload on a remote cluster node that calls
@@ -486,15 +496,38 @@ The harness **injects** these into every workload it starts:
 | `IAX_ARTIFACTS_DIR` | `<run_dir>/artifacts` | checkpoints and plots; `iax artifacts <run_id>` lists what lands here |
 | `IAX_PARAMS` | the trial's params, as JSON | campaign trials — the whole params dict, whether or not it appears in `args` |
 | `IAX_TRIAL_ID` | the trial id | campaign trials |
+| `IAX_PHASE` | `train` or `evaluate` | a workload that shares code between both phases |
+| `IAX_WORK_DIR` | a directory shared by both phases | the trainer's handoff to the evaluator — not the cwd, which a materialized variant copy does not share |
+| `IAX_DATA_TRAIN`, `IAX_DATA_VAL` | `workload.data.train`/`.val` | set on every phase, when configured |
+| `IAX_DATA_TEST` | `workload.data.test` | set only on the `evaluate` phase — a `train` phase never sees it, even when configured |
 | `MLFLOW_RUN_ID`, `MLFLOW_TRACKING_URI` | the run the harness created | `tracking.mlflow: true`, so a workload on a remote Ray node logs to the same run |
 | `MLFLOW_ALLOW_FILE_STORE` | `true` | set only for a file-backed tracking URI, which MLflow 3 gates; an explicit `false` is respected |
 
-`IAX_METRIC` is not a variable. It is the stdout prefix a workload prints its
-observations with:
+`IAX_METRIC` and `IAX_RESULT` are not variables. They are stdout prefixes a
+workload prints its progress and its result with — two channels, and only
+one of them scores:
 
 ```python
-print('IAX_METRIC {"step": 12, "loss": 0.0734}')
+print('IAX_METRIC {"step": 12, "loss": 0.0734}')   # progress: plotted, and
+                                                    # watched to catch a stuck
+                                                    # or diverging run — never
+                                                    # what a trial is scored on
+
+print('IAX_RESULT {"loss": 0.0734}')               # the declared result: one
+                                                    # line, from the `evaluate`
+                                                    # phase, and the only thing
+                                                    # that scores a trial
 ```
+
+A workload that never prints `IAX_RESULT` scores nothing: it fails with
+`no_result`, not by falling back to the last `IAX_METRIC` line. And a result
+printed from the `train` phase is discarded with a warning, not scored — the
+trainer is the code an agent or strategy may rewrite, so it may not declare
+the number it is judged by. Only a workload's `evaluate` phase may call
+`report_result` / print `IAX_RESULT` (see [Manifest](#manifest) below, and
+`workload.train` / `workload.evaluate` on `WorkloadSpec`). The run directory
+keeps the two channels separately too: `metrics.jsonl` for the progress
+curve, `results.jsonl` for the declared result.
 
 ## Manifest
 

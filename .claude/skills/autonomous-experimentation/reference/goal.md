@@ -11,9 +11,11 @@ single trial runs — always run it.
 objective: { metric: val_loss, mode: min, target: 0.05 }
 ```
 
-- `metric` must be **exactly** the key the workload prints in its
-  `IAX_METRIC` line. A mismatch is the single most common reason a campaign
-  produces trials that all score `null`.
+- `metric` must be **exactly** a key in the `IAX_RESULT` line the workload's
+  `evaluate` phase declares (`ai_experiments.report.report_result`, or print
+  the line directly) — never a key from an `IAX_METRIC` progress line, which
+  never scores. A workload that never prints `IAX_RESULT` scores `null`
+  tagged `no_result`; a name mismatch scores `null` tagged `metric_absent`.
 - `mode` is `min` or `max`. It decides what "best" means everywhere: the
   planner, the leaderboard, and the target check.
 - `target` is optional. With it, the campaign stops the moment a trial reaches
@@ -47,15 +49,25 @@ search_space:
 
 ```yaml
 workload:
+  # `entrypoint` is the single-phase fallback: with both `train` and
+  # `evaluate` set, those two run instead and the entrypoint is unused.
   entrypoint: python
-  args: ["train.py", "--lr", "{lr}"]   # {param} is substituted per trial
+  # The trainer's flags live here, not in a top-level `args`: `args` is
+  # appended to every phase, so it would hand the trainer's flags to the
+  # evaluator too.
+  train: "python train.py --epochs 20"
+  evaluate: "python evaluate.py"
   working_dir: "."                     # relative paths resolve from here
   env: { CUDA_VISIBLE_DEVICES: "0" }
 ```
 
-Params without a `{placeholder}` in `args` are appended as `--name value`.
-Give the workload only the environment it needs: it runs untrusted code paths
-and its stdout is untrusted input.
+Params without a `{placeholder}` in `args` are appended as `--name value` —
+and `args` itself is appended to **every** declared phase, `train` and
+`evaluate` alike. Only `evaluate` may declare the result that scores the
+trial; `train` may only report progress (`IAX_METRIC`), and a result printed
+from `train` is discarded with a warning. Give the workload only the
+environment it needs: it runs untrusted code paths and its stdout is
+untrusted input.
 
 ## budget
 
@@ -127,7 +139,7 @@ backend_address: ray://head:10001    # an explicit cluster
 resources: { cpus: 8, gpus: 1 }      # per trial
 ```
 
-Use `local` to prove the workload reports its metric. Move to `ray` for
+Use `local` to prove the workload declares its result. Move to `ray` for
 anything with real parallelism. `resources` is per trial, and `max_parallel`
 times `resources` must fit the cluster.
 

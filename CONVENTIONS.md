@@ -115,7 +115,7 @@ upgrade step:
 - the REST routes served by `server/app.py`;
 - the on-disk run and campaign layout, and the `state.json` / `events.jsonl`
   schemas;
-- the goal manifest (`goal.yaml`) keys and the `IAX_METRIC` report format;
+- the goal manifest (`goal.yaml`) keys and the `IAX_METRIC`/`IAX_RESULT` report formats;
 - the `ExperimentBackend` ABC.
 
 Add fields; do not repurpose or silently drop them. Keep a removed key accepted
