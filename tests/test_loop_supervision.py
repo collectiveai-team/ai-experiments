@@ -8,11 +8,13 @@ and, called directly, must behave exactly as the daemon's own check does.
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.daemon import MonitorDaemon
 from ai_experiments.loop import run_loop
+from ai_experiments.monitoring.escalation import CAMPAIGN_PREFIX, CampaignReview
 from ai_experiments.monitoring.supervision import SupervisionReport, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.schemas import (
@@ -335,3 +337,37 @@ def test_advance_with_admit_false_submits_nothing(tmp_path):
     state = orchestrator.advance(state.campaign_id, admit=False)
 
     assert len(state.trials) == before
+
+
+def test_admit_false_still_escalates_a_finished_trial_under_agent_review(tmp_path):
+    """`analysis.agent_review` must survive the cohort-closing `admit=False`
+    pass, not just the trailing `admit=True` one.
+
+    `finished_now` is scored on the `admit=False` call and is always empty by
+    the time the trailing `admit=True` call runs, so firing the escalation
+    only from the block below `_fill_capacity` left this channel dead for
+    every campaign `run_loop` drives with `analysis.agent_review` on -- the
+    method was never broken, only unreachable. This asserts on the file
+    `_request_agent_review` actually writes, not on a spy, because a spy on
+    `_request_agent_review` would have kept passing through that regression.
+    """
+    store = _store(tmp_path)
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: FakeBackend(store),
+    )
+    goal = _goal(
+        analysis={"agent_review": True},
+        budget=BudgetSpec(max_trials=2, max_parallel=1),
+        strategy=StrategySpec(name="adaptive", seed=3, batch_size=1),
+    )
+
+    report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
+
+    path = store.root / "_escalations" / f"{CAMPAIGN_PREFIX}{report.campaign_id}.json"
+    assert path.exists(), (
+        "a trial finished under analysis.agent_review but run_loop never escalated it"
+    )
+    review = CampaignReview(**json.loads(path.read_text()))
+    assert review.campaign_id == report.campaign_id

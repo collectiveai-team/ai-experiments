@@ -287,6 +287,8 @@ class CampaignOrchestrator:
             self._record_evaluation(state, goal, finished_now)
 
         if not admit:
+            if finished_now and goal.analysis.agent_review:
+                self._request_agent_review(state, goal)
             self.campaign_store.write_state(state)
             return state
 
