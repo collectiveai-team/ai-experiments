@@ -22,6 +22,18 @@ schema: `ai_experiments/schemas.py`. Full field reference: `reference/manifest.m
    Ray address resolution is `backend_address` in the manifest, then `RAY_ADDRESS`,
    then `http://127.0.0.1:8265`. For remote Ray clusters, start the dashboard with
    `--dashboard-host 0.0.0.0` so the submitting machine can reach it.
+
+   The two backends do not enforce the phase split equally. On `local` it is
+   structural: train and evaluate are two separately supervised processes, and
+   the supervisor reading a train phase's stdout is the one that discards its
+   result. On `ray` one job runs both commands into one log stream, so the
+   harness reconstructs the phase from a per-run random token echoed by the
+   entrypoint — careful (an unmarked, mis-marked or wrongly-tokened result is
+   discarded) but defensive, not structural: the token lives in the job's
+   entrypoint string and a workload that reads its parent's command line can
+   recover it. When the workload is code an agent wrote rather than code a
+   person read, `local` is the backend whose guarantee does not rest on the
+   workload behaving.
 3. **Set resources and monitoring.** `resources.cpus`/`gpus`/`memory_gb`; a
    `monitoring` policy with `interval_seconds` (how often the scheduler checks) and
    `stuck_after_minutes` (how long without progress before flagging). See

@@ -115,7 +115,8 @@ agent:
   max_calls: 20            # cost ceiling for the campaign
 analysis:
   review_between_rounds: true    # a verdict after each round
-  apply_agent_changes: false     # true lets a verdict widen space or budget
+  apply_agent_changes: false     # true lets a verdict widen the search space;
+                                 # never the budget
 ```
 
 Every agent reply is validated against the search space before use. Out-of-
@@ -123,8 +124,13 @@ range and repeated params are dropped, and a crash, a timeout, an exhausted
 `max_calls`, or a reply without JSON costs the round to `strategy.fallback` —
 never the campaign. Transcripts land under `<campaign_dir>/agents/`.
 
-`apply_agent_changes` may widen `search_space` and `budget`. It can never
-change `objective.metric`: past values were measured against it.
+`apply_agent_changes` may widen `search_space`, and nothing else. It can never
+change `objective.metric` — past values were measured against it — and it can
+never change `budget`: a loop is an optimizer, and a ceiling it can raise is
+not a ceiling. A review may redistribute effort inside the budget and argue in
+its `reason` that the budget is what blocks the target, but raising it is the
+user's call. A suggested `budget` change is refused and appended to the
+campaign's events rather than applied.
 
 ## backend
 
@@ -142,6 +148,16 @@ resources: { cpus: 8, gpus: 1 }      # per trial
 Use `local` to prove the workload declares its result. Move to `ray` for
 anything with real parallelism. `resources` is per trial, and `max_parallel`
 times `resources` must fit the cluster.
+
+The choice is also a trust decision. "Only `evaluate` may declare a result" is
+structural on `local` — two separately supervised processes, and the supervisor
+that reads a train phase's stdout is the one that discards its result. On `ray`
+both commands share one job and one log stream, and the phase is reconstructed
+from a per-run random token the entrypoint echoes. That reconstruction discards
+anything it cannot attribute, but the token sits in the job's entrypoint string
+and is readable from the workload's parent command line, so on Ray the rule is
+a defence rather than a structure. For a campaign whose trial code an agent
+writes, `local` is the one that does not depend on the workload behaving.
 
 ## monitoring
 

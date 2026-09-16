@@ -35,11 +35,18 @@ PHASE_MARKER_PREFIX = "IAX_PHASE="
 def _phase_marker(phase: str, token: str) -> str:
     """The line `submit` echoes ahead of a phase and the parser looks for.
 
-    The token makes the marker unforgeable *from the client's perspective*:
-    a workload sharing the job's stdout can print text that starts the same
-    way, but not the run's own `secrets.token_hex` value, which never
-    reaches the workload's environment. See `_sync_results_from_logs` for
-    what this does and does not close.
+    What the token buys is visibility and cost, not impossibility (commit
+    9b89e17). A workload sharing the job's stdout can print a line starting
+    `IAX_PHASE=evaluate` with one `print()`, and the token means that line is
+    discarded rather than believed. It is not in the workload's environment --
+    but it *is* in the job's entrypoint shell string, which Ray runs as the
+    workload's parent, so `/proc/$PPID/cmdline` or `ps` hands it to a workload
+    that goes looking, and Ray stores the entrypoint in the job's metadata
+    besides. So the marker separates a noisy workload from the entrypoint
+    reliably, and a determined one only by making the forgery deliberate
+    rather than accidental. See `_sync_results_from_logs` for what this does
+    and does not close, and prefer the local backend where the split must hold
+    against workload code nobody read.
     """
     return f"{PHASE_MARKER_PREFIX}{phase} {token}"
 
@@ -113,10 +120,14 @@ class RayBackend(ExperimentBackend):
         # shell's own word splitting. `" ".join` did not: an argument with a
         # space arrived at the workload as two.
         args = shlex.join(manifest.workload.args)
-        # Minted once per run and never given to the workload: the workload
-        # shares the job's stdout, so a plain `IAX_PHASE=evaluate` marker is
-        # forgeable with one `print()`. The token lets the parser tell "the
-        # entrypoint said so" from "the workload said so" on the same stream.
+        # Minted once per run and never exported to the workload: the
+        # workload shares the job's stdout, so a plain `IAX_PHASE=evaluate`
+        # marker is forgeable with one `print()`. The token lets the parser
+        # tell "the entrypoint said so" from "the workload said so" on the
+        # same stream. It is not a secret the workload cannot obtain -- it is
+        # interpolated into the entrypoint below, and that shell is the
+        # workload's own parent process -- so this raises the cost of a
+        # forgery and makes one visible; it does not make one impossible.
         phase_token = secrets.token_hex(16)
         # The handoff directory is created once, inside the job's working dir,
         # and both phases see the same absolute path.

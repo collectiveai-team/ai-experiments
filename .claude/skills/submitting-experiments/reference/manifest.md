@@ -26,7 +26,7 @@ summarizes the fields; if it disagrees with the code, the code wins.
 | `evaluate` | string \| null | `null` | Optional second phase's command. Requires `train` too. The only phase whose declared result (`IAX_RESULT`) scores. |
 | `working_dir` | string | `.` | Relative paths are resolved against the directory you submit from, once, at submit time; the run stores both the resolved manifest and the original. Keep it relative to stay portable. |
 | `env` | mapping | `{}` | Extra environment variables, merged into every phase. |
-| `data` | object | all defaults | `train`/`val`/`test` string references (`DataSpec`). Exported as `IAX_DATA_TRAIN`/`IAX_DATA_VAL` to every phase; `IAX_DATA_TEST` only to `evaluate` — a `train` phase never receives it. `data.test` requires an `evaluate` phase. |
+| `data` | object | all defaults | `train`/`val`/`test` string references (`DataSpec`). Exported as `IAX_DATA_TRAIN`/`IAX_DATA_VAL` to every phase; `IAX_DATA_TEST` only to `evaluate` — a `train` phase never receives it **as an environment variable**, and that is the whole of the guarantee: the run's `manifest.yaml` records `data.test` verbatim and `IAX_RUN_DIR` points every phase at that file, so the held-out reference is a boundary train code is declared not to cross, not one the harness enforces. `data.test` requires an `evaluate` phase. |
 
 ## `resources`
 

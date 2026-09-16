@@ -63,7 +63,8 @@ analysis:
   review_between_rounds: false  # `iax loop`: ask the agent for a verdict after
                                 # each round; a `stop` ends a hopeless campaign
   apply_agent_changes: false    # true: an accepted verdict may widen the search
-                                # space or the budget (never the metric)
+                                # space -- never the metric, and never the
+                                # budget: raising the ceiling is your call
 
 tracking:
   mlflow: false

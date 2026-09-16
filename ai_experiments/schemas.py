@@ -490,8 +490,12 @@ class AnalysisSpec(ConfigModel):
     #: agent can end a campaign it judges hopeless instead of burning the
     #: whole budget on it.
     review_between_rounds: bool = False
-    #: Let an accepted review widen the search space or the budget on its own.
-    #: Off by default: a loop that rewrites its own goal unasked is a surprise.
+    #: Let an accepted review widen the search space on its own. Off by
+    #: default: a loop that rewrites its own goal unasked is a surprise. The
+    #: search space is the only section a review can change -- see
+    #: ``loop.APPLICABLE_KEYS``. A review may redistribute effort within the
+    #: budget, but raising the budget is the user's call: a ceiling the
+    #: optimizer can move is not a ceiling.
     apply_agent_changes: bool = False
 
 

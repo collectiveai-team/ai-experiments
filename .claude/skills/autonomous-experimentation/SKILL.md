@@ -140,7 +140,8 @@ agent:
   max_calls: 20              # hard ceiling for the whole campaign
 analysis:
   review_between_rounds: true    # ask for a verdict after each round
-  apply_agent_changes: false     # true lets a verdict widen the space or budget
+  apply_agent_changes: false     # true lets a verdict widen the search space;
+                                 # the budget is never moved by a review
 ```
 
 The harness never trusts the reply: out-of-range and already-tried params are

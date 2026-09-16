@@ -125,9 +125,13 @@ analysis:
 
 The verdict is `continue`, `stop`, or `change_goal`. A `stop` ends the campaign
 with the agent's reason instead of burning the rest of the budget on a goal
-that cannot be reached. A `change_goal` may widen the search space or the
-budget — and nothing else: the objective metric stays fixed, because every
-value already recorded was measured against it. Each review is appended to
+that cannot be reached. A `change_goal` may widen the search space — and
+nothing else. The objective metric stays fixed, because every value already
+recorded was measured against it; the budget stays fixed because a ceiling the
+optimizer can raise is not a ceiling. A review may argue for more budget in its
+reason, and redistribute effort within the one it has, but raising it is yours
+to do. A suggested budget change is refused and recorded in the campaign's
+events, not applied. Each review is appended to
 `rounds.jsonl` as a `review` stage, so the decision is auditable afterwards.
 
 ## The same loop from python
@@ -499,7 +503,7 @@ The harness **injects** these into every workload it starts:
 | `IAX_PHASE` | `train` or `evaluate` | a workload that shares code between both phases |
 | `IAX_WORK_DIR` | a directory shared by both phases | the trainer's handoff to the evaluator — not the cwd, which a materialized variant copy does not share |
 | `IAX_DATA_TRAIN`, `IAX_DATA_VAL` | `workload.data.train`/`.val` | set on every phase, when configured |
-| `IAX_DATA_TEST` | `workload.data.test` | set only on the `evaluate` phase — a `train` phase never sees it, even when configured |
+| `IAX_DATA_TEST` | `workload.data.test` | set only on the `evaluate` phase — a `train` phase never receives it as an environment variable (see the note below: that is the whole of the guarantee) |
 | `MLFLOW_RUN_ID`, `MLFLOW_TRACKING_URI` | the run the harness created | `tracking.mlflow: true`, so a workload on a remote Ray node logs to the same run |
 | `MLFLOW_ALLOW_FILE_STORE` | `true` | set only for a file-backed tracking URI, which MLflow 3 gates; an explicit `false` is respected |
 
@@ -528,6 +532,34 @@ the number it is judged by. Only a workload's `evaluate` phase may call
 `workload.train` / `workload.evaluate` on `WorkloadSpec`). The run directory
 keeps the two channels separately too: `metrics.jsonl` for the progress
 curve, `results.jsonl` for the declared result.
+
+### What the phase split does and does not guarantee
+
+**The held-out reference is withheld, not sealed off.** `IAX_DATA_TEST` is
+never exported to a `train` phase, and that much is enforced: the supervisor
+scrubs the whole `IAX_DATA_*` family out of the inherited environment before
+each phase and only `evaluate` gets the test reference back. But the run's own
+`manifest.yaml` records `workload.data.test` verbatim, and `IAX_RUN_DIR` points
+every phase at that file, so a trainer that goes looking can read the reference
+in one line. Treat the held-out set as a boundary your train code is *declared*
+not to cross, not one the harness can stop it crossing. (Narrowing
+`IAX_RUN_DIR` to the `evaluate` phase is scheduled work; the sentence above
+stays true either way.)
+
+**The `evaluate`-only rule is structural on `local` and defensive on `ray`.**
+On the local backend the two phases are two processes, each supervised
+separately, and the supervisor that reads a `train` phase's stdout is the one
+that discards its result: the workload has no way to be mistaken for the
+evaluator. On Ray there is no supervisor per phase. One job runs both commands
+and both share a single log stream, so the harness reconstructs which phase a
+line came from by reading a per-run random token that the entrypoint echoes
+ahead of each phase. That reconstruction is careful — an unmarked, mis-marked
+or wrongly-tokened result is discarded rather than trusted — but it is a
+defence, not a structure. The token is embedded in the job's entrypoint string,
+and a workload determined to read its parent's command line can recover it. If
+the code running in your `train` phase is code an agent wrote and you have not
+read, prefer the `local` backend, where the guarantee does not depend on the
+workload's good behaviour.
 
 ## Manifest
 
@@ -666,6 +698,11 @@ ray start --head --num-cpus=4 --dashboard-host=127.0.0.1
 # Point the backend at it (this is also the default)
 export RAY_ADDRESS=http://127.0.0.1:8265
 ```
+
+Before choosing `ray` for a campaign whose workload code you did not write
+yourself, read [What the phase split does and does not
+guarantee](#what-the-phase-split-does-and-does-not-guarantee): the
+"only `evaluate` may declare a result" rule is enforced differently there.
 
 Any manifest with `backend: ray` now submits jobs to that cluster:
 
