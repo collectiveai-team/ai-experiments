@@ -89,13 +89,68 @@ ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
 BackendName = Literal["local", "ray"]
 
 
+class DataSpec(ConfigModel):
+    """Where the workload's data lives, by reference.
+
+    The boundary this draws is the only thing that stops a generated feature
+    from leaking the test set: a training process that has no reference to
+    test cannot read it, however the feature code is written.
+    """
+
+    train: str | None = None
+    val: str | None = None
+    test: str | None = None
+
+    def env_for(self, phase: str) -> dict[str, str]:
+        env: dict[str, str] = {}
+        if self.train:
+            env["IAX_DATA_TRAIN"] = self.train
+        if self.val:
+            env["IAX_DATA_VAL"] = self.val
+        if phase == "evaluate" and self.test:
+            env["IAX_DATA_TEST"] = self.test
+        return env
+
+
 class WorkloadSpec(ConfigModel):
-    """Executable workload for a training experiment."""
+    """Executable workload for a training experiment.
+
+    A workload may declare one command (``entrypoint``) or two (``train`` and
+    ``evaluate``). Two is what lets the harness protect the evaluator: only
+    the evaluate phase may declare a result, and only it sees the test data.
+    """
 
     entrypoint: str
     args: list[str] = Field(default_factory=list)
     working_dir: str = "."
     env: dict[str, str] = Field(default_factory=dict)
+    train: str | None = None
+    evaluate: str | None = None
+    data: DataSpec = Field(default_factory=DataSpec)
+
+    @model_validator(mode="after")
+    def phases_are_coherent(self) -> WorkloadSpec:
+        if self.train and not self.evaluate:
+            raise ValueError(
+                "declaring 'train' requires 'evaluate': a train phase alone "
+                "would be ignored, and the entrypoint scored in its place"
+            )
+        if self.evaluate and not self.train:
+            raise ValueError(
+                "declaring 'evaluate' requires 'train': with only an evaluate "
+                "phase there is nothing for it to score"
+            )
+        if self.data.test and not self.evaluate:
+            raise ValueError(
+                "data.test requires an 'evaluate' phase: without one there is "
+                "no protected phase to receive the test reference"
+            )
+        return self
+
+    def phases(self) -> list[tuple[str, str]]:
+        if self.train and self.evaluate:
+            return [("train", self.train), ("evaluate", self.evaluate)]
+        return [("evaluate", self.entrypoint)]
 
 
 class ResourceSpec(ConfigModel):
