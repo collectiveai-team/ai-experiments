@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 from pathlib import Path
 from typing import Any, Callable
@@ -12,6 +13,7 @@ from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.report import parse_metric_line, parse_result_line
 from ai_experiments.schemas import (
     ACTIVE_RUN_STATES,
+    DataSpec,
     DiagnosisReport,
     ExperimentManifest,
     MetricPoint,
@@ -24,6 +26,44 @@ from ai_experiments.schemas import (
 from ai_experiments.store import FilesystemRunStore
 
 DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
+
+#: The marker's wire format, written once so the emitter (`submit`) and the
+#: parser (`_sync_results_from_logs`) cannot drift apart (review finding 9).
+PHASE_MARKER_PREFIX = "IAX_PHASE="
+
+
+def _phase_marker(phase: str, token: str) -> str:
+    """The line `submit` echoes ahead of a phase and the parser looks for.
+
+    The token makes the marker unforgeable *from the client's perspective*:
+    a workload sharing the job's stdout can print text that starts the same
+    way, but not the run's own `secrets.token_hex` value, which never
+    reaches the workload's environment. See `_sync_results_from_logs` for
+    what this does and does not close.
+    """
+    return f"{PHASE_MARKER_PREFIX}{phase} {token}"
+
+
+def _parse_phase_marker(line: str, token: str) -> str | None:
+    """Return the phase name if `line` is a genuine marker, else None.
+
+    Matched by searching within the line -- like `report.parse_result_line`,
+    not `startswith` -- because Ray prefixes log lines (``(pid=123) ...``) in
+    some configurations, and a prefix must not break attribution while the
+    result on the next line still parses (finding 7). A line that merely
+    starts with ``IAX_PHASE=`` but carries the wrong token, no token, or a
+    tampered phase name is not a marker at all: it is workload noise (or a
+    forgery attempt) and the caller ignores it rather than trusting it.
+    """
+    stripped = line.strip()
+    idx = stripped.find(PHASE_MARKER_PREFIX)
+    if idx == -1:
+        return None
+    rest = stripped[idx + len(PHASE_MARKER_PREFIX) :]
+    phase, _, candidate_token = rest.partition(" ")
+    if not token or candidate_token != token:
+        return None
+    return phase
 
 
 def resolve_ray_address(address: str | None = None) -> str:
@@ -73,6 +113,11 @@ class RayBackend(ExperimentBackend):
         # shell's own word splitting. `" ".join` did not: an argument with a
         # space arrived at the workload as two.
         args = shlex.join(manifest.workload.args)
+        # Minted once per run and never given to the workload: the workload
+        # shares the job's stdout, so a plain `IAX_PHASE=evaluate` marker is
+        # forgeable with one `print()`. The token lets the parser tell "the
+        # entrypoint said so" from "the workload said so" on the same stream.
+        phase_token = secrets.token_hex(16)
         # The handoff directory is created once, inside the job's working dir,
         # and both phases see the same absolute path.
         commands = ["mkdir -p iax_work", "export IAX_WORK_DIR=$PWD/iax_work"]
@@ -88,10 +133,24 @@ class RayBackend(ExperimentBackend):
             # trip through `get_job_logs`. The env prefix on the next line is
             # what the workload itself reads; the two are read by different
             # sides of the same rule.
-            commands.append(f"echo IAX_PHASE={phase}")
+            commands.append(f"echo {_phase_marker(phase, phase_token)}")
+            # A fresh `unset` ahead of every phase, not just the train one:
+            # `data_env` above only *adds* keys, so a value already sitting in
+            # the job's environment (`runtime_env["env_vars"]`, or whatever
+            # the cluster node itself exports) would otherwise reach a phase
+            # that never asked for it -- the same hole `worker.py` closes by
+            # scrubbing `DataSpec.ENV_KEYS` before applying `env_for`. This has
+            # to be its own `&&` link: `NAME=value cmd` prefix scoping only
+            # covers the one command it decorates, so it cannot remove
+            # anything from the shell that runs the phase command itself.
+            commands.append("unset " + " ".join(DataSpec.ENV_KEYS))
             commands.append(f"{prefix} {command} {args}".strip())
         # `&&` and not `;`: a training phase that failed must not be followed
-        # by an evaluation that would score whatever was left behind.
+        # by an evaluation that would score whatever was left behind. (Note
+        # for anyone tightening this further: `args` land after `command`'s
+        # raw text, so on Ray -- unlike the local backend's argv list -- a
+        # command containing a shell pipe or redirect puts them on the wrong
+        # side of it. Pre-existing, not addressed here.)
         entrypoint = " && ".join(commands)
 
         # Establish the real status *first*. `begin_tracking` below records the
@@ -115,6 +174,7 @@ class RayBackend(ExperimentBackend):
                 "timeout_seconds": manifest.monitoring.timeout_seconds,
                 "experiment": manifest.experiment,
                 "ray_address": self.address,
+                "ray_phase_token": phase_token,
             },
         )
 
@@ -242,28 +302,49 @@ class RayBackend(ExperimentBackend):
 
         Ray has no supervisor process in the loop, so the phase a given log
         line belongs to has to be reconstructed from the log text itself: the
-        entrypoint echoes an ``IAX_PHASE=<phase>`` marker line ahead of each
-        phase, and this walks the log in order, tracking the most recent
-        marker as it goes. A result seen while the current phase is "train"
-        is discarded with the same warning `worker.py` writes for the local
-        backend -- otherwise Ray would be the cheap way to route around the
-        rule this branch exists to enforce.
+        entrypoint echoes a token-bearing ``IAX_PHASE=<phase> <token>`` marker
+        ahead of each phase (`_phase_marker`), and this walks the log in
+        order, tracking the most recent *valid* marker as it goes -- one whose
+        token matches `ray_phase_token` on this run's status. Fail-closed: the
+        tracked phase starts at None, not "evaluate", and a result is scored
+        only while it is exactly "evaluate". Everything else -- no marker yet,
+        an unrecognised phase name, a forged marker with no or the wrong
+        token -- is discarded, matching the amendment's "discard every
+        IAX_RESULT seen outside evaluate" rather than only the ones seen
+        during a phase literally named "train".
+
+        What this guarantees and what it does not: the token stops a
+        workload from *scoring* a forged result by printing to the shared
+        stdout stream, which was the one-`print()` hole this fix closes. It
+        does not make the channel authenticated end-to-end -- the token is
+        itself part of the entrypoint string Ray hands to the job's shell, so
+        a workload willing to read its own parent process (`/proc/$PPID/cmdline`)
+        or call the Jobs API's `get_job_info().entrypoint` can still recover
+        it and forge a marker that passes this check. Closing that requires
+        running each phase as its own Ray job, so attribution comes from
+        *which job's log this is* rather than text inside one shared log;
+        that is out of scope here and tracked separately (la-tesis plan).
 
         Idempotent like `_sync_metrics_from_logs`, but counted differently: a
-        discarded (train-phase) result never reaches `store.read_results`, so
+        discarded result never reaches `store.read_results`, so
         `len(existing)` alone would under-count and the same line would be
         reprocessed -- and re-warned -- on every inspect. A status detail
         tracks how many IAX_RESULT lines (accepted or discarded) have already
-        been handled instead.
+        been handled instead. That counter is written *after* the appends
+        below, on purpose: a crash in between would re-process (and
+        re-append) already-handled lines on the next inspect, but moving the
+        write earlier would instead let a crash silently drop a result that
+        was already scored -- worse, for a number nobody re-derives by hand.
         """
         status = self.store.read_status(run_id)
         already_seen = int(status.details.get("ray_results_seen", 0))
-        phase = "evaluate"  # matches _Supervisor's own single-phase default
+        token = str(status.details.get("ray_phase_token", ""))
+        phase: str | None = None  # unattributed until a valid marker arrives
         seen = 0
         for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("IAX_PHASE="):
-                phase = stripped[len("IAX_PHASE=") :]
+            marker_phase = _parse_phase_marker(line, token)
+            if marker_phase is not None:
+                phase = marker_phase
                 continue
             result = parse_result_line(line)
             if result is None:
@@ -271,7 +352,13 @@ class RayBackend(ExperimentBackend):
             seen += 1
             if seen <= already_seen:
                 continue
-            if phase == "train":
+            if phase == "evaluate":
+                self.store.append_result(run_id, ResultRecord(values=result))
+                self.store.update_status(run_id, details={"result": result})
+            elif phase == "train":
+                # Byte-identical to worker.py's own message: an operator
+                # scanning events for this phrase should find it on either
+                # backend.
                 self.store.append_event(
                     run_id,
                     RunEvent(
@@ -281,8 +368,18 @@ class RayBackend(ExperimentBackend):
                     ),
                 )
             else:
-                self.store.append_result(run_id, ResultRecord(values=result))
-                self.store.update_status(run_id, details={"result": result})
+                # A different failure from the one above: nobody declared
+                # this from train, the harness simply never saw a valid
+                # marker for it (no marker yet, an unrecognised phase name,
+                # or a forged marker with a bad token).
+                self.store.append_event(
+                    run_id,
+                    RunEvent(
+                        level="warning",
+                        message="result reported outside a recognized phase; discarded",
+                        details={"values": result},
+                    ),
+                )
         if seen > already_seen:
             self.store.update_status(run_id, details={"ray_results_seen": seen})
 
