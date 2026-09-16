@@ -243,7 +243,13 @@ def _apply_changes(
     under the goal it already has.
     """
     changes = payload.get("suggested_changes")
+    if changes is None:
+        return
     if not isinstance(changes, dict):
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _malformed_change_event(changes),
+        )
         return
     refused = {
         key: value for key, value in changes.items() if key not in APPLICABLE_KEYS
@@ -268,14 +274,31 @@ def _apply_changes(
 
 
 def _refused_change_event(refused: dict[str, Any]) -> RunEvent:
+    keys = ", ".join(sorted(refused))
     return RunEvent(
         level="warning",
         message=(
-            "agent review asked to change "
-            f"{', '.join(sorted(refused))}; only {', '.join(APPLICABLE_KEYS)} "
-            "may be changed by a review, not the agent"
+            f"agent review asked to change {keys}; an accepted review may change "
+            f"only {', '.join(APPLICABLE_KEYS)} -- changing {keys} requires the user"
         ),
         details={"refused": refused},
+    )
+
+
+def _malformed_change_event(changes: object) -> RunEvent:
+    # `changes` came out of an agent's JSON payload, so a str/list/int/float/bool
+    # is already JSON-serializable as-is; anything else falls back to `repr()`
+    # so a value that is not can never break writing this event to the log.
+    safe_changes = (
+        changes if isinstance(changes, (str, int, float, bool, list)) else repr(changes)
+    )
+    return RunEvent(
+        level="warning",
+        message=(
+            "agent review's suggested_changes was not a mapping of section to "
+            "changes; keeping the current goal"
+        ),
+        details={"suggested_changes": safe_changes},
     )
 
 

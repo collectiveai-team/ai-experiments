@@ -21,10 +21,12 @@ from ai_experiments.schemas import (
     BudgetSpec,
     ExperimentManifest,
     GoalSpec,
+    LogUniformParam,
     MonitorPolicy,
     ObjectiveSpec,
     RunHandle,
     StrategySpec,
+    UniformParam,
     WorkloadSpec,
     utc_now,
 )
@@ -402,7 +404,10 @@ def test_the_agent_can_widen_the_search_space(tmp_path):
     )
 
     updated = orchestrator.campaign_store.read_goal(state.campaign_id)
-    assert "lr" in updated.search_space
+    assert updated.search_space == {
+        "x": UniformParam(type="uniform", low=-5.0, high=5.0),
+        "lr": LogUniformParam(type="loguniform", low=1e-5, high=1.0),
+    }, "the merge must keep the pre-existing parameter, not just add the new one"
 
 
 def test_the_agent_cannot_widen_its_own_budget(tmp_path):
@@ -438,3 +443,29 @@ def test_a_rejected_budget_change_is_recorded(tmp_path):
         "the refused budget change was never recorded in the campaign's events"
     )
     assert refusals[0].details["refused"] == payload["suggested_changes"]
+
+
+def test_a_malformed_suggested_changes_is_recorded(tmp_path):
+    """A review that returns `suggested_changes` as something other than a
+    mapping must not vanish -- it is malformed, not merely unhelpful."""
+    goal = _goal()
+    orchestrator, state = _started_campaign(tmp_path, goal)
+
+    _apply_changes(orchestrator, state, goal, {"suggested_changes": "widen everything"})
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    malformed = [event for event in events if "suggested_changes" in event.details]
+    assert malformed, "a malformed suggested_changes was never recorded"
+    assert malformed[0].details["suggested_changes"] == "widen everything"
+
+
+def test_an_absent_suggested_changes_records_nothing(tmp_path):
+    """A review that simply has nothing to suggest is the normal case, not
+    a malformed one -- it must stay silent rather than add log noise."""
+    goal = _goal()
+    orchestrator, state = _started_campaign(tmp_path, goal)
+    before = orchestrator.campaign_store.read_events(state.campaign_id)
+
+    _apply_changes(orchestrator, state, goal, {})
+
+    assert orchestrator.campaign_store.read_events(state.campaign_id) == before
