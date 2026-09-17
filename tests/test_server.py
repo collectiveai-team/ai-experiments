@@ -105,6 +105,29 @@ def test_run_detail_body_matches_the_stored_status(client, store):
     assert response.json() == store.read_status(run_id).model_dump(mode="json")
 
 
+def test_runs_listing_body_matches_the_stored_statuses(client, store):
+    run_id = _seed_run(store)
+
+    response = client.get("/api/runs")
+
+    assert response.status_code == 200
+    assert response.json() == [store.read_status(run_id).model_dump(mode="json")]
+
+
+def test_run_events_body_matches_the_stored_events(client, store):
+    from ai_experiments.schemas import RunEvent
+
+    run_id = _seed_run(store)
+    store.append_event(run_id, RunEvent(level="info", message="started"))
+
+    response = client.get(f"/api/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        e.model_dump(mode="json") for e in store.read_events(run_id, tail=200)
+    ]
+
+
 def test_run_diagnosis_body_matches_diagnose_run(client, store):
     from ai_experiments.monitoring.rules import diagnose_run
 
@@ -160,6 +183,22 @@ def test_artifacts_listing_and_download(client, store):
     download = client.get(f"/api/runs/{run_id}/artifacts/model.bin")
     assert download.status_code == 200
     assert download.content == b"weights"
+
+
+def test_run_artifacts_body_shape_is_stable(client, store):
+    run_id = _seed_run(store)
+    artifacts = store.artifacts_dir(run_id)
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "model.bin").write_bytes(b"weights")
+
+    response = client.get(f"/api/runs/{run_id}/artifacts")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert set(body[0]) == {"path", "size_bytes", "modified_at"}
+    assert body[0]["path"] == "model.bin"
+    assert body[0]["size_bytes"] == 7
 
 
 def test_artifact_path_traversal_blocked(client, store):
@@ -251,6 +290,78 @@ def test_leaderboard_ranks_campaigns(client, store):
     assert json.loads(json.dumps(rows[0]["best_params"])) == {"x": 0.1}
 
 
+def test_leaderboard_response_shape_is_stable(client, store):
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+        TrialRecord,
+        WorkloadSpec,
+    )
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec(
+        goal="campaign shape",
+        name="shape",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload=WorkloadSpec(entrypoint="python t.py"),
+        budget=BudgetSpec(max_trials=1, gpu_hour_rate=2.5),
+    )
+    state = campaign_store.create_campaign(goal)
+    state.trials.append(
+        TrialRecord(
+            trial_id="t000",
+            params={"x": 0.5},
+            status="completed",
+            objective_value=0.5,
+            gpu_hours=1.0,
+        )
+    )
+    state.best_trial_id = "t000"
+    state.status = "completed"
+    campaign_store.write_state(state)
+
+    rows = client.get("/api/leaderboard").json()
+
+    assert len(rows) == 1
+    assert set(rows[0]) == {
+        "campaign_id",
+        "name",
+        "status",
+        "metric",
+        "mode",
+        "best_value",
+        "best_params",
+        "best_run_id",
+        "trials",
+        "gpu_hours",
+        "estimated_cost",
+        "updated_at",
+    }
+    assert rows[0]["campaign_id"] == state.campaign_id
+    assert rows[0]["name"] == "shape"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["metric"] == "loss"
+    assert rows[0]["mode"] == "min"
+    assert rows[0]["best_value"] == 0.5
+    assert rows[0]["best_params"] == {"x": 0.5}
+    assert rows[0]["best_run_id"] is None
+    assert rows[0]["trials"] == 1
+    assert rows[0]["gpu_hours"] == 1.0
+    assert rows[0]["estimated_cost"] == 2.5
+
+
+def test_campaigns_listing_body_matches_the_stored_states(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.get("/api/campaigns")
+
+    assert response.status_code == 200
+    assert response.json() == [campaign_store.read_state(state.campaign_id).model_dump(mode="json")]
+
+
 def test_campaign_detail_response_shape_is_stable(client, store):
     from ai_experiments.schemas import TrialRecord
 
@@ -296,6 +407,19 @@ def test_campaign_detail_response_shape_is_stable(client, store):
     assert body["summary"]["history"] == [
         {"trial_id": "t000", "objective_value": 0.5, "params": {"x": 0.5}}
     ]
+    goal = campaign_store.read_goal(state.campaign_id)
+    assert set(body["summary"]["budget"]) == {"max_trials", "max_gpu_hours", "gpu_hour_rate"}
+    assert body["summary"]["budget"] == {
+        "max_trials": goal.budget.max_trials,
+        "max_gpu_hours": goal.budget.max_gpu_hours,
+        "gpu_hour_rate": goal.budget.gpu_hour_rate,
+    }
+    assert set(body["summary"]["objective"]) == {"metric", "mode", "target"}
+    assert body["summary"]["objective"] == {
+        "metric": goal.objective.metric,
+        "mode": goal.objective.mode,
+        "target": goal.objective.target,
+    }
 
 
 def test_campaign_stop_body_matches_persisted_state(client, store):

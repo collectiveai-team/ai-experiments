@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 
@@ -87,6 +88,27 @@ def test_repro_capture_outside_git_repo(tmp_path):
     assert context.git_sha is None
     assert context.python
     assert not (run_dir / "repro" / "diff.patch").exists()
+
+
+def test_read_repro_tolerates_an_unknown_key(tmp_path):
+    """A bundle from a newer `capture_repro` (extra field) must still load, not raise.
+
+    `read_repro` parses whatever version of the code wrote the bundle; forbidding unknown keys
+    would turn a future field addition into a crash for every older reader (CES-79 review M2).
+    """
+    run_dir = tmp_path / "run"
+    repro_dir = run_dir / "repro"
+    repro_dir.mkdir(parents=True)
+    repro_dir.joinpath("context.json").write_text(
+        json.dumps({"git_sha": "abc123", "git_dirty": False, "future_field": "unknown-here"})
+    )
+
+    context = read_repro(run_dir)
+
+    assert context is not None
+    assert context.git_sha == "abc123"
+    assert context.git_dirty is False
+    assert not hasattr(context, "future_field")
 
 
 def test_create_run_captures_repro_bundle(tmp_path):

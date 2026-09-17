@@ -103,6 +103,32 @@ def test_submit_status_and_diagnose_local_run(tmp_path):
     assert report["decision"]["decision"] == "training_complete"
 
 
+def test_repro_command_prints_the_expected_key_set(tmp_path):
+    """Pins `iax repro`'s output shape so a leaked/renamed field (CES-79 review H1) fails loudly."""
+    runs_dir = tmp_path / "runs"
+    submit = runner.invoke(
+        app,
+        ["submit", str(_manifest(tmp_path)), "--runs-dir", str(runs_dir), "--json"],
+    )
+    assert submit.exit_code == 0
+    handle = json.loads(submit.stdout)
+
+    result = runner.invoke(app, ["repro", handle["run_id"], "--runs-dir", str(runs_dir)])
+
+    assert result.exit_code == 0
+    body = json.loads(result.stdout)
+    assert set(body) == {
+        "captured_at",
+        "git_sha",
+        "git_branch",
+        "git_dirty",
+        "python",
+        "platform",
+        "working_dir",
+        "bundle_dir",
+    }
+
+
 def test_monitor_is_quiet_while_waiting(tmp_path):
     runs_dir = tmp_path / "runs"
     result = runner.invoke(
