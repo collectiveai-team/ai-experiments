@@ -26,7 +26,7 @@ MLFLOW_URI = "http://127.0.0.1:5000"
 
 def _reachable(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310  # localhost test fixture
             return resp.status == 200
     except (urllib.error.URLError, OSError):
         return False
@@ -69,7 +69,7 @@ def mlflow_api(mlflow_uri: str):
         url = f"{mlflow_uri}/api/2.0/mlflow/{path}"
         if params:
             url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310  # localhost test fixture
             return json.loads(resp.read())
 
     return _get

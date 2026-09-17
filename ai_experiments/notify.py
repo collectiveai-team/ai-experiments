@@ -28,6 +28,7 @@ from ai_experiments.schemas import utc_now
 
 WEBHOOK_TIMEOUT = 10
 COMMAND_TIMEOUT = 30
+_ALLOWED_WEBHOOK_SCHEMES = ("http://", "https://")
 
 
 class Notifier:
@@ -39,6 +40,10 @@ class Notifier:
     ) -> None:
         self.runs_root = Path(runs_root)
         self.webhook_url = webhook_url or os.environ.get("IAX_NOTIFY_WEBHOOK")
+        if self.webhook_url and not self.webhook_url.startswith(_ALLOWED_WEBHOOK_SCHEMES):
+            raise ValueError(
+                f"unsupported webhook scheme: {self.webhook_url!r} (must be http:// or https://)"
+            )
         self.command = command or os.environ.get("IAX_NOTIFY_COMMAND")
 
     def send(self, title: str, message: str, **details: Any) -> dict[str, Any]:
@@ -66,13 +71,13 @@ class Notifier:
 
     def _post_webhook(self, payload: dict[str, Any]) -> None:
         assert self.webhook_url is not None  # noqa: S101  # type narrowing, not a runtime check
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310  # scheme validated above
             self.webhook_url,
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
         try:
-            urllib.request.urlopen(request, timeout=WEBHOOK_TIMEOUT)  # noqa: S310
+            urllib.request.urlopen(request, timeout=WEBHOOK_TIMEOUT)  # noqa: S310  # scheme validated above
         except (urllib.error.URLError, OSError):
             pass
 
