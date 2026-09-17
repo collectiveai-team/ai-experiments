@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 import shlex
 import signal
@@ -8,6 +7,8 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import typer
 
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.report import parse_metric_line
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     from types import FrameType
 
 HEARTBEAT_SECONDS = 15
+
+app = typer.Typer(add_completion=False)
 
 
 class _Supervisor:
@@ -137,15 +140,15 @@ class _Supervisor:
             )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--runs-dir", required=True)
-    args = parser.parse_args()
-
-    store = FilesystemRunStore(args.runs_dir)
-    _Supervisor(store, args.run_id).run()
+@app.command()
+def main(
+    run_id: str = typer.Option(..., "--run-id", help="Run id to supervise."),
+    runs_dir: Path = typer.Option(..., "--runs-dir", help="Run store root."),
+) -> None:
+    """Supervise one run: spawn its workload and stream metrics into the store."""
+    store = FilesystemRunStore(runs_dir)
+    _Supervisor(store, run_id).run()
 
 
 if __name__ == "__main__":
-    main()
+    app()

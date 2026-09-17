@@ -7,7 +7,7 @@ Ray cluster — the harness extracts metrics from stdout either way.
 
 from __future__ import annotations
 
-import argparse
+import argparse  # ast-grep-ignore: cli-typed-framework  # standalone example: stays dependency-free
 import json
 import os
 import random
