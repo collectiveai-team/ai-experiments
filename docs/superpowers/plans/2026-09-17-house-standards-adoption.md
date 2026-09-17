@@ -246,7 +246,7 @@ semantic effect; claiming it for this commit would understate what the commit co
 
 ### Task 5: Remaining ruff findings by category
 
-Roughly 120 findings, each needing a decision. Work category by category, committing per category so a bad call is revertible on its own.
+95 findings remain after Task 4 (it over-delivered by applying reviewed unsafe fixes), each needing a decision. Work category by category, committing per category so a bad call is revertible on its own.
 
 **Files:**
 - Modify: `ai_experiments/**`, `tests/**`, `examples/toy_train.py`
@@ -313,13 +313,14 @@ These are the planner's search sampling — legitimate. Add a scoped ignore rath
 - [ ] **Step 6: The tail (SIM105, SIM102, SIM117, RET504, PERF401, PERF203, C901, PT011, PT018, B905, S110, S112, S310, D401, PLW0108, RUF059, INP001)**
 
 Roughly 30 findings, each a one-to-three-line local edit. Two carry judgment:
-- `C901` (4 hits) overlaps Task 11 — leave them, Task 11 removes them.
+- `C901` (4 hits) overlaps **Task 12** — leave them. All four (`cli.py:391 run_goal`, `monitoring/rules.py:92 _suspicious_reasons`, `report.py:54 parse_metric_line`, `server/app.py:27 create_app`) are on Task 12's complexipy decomposition list, and Task 12 is where `ruff-check` stops being skipped.
+- `TC003` (10 hits) was deferred here from Task 4, which skipped the rule whole rather than cherry-pick: 9 of the 10 moves are safe, but `ai_experiments/cli.py`'s would move `Path` into a `TYPE_CHECKING` block, and Typer resolves parameter annotations at runtime to build the CLI. Apply the 9; on the `cli.py` one use `# noqa: TC003  # Typer resolves this annotation at runtime`.
 - `S110`/`S112` (try-except-pass/continue, 4 hits) hide failures. Either log at debug via the Task 7 logger, or add a justification comment. Do not delete the handler.
 
 - [ ] **Step 7: Verify and commit**
 
 ```bash
-uvx ruff@0.15.22 check          # expect: All checks passed! (C901 may remain until Task 11)
+uvx ruff@0.15.22 check          # expect: exactly the 4 C901 findings, nothing else (Task 12 removes those)
 .venv/bin/python -m pytest tests -q 2>&1 | tail -1
 git add -u && git commit -m "fix: resolve remaining ruff findings"
 ```
