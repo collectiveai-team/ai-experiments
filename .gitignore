@@ -20,3 +20,11 @@ manual_test/
 team.json
 *.pyc
 *.pyo
+.env
+!.env.schema
+.tmp/
+.scratch/
+.worktrees/
+.journals/
+.agents/skills/
+.superpowers/
