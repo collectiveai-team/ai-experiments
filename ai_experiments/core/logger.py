@@ -61,7 +61,7 @@ def _configure() -> None:
         else structlog.dev.ConsoleRenderer(colors=True)
     )
 
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=_level(), force=True)
+    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=_level())
     structlog.configure(
         processors=[*shared, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(_level()),
