@@ -140,13 +140,34 @@ class _Supervisor:
             )
 
 
+def _require_nonempty_runs_dir(value: str) -> str:
+    """Reject an empty ``--runs-dir`` instead of silently redefining it.
+
+    ``argparse`` delivered ``""`` as a falsy ``str``, so ``FilesystemRunStore("")``
+    fell back to its default runs directory. A ``Path``-typed option instead
+    turns ``""`` into ``Path(".")``, which is truthy and points at the
+    process's cwd -- a different, equally silent behavior. Neither is
+    defensible, so an empty value is now a loud usage error. The sole caller
+    (`backends/local.py`) always passes ``str(self.store.root)``, never
+    empty, so this cannot affect it.
+    """
+    if not value.strip():
+        raise typer.BadParameter("must not be empty")
+    return value
+
+
 @app.command()
 def main(
     run_id: str = typer.Option(..., "--run-id", help="Run id to supervise."),
-    runs_dir: Path = typer.Option(..., "--runs-dir", help="Run store root."),
+    runs_dir: str = typer.Option(
+        ...,
+        "--runs-dir",
+        help="Run store root.",
+        callback=_require_nonempty_runs_dir,
+    ),
 ) -> None:
     """Supervise one run: spawn its workload and stream metrics into the store."""
-    store = FilesystemRunStore(runs_dir)
+    store = FilesystemRunStore(Path(runs_dir))
     _Supervisor(store, run_id).run()
 
 

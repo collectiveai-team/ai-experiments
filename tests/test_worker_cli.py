@@ -79,15 +79,27 @@ def test_worker_cli_accepts_the_backend_argv_and_completes_the_run(tmp_path):
 
 
 def test_worker_cli_rejects_an_unknown_flag(tmp_path):
-    """A bad flag must fail loudly (non-zero exit), not be silently ignored."""
+    """A bad flag must fail as a parser error, not as some unrelated runtime failure.
+
+    The run is set up for real via `_submit` first, so the accepted-flag path
+    would genuinely succeed; the only thing that can make this invocation fail
+    is the unrecognized option. Without a real run backing `--run-id`, a
+    parser that silently ignored `--bogus-flag` would still exit non-zero (a
+    `FileNotFoundError` reading the nonexistent manifest.yaml) and this test
+    would pass for the wrong reason.
+    """
+    workload = tmp_path / "workload.py"
+    workload.write_text("print('should never run')\n")
+    store, run_id = _submit(tmp_path, f"{sys.executable} {workload}")
+
     argv = [
         sys.executable,
         "-m",
         "ai_experiments.worker",
         "--run-id",
-        "does-not-matter",
+        run_id,
         "--runs-dir",
-        str(tmp_path),
+        str(store.root),
         "--bogus-flag",
         "x",
     ]
@@ -100,4 +112,36 @@ def test_worker_cli_rejects_an_unknown_flag(tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "No such option: --bogus-flag" in result.stderr
+
+
+def test_worker_cli_rejects_an_empty_runs_dir(tmp_path):
+    """An empty `--runs-dir` must fail loudly, not silently redefine where runs live.
+
+    `argparse` delivered `""` as a falsy `str`, so `FilesystemRunStore("")` fell
+    back to its default runs directory. A bare `Path`-typed Typer option turns
+    `""` into `Path(".")` instead, which is truthy and points at the process's
+    cwd -- a different, equally silent behavior. Neither is acceptable, so this
+    pins the loud rejection instead.
+    """
+    argv = [
+        sys.executable,
+        "-m",
+        "ai_experiments.worker",
+        "--run-id",
+        "does-not-matter",
+        "--runs-dir",
+        "",
+    ]
+    result = subprocess.run(  # noqa: S603  # fixed argv, our own worker module
+        argv,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--runs-dir" in result.stderr
