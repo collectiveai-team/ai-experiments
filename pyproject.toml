@@ -123,6 +123,7 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "INP001"]
+"examples/**" = ["INP001"]   # standalone scripts, deliberately not a package
 
 # Typer/FastAPI declare parameters via call-valued defaults; that is the framework's
 # idiom, not a mutable-default bug (B008).
