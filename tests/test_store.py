@@ -178,8 +178,8 @@ def test_a_failed_write_leaves_the_previous_status_intact(tmp_path):
     before = store.status_path(run_id).read_text()
 
     with (
-        patch("ai_experiments.store.filesystem.os.replace", side_effect=OSError("no")),
-        pytest.raises(OSError, match="no"),
+        patch("ai_experiments.store.filesystem.Path.replace", side_effect=OSError("no")),
+        pytest.raises(OSError, match=r"^no$"),
     ):
         store.update_status(run_id, status="running")
 

@@ -32,6 +32,18 @@ def test_command_sink_receives_payload(tmp_path):
     assert received["run_id"] == "run_x"
 
 
+def test_disallowed_webhook_scheme_is_skipped_not_raised(tmp_path):
+    notifier = Notifier(tmp_path / "runs", webhook_url="file:///etc/passwd")
+
+    payload = notifier.send("t", "m")
+
+    assert payload["title"] == "t"
+    logged = read_notifications(tmp_path / "runs")
+    assert len(logged) == 2
+    assert "notify_sink_error" in logged[-1]
+    assert "file:///etc/passwd" in logged[-1]["notify_sink_error"]
+
+
 def test_failing_sinks_never_raise(tmp_path):
     notifier = Notifier(
         tmp_path / "runs",

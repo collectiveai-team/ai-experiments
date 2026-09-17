@@ -135,9 +135,10 @@ class MlflowTracker:
                     self.client.log_metric(
                         mlflow_run_id, name, value, timestamp=timestamp, step=step
                     )
-                # Non-finite values may be rejected by some stores; log this at debug
-                # level once the house logger exists.
-                except self._mlflow.exceptions.MlflowException:  # noqa: PERF203  # per-item isolation is the point: one bad run must not abort the scan
+                # Stores differ in what they raise for a rejected (e.g. non-finite) value; one
+                # bad value must not cost the artifact upload and set_terminated below. Log at
+                # debug once the house logger exists.
+                except Exception:  # noqa: S112,PERF203  # unknown rejection; per-value isolation
                     continue
 
         artifacts = store.artifacts_dir(run_id)

@@ -40,10 +40,6 @@ class Notifier:
     ) -> None:
         self.runs_root = Path(runs_root)
         self.webhook_url = webhook_url or os.environ.get("IAX_NOTIFY_WEBHOOK")
-        if self.webhook_url and not self.webhook_url.startswith(_ALLOWED_WEBHOOK_SCHEMES):
-            raise ValueError(
-                f"unsupported webhook scheme: {self.webhook_url!r} (must be http:// or https://)"
-            )
         self.command = command or os.environ.get("IAX_NOTIFY_COMMAND")
 
     def send(self, title: str, message: str, **details: Any) -> dict[str, Any]:
@@ -71,7 +67,17 @@ class Notifier:
 
     def _post_webhook(self, payload: dict[str, Any]) -> None:
         assert self.webhook_url is not None  # noqa: S101  # type narrowing, not a runtime check
-        request = urllib.request.Request(  # noqa: S310  # scheme validated above
+        if not self.webhook_url.startswith(_ALLOWED_WEBHOOK_SCHEMES):
+            # A misconfigured scheme (e.g. file://) must not raise -- this sink is best-effort --
+            # but it also must not vanish silently, so record why it was skipped.
+            self._log(
+                {
+                    **payload,
+                    "notify_sink_error": f"webhook scheme not allowed: {self.webhook_url!r}",
+                }
+            )
+            return
+        request = urllib.request.Request(  # noqa: S310  # scheme allowlisted immediately above
             self.webhook_url,
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
@@ -79,7 +85,7 @@ class Notifier:
         # Best-effort sink: a failing webhook must never break the daemon. Log this at
         # debug level once the house logger exists.
         with contextlib.suppress(urllib.error.URLError, OSError):
-            urllib.request.urlopen(  # noqa: S310  # scheme validated above
+            urllib.request.urlopen(  # noqa: S310  # scheme allowlisted immediately above
                 request, timeout=WEBHOOK_TIMEOUT
             )
 
