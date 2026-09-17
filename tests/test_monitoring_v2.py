@@ -27,16 +27,15 @@ def _make_run(
         monitoring=monitoring or MonitorPolicy(),
     )
     run_id, run_dir = store.create_run(manifest)
-    base = {
-        "run_id": run_id,
-        "backend": "local",
-        "status": "running",
-        "status_uri": str(store.status_path(run_id)),
-        "run_dir": str(run_dir),
-        "details": {"heartbeat_at": utc_now().isoformat()},
-    }
-    base.update(status_overrides)
-    store.write_status(RunStatus(**base))
+    status = RunStatus(
+        run_id=run_id,
+        backend="local",
+        status="running",
+        status_uri=str(store.status_path(run_id)),
+        run_dir=str(run_dir),
+        details={"heartbeat_at": utc_now().isoformat()},
+    )
+    store.write_status(status.model_copy(update=status_overrides))
     return store, run_id
 
 

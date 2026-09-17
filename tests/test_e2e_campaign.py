@@ -84,4 +84,5 @@ def test_local_campaign_end_to_end(tmp_path):
 
     assert state.best_trial_id is not None
     best = next(t for t in state.trials if t.trial_id == state.best_trial_id)
-    assert best.objective_value == min(t.objective_value for t in completed)
+    completed_values = [t.objective_value for t in completed if t.objective_value is not None]
+    assert best.objective_value == min(completed_values)

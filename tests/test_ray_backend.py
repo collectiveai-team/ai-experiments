@@ -6,7 +6,7 @@ import pytest
 
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import ExperimentManifest, TrackingSpec, WorkloadSpec
+from ai_experiments.schemas import BackendName, ExperimentManifest, TrackingSpec, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -157,7 +157,7 @@ def test_ray_backend_resolves_address_precedence(
 # trusting the order of calls inside submit.
 
 
-def _tracked_manifest(tmp_path, backend: str) -> ExperimentManifest:
+def _tracked_manifest(tmp_path, backend: BackendName) -> ExperimentManifest:
     return ExperimentManifest(
         experiment="mlflow-linkage",
         backend=backend,

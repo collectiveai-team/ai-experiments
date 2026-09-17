@@ -83,8 +83,8 @@ class FakeMlflowModule:
         return "file:///fake-mlruns"
 
 
-def _manifest(**overrides):
-    data = {
+def _manifest(**overrides: object) -> ExperimentManifest:
+    data: dict[str, object] = {
         "experiment": "camp/t000",
         "backend": "local",
         "workload": WorkloadSpec(entrypoint="python train.py"),
@@ -92,7 +92,7 @@ def _manifest(**overrides):
         "metadata": {"campaign": "camp", "trial_id": "t000", "params": {"lr": 0.01}},
     }
     data.update(overrides)
-    return ExperimentManifest(**data)
+    return ExperimentManifest.model_validate(data)
 
 
 def _seeded_run(tmp_path, manifest):
@@ -118,11 +118,13 @@ def test_start_run_logs_params_and_tags(tmp_path):
 
     mlflow_run_id = tracker.start_run(store, run_id, manifest)
 
-    run = fake.last_client.runs[mlflow_run_id]
+    client = fake.last_client
+    assert client is not None, "start_run must have created a client"
+    run = client.runs[mlflow_run_id]
     assert run["tags"]["iax.run_id"] == run_id
     assert run["tags"]["iax.campaign"] == "camp"
     assert run["params"]["lr"] == 0.01
-    assert fake.last_client.experiments == {"camp": "exp_0"}
+    assert client.experiments == {"camp": "exp_0"}
 
 
 def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
@@ -209,6 +211,7 @@ def test_finalize_mirrors_metrics_artifacts_and_status(tmp_path):
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
         begin_tracking(store, run_id, manifest)
     client = fake.last_client
+    assert client is not None, "begin_tracking must have created a client"
 
     store.append_metric(run_id, MetricPoint(step=1, values={"loss": 0.5}))
     store.append_metric(run_id, MetricPoint(step=2, values={"loss": 0.2}))

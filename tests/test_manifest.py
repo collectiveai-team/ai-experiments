@@ -8,13 +8,13 @@ from ai_experiments.store import FilesystemRunStore
 
 
 def _manifest(**overrides: object) -> ExperimentManifest:
-    data = {
+    data: dict[str, object] = {
         "experiment": "smoke",
         "backend": "ray",
         "workload": WorkloadSpec(entrypoint="python train.py"),
     }
     data.update(overrides)
-    return ExperimentManifest(**data)
+    return ExperimentManifest.model_validate(data)
 
 
 def test_backend_address_round_trips_yaml(tmp_path):
