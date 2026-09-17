@@ -87,7 +87,10 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> CampaignSummary:
             max_gpu_hours=goal.budget.max_gpu_hours,
             gpu_hour_rate=goal.budget.gpu_hour_rate,
         ),
-        objective=goal.objective,
+        # copy, don't alias: `budget` above is a fresh BudgetSummary, and a summary that
+        # shared the goal's ObjectiveSpec instance would let a mutation of either reach the
+        # other. pydantic v2 stores the instance as-is, so the copy has to be explicit.
+        objective=goal.objective.model_copy(),
         rounds=state.rounds,
         trials_by_status=by_status,
         trials_total=len(state.trials),

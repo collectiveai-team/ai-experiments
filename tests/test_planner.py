@@ -147,6 +147,9 @@ def test_summarize_campaign_projects_budget_objective_and_best_trial():
     assert summary.budget.max_gpu_hours == goal.budget.max_gpu_hours
     assert summary.budget.gpu_hour_rate == goal.budget.gpu_hour_rate
     assert summary.objective == goal.objective
+    # a copy, not the goal's own instance: equality alone would hold even if the summary
+    # aliased it, which is what made this assertion near-tautological before.
+    assert summary.objective is not goal.objective
     assert summary.best is not None
     assert summary.best.trial_id == "t000"
     assert summary.best.run_id == "run_1"
