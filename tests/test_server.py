@@ -13,12 +13,12 @@ from ai_experiments.server.app import create_app
 from ai_experiments.store import FilesystemRunStore
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(tmp_path) -> FilesystemRunStore:
     return FilesystemRunStore(tmp_path / "runs", capture_repro=False)
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(store) -> TestClient:
     return TestClient(create_app(store))
 

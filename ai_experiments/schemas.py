@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -254,7 +254,7 @@ class IntParam(BaseModel):
 
 
 ParamSpec = Annotated[
-    Union[ChoiceParam, UniformParam, LogUniformParam, IntParam],
+    ChoiceParam | UniformParam | LogUniformParam | IntParam,
     Field(discriminator="type"),
 ]
 

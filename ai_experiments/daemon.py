@@ -23,7 +23,7 @@ import json
 import signal
 import time
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -36,9 +36,11 @@ from ai_experiments.monitoring.escalation import (
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
-from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 NOTIFY_ACTIONS = {
     "auto_killed",

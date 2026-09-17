@@ -60,7 +60,8 @@ def test_random_planning_avoids_duplicates_and_respects_count():
     second = plan_next_params(goal, trials, 3)
 
     keys = {params_key(p) for p in first} | {params_key(p) for p in second}
-    assert len(first) == 3 and len(second) == 3
+    assert len(first) == 3
+    assert len(second) == 3
     assert len(keys) == 6
 
 

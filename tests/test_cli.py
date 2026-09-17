@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 
 from ai_experiments.cli import app
 
-
 runner = CliRunner()
 
 

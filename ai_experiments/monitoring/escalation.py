@@ -18,12 +18,14 @@ import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, utc_now
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 EscalationAction = Literal["none", "invoke_agent", "budget_exhausted", "cooling_down"]
 

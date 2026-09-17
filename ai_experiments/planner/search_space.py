@@ -37,7 +37,7 @@ def grid_points(space: dict[str, ParamSpec], resolution: int = 4) -> list[dict[s
     """Expand the space into a full grid (continuous params get `resolution` steps)."""
     names = sorted(space)
     axes = [_grid_axis(space[name], resolution) for name in names]
-    return [dict(zip(names, combo)) for combo in itertools.product(*axes)]
+    return [dict(zip(names, combo, strict=False)) for combo in itertools.product(*axes)]
 
 
 def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:

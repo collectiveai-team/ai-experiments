@@ -42,7 +42,8 @@ def test_grid_covers_product():
     assert len(points) == 3 * 3 * 3 * 2
     assert len({params_key(p) for p in points}) == len(points)
     lrs = sorted({p["lr"] for p in points})
-    assert lrs[0] == pytest.approx(1e-5) and lrs[-1] == pytest.approx(1e-1)
+    assert lrs[0] == pytest.approx(1e-5)
+    assert lrs[-1] == pytest.approx(1e-1)
 
 
 def test_perturb_stays_in_bounds_and_near_base():

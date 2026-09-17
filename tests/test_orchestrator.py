@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
@@ -96,7 +96,7 @@ def _orchestrator(tmp_path) -> tuple[CampaignOrchestrator, FakeBackend]:
 
 
 def test_campaign_runs_to_budget_exhaustion(tmp_path):
-    orchestrator, backend = _orchestrator(tmp_path)
+    orchestrator, _backend = _orchestrator(tmp_path)
     state = orchestrator.start(_goal())
 
     for _ in range(20):
@@ -157,7 +157,7 @@ def test_stop_cancels_active_trials(tmp_path):
     store = FilesystemRunStore(tmp_path / "runs")
     backend = FakeBackend(store)
     # Backend that never completes: inspect leaves runs in 'submitted'.
-    backend.inspect = lambda run_id: store.read_status(run_id)  # type: ignore[method-assign]
+    backend.inspect = store.read_status  # type: ignore[method-assign]
     orchestrator = CampaignOrchestrator(
         store, CampaignStore(store.root), backend_factory=lambda goal: backend
     )
@@ -229,7 +229,8 @@ def test_gpu_hours_recorded_and_budget_stops_campaign(tmp_path):
         if state.status == "completed":
             break
     finished = [t for t in state.trials if t.status == "completed"]
-    assert finished and all(t.gpu_hours is not None and t.gpu_hours >= 0 for t in finished)
+    assert finished
+    assert all(t.gpu_hours is not None and t.gpu_hours >= 0 for t in finished)
 
     # A zero GPU-hour budget halts a fresh campaign on its first step.
     capped = _goal(

@@ -14,6 +14,7 @@ Three sinks, all best-effort (a failing sink never breaks the daemon):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -77,7 +78,7 @@ class Notifier:
 
     def _run_command(self, payload: dict[str, Any]) -> None:
         assert self.command is not None
-        try:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(
                 shlex.split(self.command),
                 input=json.dumps(payload),
@@ -85,8 +86,6 @@ class Notifier:
                 capture_output=True,
                 timeout=COMMAND_TIMEOUT,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
 
 
 def read_notifications(runs_root: str | Path, tail: int | None = None) -> list[dict[str, Any]]:

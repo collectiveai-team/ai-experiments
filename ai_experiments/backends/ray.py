@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
@@ -18,7 +19,6 @@ from ai_experiments.schemas import (
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
-
 
 DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
 

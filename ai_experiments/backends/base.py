@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from ai_experiments.schemas import (
-    DiagnosisReport,
-    ExperimentManifest,
-    RunEvent,
-    RunHandle,
-    RunStatus,
-)
+if TYPE_CHECKING:
+    from ai_experiments.schemas import (
+        DiagnosisReport,
+        ExperimentManifest,
+        RunEvent,
+        RunHandle,
+        RunStatus,
+    )
 
 
 class ExperimentBackend(ABC):

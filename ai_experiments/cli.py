@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from pydantic import BaseModel
@@ -60,7 +59,7 @@ def validate(
 @app.command()
 def submit(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     try:
@@ -85,7 +84,7 @@ def submit(
 @app.command()
 def status(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -102,7 +101,7 @@ def status(
 def logs(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(200, "--tail", help="Number of recent events"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -117,7 +116,7 @@ def logs(
 @app.command()
 def diagnose(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -133,7 +132,7 @@ def diagnose(
 @app.command()
 def monitor(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
     quiet_when_waiting: bool = typer.Option(
         False,
@@ -159,7 +158,7 @@ def monitor(
 @app.command()
 def cancel(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
     _backend_for_run(run_id, store).cancel(run_id)
@@ -168,7 +167,7 @@ def cancel(
 
 @app.command()
 def runs(
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """List all runs in the run store."""
@@ -186,7 +185,7 @@ def runs(
 def metrics(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(50, "--tail", help="Number of recent points"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Show metrics reported by a run's workload."""
@@ -202,7 +201,7 @@ def metrics(
 
 @app.command()
 def escalations(
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """List pending escalations awaiting agent diagnosis (always JSON)."""
     from ai_experiments.monitoring.escalation import list_escalations
@@ -214,7 +213,7 @@ def escalations(
 @app.command()
 def artifacts(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """List files a run's workload wrote to $IAX_ARTIFACTS_DIR."""
@@ -234,7 +233,7 @@ def artifacts(
 @app.command()
 def repro(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Show the reproducibility bundle captured at submit time (always JSON)."""
     from ai_experiments.repro import read_repro
@@ -251,7 +250,7 @@ def repro(
 @app.command()
 def rerun(
     run_id: str = typer.Argument(..., help="Run to repeat exactly"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Resubmit a run's persisted manifest (params are baked in), warning when
@@ -293,7 +292,7 @@ def rerun(
 
 @app.command()
 def leaderboard(
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Campaigns ranked by their best objective value."""
@@ -344,13 +343,13 @@ def leaderboard(
 def daemon(
     interval: int = typer.Option(30, "--interval", help="Seconds between ticks"),
     once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
-    notify_webhook: Optional[str] = typer.Option(
+    notify_webhook: str | None = typer.Option(
         None, "--notify-webhook", help="Webhook URL (Slack-compatible) for alerts"
     ),
-    notify_command: Optional[str] = typer.Option(
+    notify_command: str | None = typer.Option(
         None, "--notify-command", help="Command run with the alert JSON on stdin"
     ),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Monitor daemon: check runs, kill/escalate stuck ones, advance campaigns."""
     from ai_experiments.daemon import MonitorDaemon
@@ -370,7 +369,7 @@ def daemon(
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8585, "--port"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Web dashboard + REST API over the run and campaign stores."""
     try:
@@ -397,7 +396,7 @@ def run_goal(
         True, "--serve/--no-serve", help="Also serve the web dashboard"
     ),
     open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Everything in one command: start the campaign, serve the dashboard,
     and drive the monitor/experiment loop until the campaign finishes."""
@@ -482,7 +481,7 @@ def _start_dashboard_thread(store: FilesystemRunStore, port: int) -> str | None:
 # --- campaign commands -------------------------------------------------------
 
 
-def _orchestrator(runs_dir: Optional[Path]):
+def _orchestrator(runs_dir: Path | None):
     from ai_experiments.orchestrator import CampaignOrchestrator
 
     store = FilesystemRunStore(runs_dir)
@@ -512,7 +511,7 @@ def campaign_validate(
 @campaign_app.command("start")
 def campaign_start(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create a campaign from a goal and submit the first batch of trials.
@@ -535,7 +534,7 @@ def campaign_start(
 
 @campaign_app.command("list")
 def campaign_list(
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     from ai_experiments.store.campaign import CampaignStore
@@ -555,7 +554,7 @@ def campaign_list(
 @campaign_app.command("status")
 def campaign_status(
     campaign_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     from ai_experiments.planner.analysis import summarize_campaign
@@ -596,7 +595,7 @@ def campaign_status(
 @campaign_app.command("advance")
 def campaign_advance(
     campaign_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Run one orchestrator step now (what the daemon does every tick)."""
@@ -610,7 +609,7 @@ def campaign_advance(
 @campaign_app.command("stop")
 def campaign_stop(
     campaign_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
 ) -> None:
     state = _orchestrator(runs_dir).stop(campaign_id)
     typer.echo(f"Stopped {state.campaign_id}")
@@ -619,7 +618,7 @@ def campaign_stop(
 @campaign_app.command("pause")
 def campaign_pause(
     campaign_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
 ) -> None:
     """Stop scheduling new trials (active ones keep running). Resume later."""
     try:
@@ -636,7 +635,7 @@ def campaign_pause(
 @campaign_app.command("resume")
 def campaign_resume(
     campaign_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
 ) -> None:
     try:
         state = _orchestrator(runs_dir).resume(campaign_id)
@@ -650,7 +649,7 @@ def campaign_resume(
 def campaign_edit(
     campaign_id: str = typer.Argument(...),
     goal_file: Path = typer.Argument(..., help="New goal YAML to apply"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
 ) -> None:
     """Replace the campaign's goal mid-flight (search space, budget, strategy).
 
@@ -677,7 +676,7 @@ def campaign_suggest(
         ..., "--params", help="Trial params as JSON, e.g. '{\"lr\": 0.001}'"
     ),
     note: str = typer.Option("", "--note", help="Why this trial is worth running"),
-    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
+    runs_dir: Path | None = typer.Option(None, "--runs-dir"),
 ) -> None:
     """Queue an agent/human-suggested trial for the next planning round."""
     try:
@@ -696,7 +695,7 @@ def campaign_suggest(
 
 @cluster_app.command("list")
 def cluster_list(
-    config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
+    config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
     from ai_experiments.clusters import load_clusters
 
@@ -711,7 +710,7 @@ def cluster_list(
 @cluster_app.command("status")
 def cluster_status_cmd(
     name: str = typer.Argument(...),
-    config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
+    config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
     from ai_experiments.clusters import cluster_status, get_cluster
 
@@ -721,7 +720,7 @@ def cluster_status_cmd(
 @cluster_app.command("up")
 def cluster_up_cmd(
     name: str = typer.Argument(...),
-    config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
+    config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
     """Provision a cloud cluster via Ray's cluster launcher (`ray up`)."""
     from ai_experiments.clusters import cluster_up, get_cluster
@@ -736,7 +735,7 @@ def cluster_up_cmd(
 @cluster_app.command("down")
 def cluster_down_cmd(
     name: str = typer.Argument(...),
-    config: Optional[Path] = typer.Option(None, "--config", help="clusters.yaml path"),
+    config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
     """Tear down a cloud cluster via `ray down`."""
     from ai_experiments.clusters import cluster_down, get_cluster

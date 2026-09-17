@@ -22,11 +22,13 @@ daemon tick.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_experiments.repro import read_repro
 from ai_experiments.schemas import ExperimentManifest, RunEvent, RunStatus
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 _TERMINAL_MLFLOW_STATUS = {
     "completed": "FINISHED",
@@ -186,12 +188,11 @@ def begin_tracking(
             "mlflow_tracking_uri": tracker.tracking_uri,
         },
     )
-    env = {
+    return {
         "MLFLOW_RUN_ID": mlflow_run_id,
         "MLFLOW_TRACKING_URI": str(tracker.tracking_uri),
         **tracker.extra_env,
     }
-    return env
 
 
 def finalize_tracking(store: FilesystemRunStore, status: RunStatus) -> bool:

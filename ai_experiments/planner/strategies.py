@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ai_experiments.planner.search_space import grid_points, params_key, perturb, sample
-from ai_experiments.schemas import GoalSpec, TrialRecord
+
+if TYPE_CHECKING:
+    from ai_experiments.schemas import GoalSpec, TrialRecord
 
 MAX_SAMPLE_ATTEMPTS = 50
 

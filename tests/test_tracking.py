@@ -72,7 +72,7 @@ class FakeMlflowModule:
     def __init__(self):
         self.last_client = None
 
-    def MlflowClient(self, tracking_uri=None):  # noqa: N802 - mlflow API shape
+    def MlflowClient(self, tracking_uri=None):
         if self.last_client is None:
             self.last_client = FakeMlflowClient(tracking_uri)
         return self.last_client

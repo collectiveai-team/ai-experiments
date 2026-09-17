@@ -9,9 +9,11 @@ launch the first batch.
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
@@ -30,8 +32,10 @@ from ai_experiments.schemas import (
     TrialState,
     utc_now,
 )
-from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
 
@@ -350,10 +354,8 @@ class CampaignOrchestrator:
     def _cancel_active(self, state: CampaignState, backend: ExperimentBackend) -> None:
         for trial in state.trials:
             if trial.status in ACTIVE_TRIAL_STATES and trial.run_id:
-                try:
+                with contextlib.suppress(Exception):
                     backend.cancel(trial.run_id)
-                except Exception:
-                    pass
                 trial.status = "cancelled"
                 trial.completed_at = utc_now()
             elif trial.status == "planned":

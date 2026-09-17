@@ -7,8 +7,8 @@ orchestrator plans, submits, collects, and stops on budget exhaustion.
 from __future__ import annotations
 
 import sys
-import time
 import textwrap
+import time
 
 import pytest
 

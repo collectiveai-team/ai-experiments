@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
-from ai_experiments.store import FilesystemRunStore
+if TYPE_CHECKING:
+    from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
+    from ai_experiments.store import FilesystemRunStore
 
 
 def extract_objective(
