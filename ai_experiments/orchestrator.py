@@ -275,9 +275,11 @@ class CampaignOrchestrator:
             if age_hours > goal.budget.max_hours:
                 return "max_hours_exceeded"
 
-        if goal.budget.max_gpu_hours is not None:
-            if self.gpu_hours_spent(state, goal) >= goal.budget.max_gpu_hours:
-                return "gpu_hours_exhausted"
+        if (
+            goal.budget.max_gpu_hours is not None
+            and self.gpu_hours_spent(state, goal) >= goal.budget.max_gpu_hours
+        ):
+            return "gpu_hours_exhausted"
 
         active = [t for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
         planned = [t for t in state.trials if t.status == "planned"]

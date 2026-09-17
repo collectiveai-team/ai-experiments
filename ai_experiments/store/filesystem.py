@@ -124,7 +124,7 @@ class FilesystemRunStore:
         )
 
     def read_status(self, run_id: str) -> RunStatus:
-        """Current status, or a synthetic ``unknown`` when it cannot be read.
+        """Return the current status, or a synthetic ``unknown`` when it cannot be read.
 
         A truncated or otherwise unparsable file is quarantined the same way a
         missing one is: one corrupt run must not take down the daemon

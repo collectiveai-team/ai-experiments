@@ -201,7 +201,7 @@ def test_pause_requires_running_campaign(tmp_path):
     state = orchestrator.start(_goal())
     orchestrator.stop(state.campaign_id)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot pause a campaign"):
         orchestrator.pause(state.campaign_id)
 
 

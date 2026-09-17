@@ -183,7 +183,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.get("/api/clusters")
     def clusters() -> list[dict[str, Any]]:
-        """Configured Ray cluster profiles with live reachability."""
+        """Return configured Ray cluster profiles with live reachability."""
         from ai_experiments.clusters import (
             ClusterConfigError,
             cluster_status,

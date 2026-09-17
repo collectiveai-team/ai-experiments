@@ -52,7 +52,7 @@ def _load_mlflow() -> Any:
 
 
 def _is_file_store(tracking_uri: str | None) -> bool:
-    """True when the URI resolves to MLflow's local filesystem store.
+    """Return True when the URI resolves to MLflow's local filesystem store.
 
     Covers ``file:...``, a plain path, or nothing — mlflow defaults to ./mlruns.
     """

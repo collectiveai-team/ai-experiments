@@ -151,10 +151,10 @@ def list_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
     escalations_dir = store.root / "_escalations"
     if not escalations_dir.exists():
         return []
-    requests = []
-    for path in sorted(escalations_dir.glob("*.json")):
-        requests.append(EscalationRequest(**json.loads(path.read_text())))
-    return requests
+    return [
+        EscalationRequest(**json.loads(path.read_text()))
+        for path in sorted(escalations_dir.glob("*.json"))
+    ]
 
 
 def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: datetime) -> bool:
