@@ -37,7 +37,7 @@
 | `ai_experiments/schemas.py` | gains the result models that replace returned raw dicts (CES-79) |
 | `ai_experiments/server/app.py` | response models instead of dict returns; `create_app` decomposed |
 | `ai_experiments/worker.py` | argparse → Typer; argv contract unchanged (CES-67) |
-| 20 files listed in Task 10 | dict returns/annotations replaced |
+| 15 files, 42 findings (Tasks 10 + 10b) | dict returns/annotations replaced or justified |
 
 ---
 
@@ -902,106 +902,290 @@ The 2 failures are the pre-existing `tests/integration/test_local_mlflow.py` one
 
 ---
 
-### Task 10: CES-79 no raw dicts at boundaries (41 sites, 20 files)
+### Task 10: CES-79 the HTTP contract and the two helpers it embeds (15 sites)
 
-The real refactor. Read `.agents/rules/no-dict.md` and `.agents/snippets/no-dict-boundary.py` before starting. Two sub-rules, different work:
+`no-dict` is enforced as an **error**, not a warning: with `C901` it is the last red gate. The 42
+findings split across two tasks at the line where the risk changes. This one owns the twelve in
+`ai_experiments/server/app.py` — those dict returns *are* the JSON API the dashboard consumes, the
+only place in the 42 whose consumer is outside this repo — **plus the three sites in the two
+helpers those handlers splice into their responses**, because a handler cannot be modeled while the
+helper it embeds still returns a raw dict.
 
-- `no-dict-return-annotation` (24) — the signature says `dict`. Mostly mechanical once the model exists.
-- `no-dict-literal-return` (17) — a dict literal is constructed and returned. Needs the model *designed*.
-
-Work **file by file**, not rule by rule: a file's annotation and its literal are the same boundary, and splitting them leaves the file half-migrated.
+Read `.agents/rules/no-dict.md` first.
 
 **Files:**
-- Modify: `ai_experiments/schemas.py` (gains the models), then in this order:
-  1. `ai_experiments/server/app.py` — 12 sites (9 annotation, 3 literal). Biggest win: these are HTTP responses, so the models double as the API contract.
-  2. `ai_experiments/tracking.py` — 6 sites
-  3. `ai_experiments/clusters.py` — 6 sites
-  4. `ai_experiments/backends/ray.py` — 3 sites
-  5. `ai_experiments/planner/` (`analysis.py` ×2, `search_space.py` ×2, `strategies.py` ×1)
-  6. `ai_experiments/notify.py`, `repro.py`, `report.py`, `schemas.py:330` — 1 each
-  7. `tests/` — 5 sites (`conftest.py`, `test_ray_backend.py` ×2, the two integration tests)
+- Modify: `ai_experiments/server/app.py` (12 sites), `ai_experiments/planner/analysis.py`
+  (`summarize_campaign`, line 54), `ai_experiments/repro.py` (`capture_repro` line 50,
+  `read_repro` line 92)
+- Modify (call sites only, no dict returns of their own): `ai_experiments/cli.py:242,268,310,575`,
+  `ai_experiments/orchestrator.py:372,388`, `ai_experiments/tracking.py:115`
+- Modify: `ai_experiments/schemas.py` (gains the models)
+- Modify: `tests/test_server.py` (characterization tests first), `tests/test_artifacts_repro.py`
+  (its `assert read_repro(run_dir) == context` at line 76 compares two of these values)
 
 **Interfaces:**
-- Consumes: `ai_experiments.settings` (Task 9) where a boundary reads config.
-- Produces: named models in `ai_experiments/schemas.py`. Later tasks import them by name; keep names domain-shaped (`RunSummary`, `ClusterStatus`, `TrackingHandle`), never `XxxDict` or `XxxResult`.
+- Consumes: `ai_experiments.settings.get_settings()` (Task 9) — do not reintroduce env reads.
+- Produces: models in `ai_experiments/schemas.py`, named for the domain — never `XxxDict`,
+  `XxxResult` or `XxxResponse`. Task 10b reuses them rather than defining near-duplicates.
 
-- [ ] **Step 1: Pin the HTTP contract with tests before touching the server**
+**Most of the twelve are already models wearing a dict costume.** Five handlers build a real
+pydantic model and then immediately `.model_dump(mode="json")` it:
 
-`server/app.py` is the riskiest file: its dict returns are the JSON API. Before changing it, assert the current response shape so the refactor cannot silently change it.
+| Line | Handler | What it actually returns |
+|---|---|---|
+| 49 | `run_detail` | `run_store.read_status(run_id)` — a `RunStatus` |
+| 66 | `run_diagnosis` | `diagnose_run(...)` (`monitoring/rules.py:159`) |
+| 156 | `campaign_stop` | `orchestrator.stop(...)` — a `CampaignState` |
+| 163 | `campaign_pause` | `orchestrator.pause(...)` |
+| 172 | `campaign_resume` | `orchestrator.resume(...)` |
+
+For those five the change is: **delete the `.model_dump(mode="json")` and put the real model in the
+return annotation.** No new model, no new field. FastAPI serializes the returned model through
+`response_model`; the characterization tests in Step 1 are what prove that serialization matches
+the hand-dumped JSON byte for byte.
+
+The other four need a model written:
+
+| Line | Handler | Shape |
+|---|---|---|
+| 38, 39 | `health` | `{"status", "runs_root"}` — trivial |
+| 71, 74 | `run_cancel` | `{"run_id", "cancelled"}` — trivial |
+| 91 | `run_repro` | `read_repro(...)`'s context, plus a `has_diff` key the handler sets at line 97 |
+| 146, 150 | `campaign_detail` | `{"state": CampaignState, "summary": summarize_campaign(...)}` |
+
+- [ ] **Step 1: Characterize every one of the nine endpoints before touching any of them**
+
+This is the whole safety net; do not shortcut it. For each handler in the two tables above, add a
+test to `tests/test_server.py` asserting the exact top-level key set of a real response:
 
 ```python
-# tests/test_server.py — add
-def test_run_status_response_shape_is_stable(client, seeded_run):
-    body = client.get(f"/runs/{seeded_run}").json()
-    assert set(body) == {"run_id", "status", "metrics", "started_at", "finished_at"}
+def test_health_response_shape_is_stable(client):
+    body = client.get("/api/health").json()
+    assert set(body) == {"status", "runs_root"}
 ```
 
-Replace the key set with the keys the endpoint actually returns today — read them off a live response, do not guess:
+Read the real key sets off live responses — print them, do not guess, and do not copy the example's
+keys. Cover both branches wherever a handler answers differently on different paths (a found run vs.
+a 404, `campaign_pause`'s success vs. its 409). For the five `.model_dump()` handlers assert on
+**values too, not only keys**: the whole risk there is that FastAPI's serializer and
+`model_dump(mode="json")` disagree on some field (a `datetime`, an enum, a `None`), which a key-set
+assertion cannot see. Compare the full body against the dumped model:
 
-Run: `.venv/bin/python -m pytest tests/test_server.py -q` and inspect, or add a temporary `print(body)`.
+```python
+def test_run_detail_body_matches_the_stored_status(client, store, run_id):
+    assert client.get(f"/api/runs/{run_id}").json() == store.read_status(run_id).model_dump(mode="json")
+```
 
-- [ ] **Step 2: Run the new test against unchanged code**
+**Watch for the `None` trap:** FastAPI serializes an unset optional field to `null` rather than
+omitting the key. `read_repro`'s context has conditionally-absent keys (`git_dirty` is set only when
+a sha was found, `repro.py:57-70`), so a model with optional fields produces `{"git_dirty": null}`
+where the dict produced nothing. That is a shape change the dashboard can see. Where you find one,
+either keep the key absent (`response_model_exclude_none=True` on the route) or deliberately accept
+the change and say so in your report — never let it pass unnoticed.
+
+- [ ] **Step 2: Run the characterization tests against unchanged code**
 
 Run: `.venv/bin/python -m pytest tests/test_server.py -v`
-Expected: PASS. This is a characterization test — it must pass *before* the refactor, then keep passing after.
+Expected: all PASS. They must pass *before* the refactor. Any that fail describe the code wrong —
+fix the test, re-run, and only then change a handler.
 
-- [ ] **Step 3: Model one boundary**
+```bash
+git add tests/test_server.py
+git commit -m "test(server): characterize the JSON response shapes (CES-79)"
+```
+
+- [ ] **Step 3: Drop `.model_dump()` from the five handlers that already return a model**
+
+```python
+# before
+@app.get("/api/runs/{run_id}")
+def run_detail(run_id: str) -> dict[str, Any]:
+    _ensure_run(run_store, run_id)
+    return run_store.read_status(run_id).model_dump(mode="json")
+
+# after
+@app.get("/api/runs/{run_id}")
+def run_detail(run_id: str) -> RunStatus:
+    _ensure_run(run_store, run_id)
+    return run_store.read_status(run_id)
+```
+
+`RunStatus` already exists at `ai_experiments/schemas.py:149`. Do not invent a new model for any of
+these five; import the one the callee already returns.
+
+Run `.venv/bin/python -m pytest tests/test_server.py -q` after each. If a body changed, the
+serializers disagree — fix the route (`response_model_exclude_none`, a field serializer), never the
+test.
+
+- [ ] **Step 4: Write models for `health` and `run_cancel`**
 
 ```python
 # ai_experiments/schemas.py
-class RunSummary(BaseModel):
-    """One run as returned by the runs API and the CLI's `status` command."""
+class HealthStatus(BaseModel):
+    """The /api/health body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    runs_root: str
+
+
+class CancelAck(BaseModel):
+    """The /api/runs/{run_id}/cancel body."""
 
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
-    status: RunStatus
-    metrics: dict[str, float] = Field(default_factory=dict)
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    cancelled: bool
 ```
-
-`metrics: dict[str, float]` stays a dict — CES-79 governs *boundaries*, not every mapping. A homogeneous key→value map with no fixed schema is data, not a boundary. Read `.agents/rules/no-dict.md` for where that line sits, and if a site is genuinely a map, suppress it with `# ast-grep-ignore: no-dict-return-annotation  # homogeneous metric map, not a boundary` rather than inventing a model with dynamic fields.
-
-- [ ] **Step 4: Convert the call site**
 
 ```python
-# before
-@app.get("/runs/{run_id}")
-def get_run(run_id: str) -> dict:
-    return {"run_id": run_id, "status": run.status, ...}
-
-# after
-@app.get("/runs/{run_id}")
-def get_run(run_id: str) -> RunSummary:
-    return RunSummary(run_id=run_id, status=run.status, ...)
+@app.get("/api/health")
+def health() -> HealthStatus:
+    return HealthStatus(status="ok", runs_root=str(run_store.root))
 ```
 
-FastAPI serializes the model to the same JSON, so the characterization test from Step 1 keeps passing unchanged. If it fails, the shape *did* change — fix the model, not the test.
+Run the server tests. Commit Steps 3-4 together:
+```bash
+git add ai_experiments/schemas.py ai_experiments/server/app.py
+git commit -m "refactor(server): return the models the handlers already build (CES-79)"
+```
 
-- [ ] **Step 5: Run the tests for that file**
+- [ ] **Step 5: Model `summarize_campaign` (`planner/analysis.py:54`) and update its six callers**
 
-Run: `.venv/bin/python -m pytest tests/test_server.py -v`
-Expected: PASS, including the Step 1 characterization test.
+Its return is a fixed schema with two nested objects and a list — read the whole function
+(`planner/analysis.py:54-100`) and model every key, including `budget`, `objective`, `history` and
+the optional `best`. `trials_by_status` is a `status -> count` map with no fixed key set: that field
+stays a raw `dict[str, int]` (only *returns* are flagged, not fields).
 
-- [ ] **Step 6: Commit that file, then repeat Steps 3–5 for each remaining file**
+The six callers are `cli.py:310`, `cli.py:575`, `orchestrator.py:372`, `orchestrator.py:388`,
+`server/app.py:111`, `server/app.py:152`. Read each one: those that subscript the result
+(`summary["gpu_hours"]`) become attribute access; those that serialize it to JSON for the CLI
+(`cli.py`) need an explicit `.model_dump(mode="json")` at the *print* site so the CLI's JSON output
+does not change. `tests/test_planner.py` and the CLI tests that parse stdout as JSON are your check
+that it did not.
+
+- [ ] **Step 6: Model the repro context (`repro.py:50` and `:92`) and update its callers**
+
+`capture_repro` builds the context and writes it to `repro/context.json`; `read_repro` parses that
+same file back. One model serves both: `capture_repro` returns it, `read_repro` validates the parsed
+JSON into it. Include `has_diff` as an optional field — `server/app.py:97` sets it on the way out,
+and a model cannot take an undeclared key.
+
+**`read_repro` returns `| None` and three of its callers rely on that**: `cli.py:268` and
+`tracking.py:115` both write `read_repro(...) or {}` and then subscript. Convert those to an
+explicit `is None` check with attribute access; a `or {}` against a model is a silent type error
+that pyrefly will catch but the tests will not.
+
+`tests/test_artifacts_repro.py:76` asserts `read_repro(run_dir) == context`. Pydantic models compare
+by field value, so this keeps working once both sides are the same model — but run it and confirm
+rather than assuming.
+
+- [ ] **Step 7: Model `campaign_detail` and `run_repro`, the two composites**
+
+Now that both helpers return models, these two are straightforward: a `CampaignDetail` with a
+`state: CampaignState` and a `summary: CampaignSummary`, and `run_repro` returning the repro model
+directly.
+
+- [ ] **Step 8: Verify and commit**
 
 ```bash
-git add -A && git commit -m "refactor(server): return typed models instead of raw dicts (CES-79)"
+uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -E 'server/app.py|planner/analysis.py|repro.py'   # expect nothing
+uvx pyrefly@latest check --config pyproject.toml 2>&1 | tail -1
+.venv/bin/python -m pytest tests -q 2>&1 | tail -1
+git add ai_experiments/schemas.py ai_experiments/server/app.py ai_experiments/planner/analysis.py \
+        ai_experiments/repro.py ai_experiments/cli.py ai_experiments/orchestrator.py \
+        ai_experiments/tracking.py tests/test_server.py tests/test_artifacts_repro.py
+git commit -m "refactor: model the repro context and campaign summary (CES-79)"
 ```
 
-One commit per file from the ordered list. Each commit is independently revertible — that is the whole reason for the ordering.
-
-- [ ] **Step 7: Verify the rule is clean**
-
-```bash
-uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -cE 'no-dict'   # expect 0, or only justified suppressions
-.venv/bin/python -m pytest tests -q 2>&1 | tail -1                # expect 2 failed, 119 passed
-```
+Expected suite: `2 failed, <133 + your new tests> passed, 6 skipped`. The 2 failures are the
+pre-existing `tests/integration/test_local_mlflow.py` ones. Any other movement is a regression.
+pyrefly must stay at `0 errors` — it is not skipped for this task.
 
 ---
 
-### Task 11: CES-71 split `cli.py` (801 lines, limit 700)
+### Task 10b: CES-79 the remaining 27 sites
+
+The rest, none of which crosses an HTTP boundary or a helper shared between modules. **Most of these
+are suppressions, not conversions** — the rule's own "Suppressing (rare, must be visible)" section is
+the operative part of this task, and getting the convert/suppress call right matters more than the
+volume.
+
+The line, from `.agents/rules/no-dict.md`: a raw dict is correct when the keys are **not a fixed
+schema** — a `name -> object` registry, a sampled hyperparameter assignment, a third-party payload
+passed through, an env-var mapping spliced into `os.environ`. It is wrong when the keys *are* a
+fixed schema that a caller has to guess at.
+
+**Files:** `ai_experiments/schemas.py`, `clusters.py`, `planner/search_space.py`,
+`planner/strategies.py`, `notify.py`, `report.py`, `backends/ray.py`, `tracking.py`,
+`tests/test_ray_backend.py`, `tests/integration/{conftest.py,test_local_mlflow.py,test_ray_mlflow.py}`
+
+**Interfaces:** consumes the models Task 10 added to `schemas.py`; reuse them rather than defining
+near-duplicates.
+
+I have already ruled each site. Implement the ruling; if you believe one is wrong, say so in your
+report rather than quietly doing the other thing.
+
+**Convert — a fixed schema a caller has to guess at (7 sites):**
+
+| Site | Why |
+|---|---|
+| `clusters.py:105` + its three return literals (`:108,:119,:126`) | `cluster_status` returns `name`/`reachable`/`address`/`ray_version`/`error` across three branches — one fixed schema with optional fields. One model, three constructions; make sure all three construct the *same* model rather than three near-identical ones. |
+| `notify.py:45` | a fixed delivery result. |
+| `report.py:91` | `{"step": ..., "values": ...}` — a fixed metric line. `values` stays a raw map *inside* the model. |
+
+**Suppress — genuinely not a fixed schema (20 sites).** Each keeps its `dict` and gains a visible
+`# ast-grep-ignore: <slug>` carrying a reason:
+
+| Site | Reason the comment must give |
+|---|---|
+| `clusters.py:68,71` | `load_clusters` is a `profile name -> ClusterProfile` registry; the keys are the operator's profile names. |
+| `planner/search_space.py:21,63`, `planner/strategies.py:113` | a sampled hyperparameter assignment; the keys are the user's own search-space parameter names. |
+| `schemas.py:330` | `search_space_not_empty` is a pydantic field validator — its signature must return exactly the type it validates. |
+| `backends/ray.py:143,231,233` | `_ray_details`/`_job_info_dict` pass Ray's own job-info keys through into the free-form `RunStatus.details` blob. |
+| `tracking.py:64,73,78,168,178,192,200` | env-var mappings spliced into a subprocess environment; the consumer is `env.update(...)`, not a typed caller. |
+| `tests/test_ray_backend.py:29,31`, `tests/integration/conftest.py:68`, `tests/integration/test_local_mlflow.py:93`, `tests/integration/test_ray_mlflow.py:70` | test fakes imitating a third-party API's dict shape; modeling them would make the fake diverge from the thing it fakes. |
+
+A suppression whose comment just repeats the slug is not a justification. Say what the keys are and
+where they come from. Re-measure the line numbers before you start — Task 10 edits `tracking.py`, so
+its seven will have moved.
+
+- [ ] **Step 1: Convert the seven, one file per commit**
+
+For each: write the model in `schemas.py`, convert every return in that file, run that file's tests,
+commit. `clusters.py` first (three branches that must all construct the same model), then
+`notify.py`, then `report.py`.
+
+Run after each: `.venv/bin/python -m pytest tests -q 2>&1 | tail -1` — the count must not move
+except for tests you added.
+
+- [ ] **Step 2: Suppress the twenty, one commit**
+
+Verify placement as you go: ast-grep matches the flagged **token**, not the enclosing statement, so a
+comment above a multi-line `return {` may not attach to it. This bit Task 9 in `tracking.py` — check
+with a scan rather than assuming, and hoist the expression to its own line if that is what it takes.
+
+```bash
+git add -u && git commit -m "refactor: justify the raw-dict boundaries CES-79 does not govern"
+```
+
+- [ ] **Step 3: Verify the gate is clean**
+
+```bash
+uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c 'no-dict'      # expect 0
+uvx ruff@0.15.22 check . 2>&1 | tail -1                             # expect: Found 4 errors.
+uvx pyrefly@latest check --config pyproject.toml 2>&1 | tail -1     # expect: 0 errors
+.venv/bin/python -m pytest tests -q 2>&1 | tail -1
+git ls-files '*.py' | xargs awk 'length>100 {print FILENAME":"FNR}' # expect: nothing
+```
+
+After this task ast-grep reports zero findings repo-wide, and the only `ruff check` errors left are
+the four `C901` reserved for Task 12.
+
+---
+
+### Task 11: CES-71 split `cli.py` (755 lines, limit 700)
 
 **Files:**
 - Delete: `ai_experiments/cli.py`
