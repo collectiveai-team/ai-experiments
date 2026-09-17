@@ -73,7 +73,7 @@ class _Supervisor:
         )
 
         signal.signal(signal.SIGTERM, self._handle_sigterm)
-        self.process = subprocess.Popen(
+        self.process = subprocess.Popen(  # noqa: S603  # user-supplied workload entrypoint, this is the product
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

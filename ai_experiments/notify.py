@@ -86,12 +86,13 @@ class Notifier:
     def _run_command(self, payload: dict[str, Any]) -> None:
         assert self.command is not None  # noqa: S101  # type narrowing, not a runtime check
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            subprocess.run(
+            subprocess.run(  # noqa: S603  # user-configured notify command, this is the product
                 shlex.split(self.command),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
                 timeout=COMMAND_TIMEOUT,
+                check=False,
             )
 
 

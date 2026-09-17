@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -33,6 +34,7 @@ import yaml
 from pydantic import BaseModel
 
 ClusterProvider = Literal["local", "aws", "gcp", "azure"]
+_RAY = shutil.which("ray") or "ray"
 
 
 class ClusterProfile(BaseModel):
@@ -150,8 +152,8 @@ def _ray_launcher(
     config = Path(profile.cluster_config)
     if not config.exists():
         raise ClusterConfigError(f"cluster_config not found: {config}")
-    return subprocess.run(
-        ["ray", action, str(config), "-y"],
+    return subprocess.run(  # noqa: S603  # ray CLI, action is one of a fixed literal set
+        [_RAY, action, str(config), "-y"],
         capture_output=True,
         text=True,
         check=False,

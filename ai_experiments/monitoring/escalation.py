@@ -176,11 +176,12 @@ def _run_agent_command(
     )
     command = shlex.split(rendered)
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # user-configured agent_command, this is the product
             command,
             capture_output=True,
             text=True,
             timeout=policy.agent_timeout_seconds,
+            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return AgentVerdict(verdict="inconclusive", reason=f"agent command failed: {exc}")

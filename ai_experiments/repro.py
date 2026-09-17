@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import platform
+import shutil
 import subprocess
 import sys
 from importlib import metadata
@@ -26,16 +27,18 @@ from ai_experiments.schemas import utc_now
 
 GIT_TIMEOUT = 10
 MAX_DIFF_BYTES = 512_000
+_GIT = shutil.which("git") or "git"
 
 
 def _git(args: list[str], cwd: Path) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = subprocess.run(  # noqa: S603  # fixed argv built from constants, no user input
+            [_GIT, *args],
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

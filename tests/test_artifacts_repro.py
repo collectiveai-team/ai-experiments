@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 from ai_experiments.repro import capture_repro, current_git_sha, read_repro
 from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
+
+_GIT = shutil.which("git") or "git"
 
 
 def _manifest(working_dir: str) -> ExperimentManifest:
@@ -17,12 +20,12 @@ def _manifest(working_dir: str) -> ExperimentManifest:
 def _git_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
+    subprocess.run([_GIT, "config", "user.email", "t@t"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
+    subprocess.run([_GIT, "config", "user.name", "t"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
     (repo / "train.py").write_text("print('hi')\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    subprocess.run([_GIT, "add", "-A"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
+    subprocess.run([_GIT, "commit", "-qm", "init"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
     return repo
 
 

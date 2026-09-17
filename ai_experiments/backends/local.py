@@ -64,7 +64,7 @@ class LocalBackend(ExperimentBackend):
         env = os.environ.copy()
         package_root = Path(__file__).resolve().parents[2]
         env["PYTHONPATH"] = f"{package_root}:{env.get('PYTHONPATH', '')}"
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # noqa: S603  # sys.executable + our own worker module, not user input
             cmd,
             stdout=log_file,
             stderr=subprocess.STDOUT,
