@@ -73,7 +73,9 @@ class _Supervisor:
         )
 
         signal.signal(signal.SIGTERM, self._handle_sigterm)
-        self.process = subprocess.Popen(  # noqa: S603  # user-supplied workload entrypoint, this is the product
+        # The command is the user's own workload entrypoint: launching it is what this
+        # worker exists to do, so there is no untrusted input to validate away.
+        self.process = subprocess.Popen(  # noqa: S603  # user-supplied workload entrypoint
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -20,12 +20,22 @@ def _manifest(working_dir: str) -> ExperimentManifest:
 def _git_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
-    subprocess.run([_GIT, "config", "user.email", "t@t"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
-    subprocess.run([_GIT, "config", "user.name", "t"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture
+        [_GIT, "init", "-q"], cwd=repo, check=True
+    )
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture
+        [_GIT, "config", "user.email", "t@t"], cwd=repo, check=True
+    )
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture
+        [_GIT, "config", "user.name", "t"], cwd=repo, check=True
+    )
     (repo / "train.py").write_text("print('hi')\n")
-    subprocess.run([_GIT, "add", "-A"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
-    subprocess.run([_GIT, "commit", "-qm", "init"], cwd=repo, check=True)  # noqa: S603  # fixed argv, test fixture
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture
+        [_GIT, "add", "-A"], cwd=repo, check=True
+    )
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture
+        [_GIT, "commit", "-qm", "init"], cwd=repo, check=True
+    )
     return repo
 
 
