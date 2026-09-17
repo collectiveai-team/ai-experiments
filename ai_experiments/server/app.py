@@ -8,7 +8,7 @@ limited to cancelling runs and stopping campaigns.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -19,12 +19,15 @@ from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import (
+    ArtifactEntry,
     CampaignDetail,
     CampaignState,
     CancelAck,
     DiagnosisReport,
     HealthStatus,
-    ReproContext,
+    LeaderboardRow,
+    RunEvent,
+    RunReproDetail,
     RunStatus,
 )
 from ai_experiments.store import FilesystemRunStore
@@ -48,11 +51,8 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         return HealthStatus(status="ok", runs_root=str(run_store.root))
 
     @app.get("/api/runs")
-    def runs() -> list[dict[str, Any]]:
-        return [
-            run_store.read_status(run_id).model_dump(mode="json")
-            for run_id in sorted(run_store.list_runs())
-        ]
+    def runs() -> list[RunStatus]:
+        return [run_store.read_status(run_id) for run_id in sorted(run_store.list_runs())]
 
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: str) -> RunStatus:
@@ -60,9 +60,9 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         return run_store.read_status(run_id)
 
     @app.get("/api/runs/{run_id}/events")
-    def run_events(run_id: str, tail: int = 200) -> list[dict[str, Any]]:
+    def run_events(run_id: str, tail: int = 200) -> list[RunEvent]:
         _ensure_run(run_store, run_id)
-        return [event.model_dump(mode="json") for event in run_store.read_events(run_id, tail=tail)]
+        return run_store.read_events(run_id, tail=tail)
 
     @app.get("/api/runs/{run_id}/metrics")
     def run_metrics(run_id: str, tail: int = 500) -> list[dict[str, Any]]:
@@ -83,9 +83,9 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         return CancelAck(run_id=run_id, cancelled=True)
 
     @app.get("/api/runs/{run_id}/artifacts")
-    def run_artifacts(run_id: str) -> list[dict[str, Any]]:
+    def run_artifacts(run_id: str) -> list[ArtifactEntry]:
         _ensure_run(run_store, run_id)
-        return run_store.list_artifacts(run_id)
+        return [ArtifactEntry.model_validate(entry) for entry in run_store.list_artifacts(run_id)]
 
     @app.get("/api/runs/{run_id}/artifacts/{artifact_path:path}")
     def run_artifact_download(run_id: str, artifact_path: str) -> FileResponse:
@@ -96,24 +96,24 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="unknown artifact")
         return FileResponse(target, filename=target.name)
 
-    @app.get("/api/runs/{run_id}/repro", response_model_exclude={"bundle_dir"})
-    def run_repro(run_id: str) -> ReproContext:
+    @app.get("/api/runs/{run_id}/repro")
+    def run_repro(run_id: str) -> RunReproDetail:
         from ai_experiments.repro import read_repro
 
         _ensure_run(run_store, run_id)
         context = read_repro(run_store.run_dir(run_id))
         if context is None:
             raise HTTPException(status_code=404, detail="no repro bundle")
-        context.has_diff = (run_store.run_dir(run_id) / "repro" / "diff.patch").exists()
-        return context
+        has_diff = (run_store.run_dir(run_id) / "repro" / "diff.patch").exists()
+        return RunReproDetail(**context.model_dump(), has_diff=has_diff)
 
     @app.get("/api/leaderboard")
-    def leaderboard() -> list[dict[str, Any]]:
+    def leaderboard() -> list[LeaderboardRow]:
         """Campaigns ranked by their best objective value.
 
         Grouped per metric client-side (each row carries metric + mode).
         """
-        rows: list[dict[str, Any]] = []
+        rows: list[LeaderboardRow] = []
         for campaign_id in campaign_store.list_campaigns():
             state = campaign_store.read_state(campaign_id)
             goal = campaign_store.read_goal(campaign_id)
@@ -121,33 +121,35 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             if summary.best is None:
                 continue
             rows.append(
-                {
-                    "campaign_id": campaign_id,
-                    "name": state.name,
-                    "status": state.status,
-                    "metric": goal.objective.metric,
-                    "mode": goal.objective.mode,
-                    "best_value": summary.best.objective_value,
-                    "best_params": summary.best.params,
-                    "best_run_id": summary.best.run_id,
-                    "trials": len(state.trials),
-                    "gpu_hours": summary.gpu_hours,
-                    "estimated_cost": summary.estimated_cost,
-                    "updated_at": state.updated_at.isoformat(),
-                }
+                LeaderboardRow(
+                    campaign_id=campaign_id,
+                    name=state.name,
+                    status=state.status,
+                    metric=goal.objective.metric,
+                    mode=goal.objective.mode,
+                    # best_trial() only sets `best` from trials with a non-None,
+                    # finite objective_value; cast makes that invariant visible here.
+                    best_value=cast("float", summary.best.objective_value),
+                    best_params=summary.best.params,
+                    best_run_id=summary.best.run_id,
+                    trials=len(state.trials),
+                    gpu_hours=summary.gpu_hours,
+                    estimated_cost=summary.estimated_cost,
+                    updated_at=state.updated_at.isoformat(),
+                )
             )
         rows.sort(
             key=lambda r: (
-                r["metric"],
-                -r["best_value"] if r["mode"] == "max" else r["best_value"],
+                r.metric,
+                -r.best_value if r.mode == "max" else r.best_value,
             )
         )
         return rows
 
     @app.get("/api/campaigns")
-    def campaigns() -> list[dict[str, Any]]:
+    def campaigns() -> list[CampaignState]:
         return [
-            campaign_store.read_state(campaign_id).model_dump(mode="json")
+            campaign_store.read_state(campaign_id)
             for campaign_id in campaign_store.list_campaigns()
         ]
 

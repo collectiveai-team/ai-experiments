@@ -408,16 +408,18 @@ class CancelAck(BaseModel):
 
 
 class ReproContext(BaseModel):
-    """Reproducibility bundle captured at submit time (`repro/context.json`).
+    """Reproducibility bundle captured at submit time (`repro/context.json`), and nothing else.
 
-    `capture_repro` writes every field but `has_diff` and `bundle_dir` to disk; those two are
-    never part of the persisted bundle — the server sets `has_diff` and the CLI sets
-    `bundle_dir` on the instance after `read_repro` loads it back, so both must stay optional.
-    All other fields are optional too, tolerating a hand-authored or partial bundle that predates
-    a field being added.
+    This is exactly what `capture_repro` writes and `read_repro` reads back — no presentation-only
+    fields. `extra="ignore"` (not `"forbid"`) is deliberate: this model validates a file written by
+    whatever version of `capture_repro` ran at submit time, which may be older or newer than the
+    version of this code reading it back. Forbidding extras would turn a future field addition into
+    a crash for every older reader that opens an existing run directory; ignoring extras keeps that
+    read forward-compatible. All fields are optional, tolerating a hand-authored or partial bundle
+    that predates a field being added.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     captured_at: str | None = None
     git_sha: str | None = None
@@ -426,8 +428,33 @@ class ReproContext(BaseModel):
     python: str | None = None
     platform: str | None = None
     working_dir: str | None = None
-    has_diff: bool | None = None
-    bundle_dir: str | None = None
+
+
+class RunReproDetail(ReproContext):
+    """The `/api/runs/{run_id}/repro` body: the persisted context plus whether a diff was captured.
+
+    `has_diff` is presentation-only — `server/app.py` derives it from whether `diff.patch` exists
+    on disk, it is never part of the persisted bundle — so it lives on this composed model, not on
+    `ReproContext` itself. `extra="forbid"` is fine here: unlike `ReproContext`, this model is only
+    ever constructed in code, never parsed back off disk.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    has_diff: bool
+
+
+class ReproBundleInfo(ReproContext):
+    """`iax repro`'s output: the persisted context plus where the bundle lives on disk.
+
+    `bundle_dir` is presentation-only — the CLI fills it in after `read_repro` loads the bundle
+    back — so it lives on this composed model, not on `ReproContext` itself. `extra="forbid"` is
+    fine here for the same reason as `RunReproDetail`: only ever constructed in code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bundle_dir: str
 
 
 class CampaignHistoryEntry(BaseModel):
@@ -461,16 +488,6 @@ class BudgetSummary(BaseModel):
     gpu_hour_rate: float | None
 
 
-class ObjectiveSummary(BaseModel):
-    """`CampaignSummary.objective`: the objective fields relevant to progress display."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    metric: str
-    mode: Literal["min", "max"]
-    target: float | None
-
-
 class CampaignSummary(BaseModel):
     """`summarize_campaign`'s return: budget/objective snapshot, trial history, best trial."""
 
@@ -484,7 +501,7 @@ class CampaignSummary(BaseModel):
     gpu_hours: float
     estimated_cost: float | None
     budget: BudgetSummary
-    objective: ObjectiveSummary
+    objective: ObjectiveSpec
     rounds: int
     trials_by_status: dict[str, int]
     trials_total: int
@@ -499,3 +516,37 @@ class CampaignDetail(BaseModel):
 
     state: CampaignState
     summary: CampaignSummary
+
+
+class ArtifactEntry(BaseModel):
+    """One row of the `/api/runs/{run_id}/artifacts` listing.
+
+    Mirrors `FilesystemRunStore.list_artifacts`'s fixed 3-key shape (`path`, `size_bytes`,
+    `modified_at`) at the server boundary; the store method itself still returns
+    `list[dict[str, object]]`, which is out of scope for this task.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    size_bytes: int
+    modified_at: str
+
+
+class LeaderboardRow(BaseModel):
+    """One row of the `/api/leaderboard` body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: str
+    name: str
+    status: CampaignStatus
+    metric: str
+    mode: Literal["min", "max"]
+    best_value: float
+    best_params: dict[str, Any]
+    best_run_id: str | None
+    trials: int
+    gpu_hours: float
+    estimated_cost: float | None
+    updated_at: str

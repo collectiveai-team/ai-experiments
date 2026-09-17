@@ -84,9 +84,7 @@ def capture_repro(run_dir: Path, working_dir: str | Path) -> ReproContext:
         # this at debug level once the house logger exists.
         pass
 
-    (repro_dir / "context.json").write_text(
-        json.dumps(context.model_dump(mode="json", exclude={"has_diff", "bundle_dir"}), indent=2)
-    )
+    (repro_dir / "context.json").write_text(json.dumps(context.model_dump(mode="json"), indent=2))
     return context
 
 

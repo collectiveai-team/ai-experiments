@@ -10,7 +10,6 @@ from ai_experiments.schemas import (
     BudgetSummary,
     CampaignHistoryEntry,
     CampaignSummary,
-    ObjectiveSummary,
 )
 
 if TYPE_CHECKING:
@@ -88,11 +87,7 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> CampaignSummary:
             max_gpu_hours=goal.budget.max_gpu_hours,
             gpu_hour_rate=goal.budget.gpu_hour_rate,
         ),
-        objective=ObjectiveSummary(
-            metric=goal.objective.metric,
-            mode=goal.objective.mode,
-            target=goal.objective.target,
-        ),
+        objective=goal.objective,
         rounds=state.rounds,
         trials_by_status=by_status,
         trials_total=len(state.trials),

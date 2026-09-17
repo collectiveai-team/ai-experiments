@@ -7,7 +7,7 @@ import typer
 from pydantic import BaseModel
 
 from ai_experiments.backends.factory import backend_for_run, get_backend
-from ai_experiments.schemas import ExperimentManifest, GoalSpec
+from ai_experiments.schemas import ExperimentManifest, GoalSpec, ReproBundleInfo
 from ai_experiments.store import FilesystemRunStore
 
 app = typer.Typer(
@@ -243,8 +243,10 @@ def repro(
     if context is None:
         typer.echo(f"Error: no repro bundle for {run_id}", err=True)
         raise typer.Exit(code=1)
-    context.bundle_dir = str(store.run_dir(run_id) / "repro")
-    _echo_json(context)
+    bundle_info = ReproBundleInfo(
+        **context.model_dump(), bundle_dir=str(store.run_dir(run_id) / "repro")
+    )
+    _echo_json(bundle_info)
 
 
 @app.command()
