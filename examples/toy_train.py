@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--sleep", type=float, default=0.5)
     args = parser.parse_args()
 
-    rng = random.Random(0)
+    rng = random.Random(0)  # noqa: S311  # demo script, not security
     x = args.x0
     for step in range(args.steps):
         grad = 2 * (x - 2.0) + rng.gauss(0, 0.1)
