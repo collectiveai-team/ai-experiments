@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from ai_experiments.planner.search_space import grid_points, params_key, perturb, sample
 
@@ -101,11 +101,13 @@ class AdaptiveStrategy:
             return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
 
         reverse = goal.objective.mode == "max"
-        ranked = sorted(
-            scored,
-            key=lambda t: t.objective_value,
-            reverse=reverse,  # type: ignore[arg-type, return-value]
-        )
+
+        def _objective(trial: TrialRecord) -> float:
+            # scored is filtered above to non-None, finite objective_value; cast makes
+            # that already-proven invariant visible to the type checker.
+            return cast("float", trial.objective_value)
+
+        ranked = sorted(scored, key=_objective, reverse=reverse)
         top = ranked[: max(goal.strategy.top_k, 1)]
 
         def draw() -> dict[str, Any]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
@@ -41,8 +41,14 @@ def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     ]
     if not scored:
         return None
-    key = (lambda t: -t.objective_value) if mode == "max" else (lambda t: t.objective_value)  # type: ignore[operator]
-    return min(scored, key=key)  # type: ignore[arg-type]
+
+    def _key(trial: TrialRecord) -> float:
+        # scored is filtered above to non-None, finite objective_value; cast makes
+        # that already-proven invariant visible to the type checker.
+        value = cast("float", trial.objective_value)
+        return -value if mode == "max" else value
+
+    return min(scored, key=_key)
 
 
 def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
