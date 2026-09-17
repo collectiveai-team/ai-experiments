@@ -43,6 +43,11 @@ def _reset_logger_configuration():
 
 
 def test_get_logger_returns_a_bound_structlog_logger():
+    # No public seam distinguishes the configured filtering logger from an unconfigured
+    # BoundLoggerLazyProxy: `isinstance(log, BindableLogger)` holds for both, and
+    # `FilteringBoundLogger` matches neither. Asserting on structlog's private module path is
+    # the only discriminating check available, so a structlog release that restructures
+    # `_native` will break this test without the logger itself being wrong.
     log = get_logger("ai_experiments.daemon").bind()
     assert type(log).__module__ == "structlog._native"
 
