@@ -243,7 +243,7 @@ def repro(
     if context is None:
         typer.echo(f"Error: no repro bundle for {run_id}", err=True)
         raise typer.Exit(code=1)
-    context["bundle_dir"] = str(store.run_dir(run_id) / "repro")
+    context.bundle_dir = str(store.run_dir(run_id) / "repro")
     _echo_json(context)
 
 
@@ -265,8 +265,8 @@ def rerun(
         typer.echo(f"Error: no persisted manifest for {run_id}", err=True)
         raise typer.Exit(code=1)
 
-    recorded = read_repro(store.run_dir(run_id)) or {}
-    recorded_sha = recorded.get("git_sha")
+    recorded = read_repro(store.run_dir(run_id))
+    recorded_sha = recorded.git_sha if recorded is not None else None
     now_sha = current_git_sha(manifest.workload.working_dir)
     if recorded_sha and now_sha and recorded_sha != now_sha:
         typer.echo(
@@ -276,7 +276,7 @@ def rerun(
             f"{store.run_dir(run_id) / 'repro' / 'diff.patch'})",
             err=True,
         )
-    if recorded.get("git_dirty"):
+    if recorded is not None and recorded.git_dirty:
         typer.echo(
             "Warning: the original submit had uncommitted changes "
             f"(see {store.run_dir(run_id) / 'repro' / 'diff.patch'})",
@@ -308,7 +308,7 @@ def leaderboard(
         state = campaign_store.read_state(campaign_id)
         goal = campaign_store.read_goal(campaign_id)
         summary = summarize_campaign(state, goal)
-        if summary["best"] is None:
+        if summary.best is None:
             continue
         rows.append(
             {
@@ -316,11 +316,11 @@ def leaderboard(
                 "name": state.name,
                 "metric": goal.objective.metric,
                 "mode": goal.objective.mode,
-                "best_value": summary["best"]["objective_value"],
-                "best_params": summary["best"]["params"],
+                "best_value": summary.best.objective_value,
+                "best_params": summary.best.params,
                 "trials": len(state.trials),
-                "gpu_hours": summary["gpu_hours"],
-                "estimated_cost": summary["estimated_cost"],
+                "gpu_hours": summary.gpu_hours,
+                "estimated_cost": summary.estimated_cost,
             }
         )
     rows.sort(
@@ -581,10 +581,10 @@ def campaign_status(
         + (f" ({state.stop_reason})" if state.stop_reason else "")
     )
     typer.echo(f"  Goal:   {state.goal}")
-    typer.echo(f"  Trials: {summary['trials_by_status']}")
-    cost = summary["estimated_cost"]
+    typer.echo(f"  Trials: {summary.trials_by_status}")
+    cost = summary.estimated_cost
     typer.echo(
-        f"  Spend:  {summary['gpu_hours']:g} gpu-hours"
+        f"  Spend:  {summary.gpu_hours:g} gpu-hours"
         + (f" (~${cost})" if cost is not None else "")
         + (
             f" of {goal.budget.max_gpu_hours:g} budgeted"
@@ -592,12 +592,10 @@ def campaign_status(
             else ""
         )
     )
-    if summary["best"]:
-        best = summary["best"]
-        typer.echo(
-            f"  Best:   {best['trial_id']} {goal.objective.metric}={best['objective_value']:.6g}"
-        )
-        typer.echo(f"          params={best['params']}")
+    if summary.best:
+        best = summary.best
+        typer.echo(f"  Best:   {best.trial_id} {goal.objective.metric}={best.objective_value:.6g}")
+        typer.echo(f"          params={best.params}")
 
 
 @campaign_app.command("advance")

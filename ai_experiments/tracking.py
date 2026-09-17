@@ -112,10 +112,10 @@ class MlflowTracker:
         for key in ("campaign", "trial_id"):
             if manifest.metadata.get(key):
                 tags[f"iax.{key}"] = str(manifest.metadata[key])
-        repro = read_repro(store.run_dir(run_id)) or {}
-        if repro.get("git_sha"):
-            tags["mlflow.source.git.commit"] = repro["git_sha"]
-            tags["iax.git_dirty"] = str(repro.get("git_dirty"))
+        repro = read_repro(store.run_dir(run_id))
+        if repro is not None and repro.git_sha:
+            tags["mlflow.source.git.commit"] = repro.git_sha
+            tags["iax.git_dirty"] = str(repro.git_dirty)
 
         mlflow_run = self.client.create_run(
             experiment_id=self._experiment_id(str(experiment_name)),

@@ -371,7 +371,7 @@ class CampaignOrchestrator:
     def _write_summary(self, state: CampaignState, goal: GoalSpec) -> None:
         summary = summarize_campaign(state, goal)
         path = self.campaign_store.campaign_dir(state.campaign_id) / "summary.json"
-        path.write_text(json.dumps(summary, indent=2))
+        path.write_text(summary.model_dump_json(indent=2))
 
     def _request_agent_review(self, state: CampaignState, goal: GoalSpec) -> None:
         """Drop a review request for an agent session.
@@ -385,7 +385,7 @@ class CampaignOrchestrator:
             "type": "campaign_review",
             "created_at": utc_now().isoformat(),
             "campaign_id": state.campaign_id,
-            "summary": summarize_campaign(state, goal),
+            "summary": summarize_campaign(state, goal).model_dump(mode="json"),
             "note": (
                 "Review trial history; queue better trials via "
                 "`iax campaign suggest <campaign_id> --params '{...}'` "

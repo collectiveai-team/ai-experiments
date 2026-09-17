@@ -18,6 +18,15 @@ from ai_experiments.monitoring.escalation import list_escalations
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
+from ai_experiments.schemas import (
+    CampaignDetail,
+    CampaignState,
+    CancelAck,
+    DiagnosisReport,
+    HealthStatus,
+    ReproContext,
+    RunStatus,
+)
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 
@@ -35,8 +44,8 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         return (STATIC_DIR / "index.html").read_text()
 
     @app.get("/api/health")
-    def health() -> dict[str, Any]:
-        return {"status": "ok", "runs_root": str(run_store.root)}
+    def health() -> HealthStatus:
+        return HealthStatus(status="ok", runs_root=str(run_store.root))
 
     @app.get("/api/runs")
     def runs() -> list[dict[str, Any]]:
@@ -46,9 +55,9 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         ]
 
     @app.get("/api/runs/{run_id}")
-    def run_detail(run_id: str) -> dict[str, Any]:
+    def run_detail(run_id: str) -> RunStatus:
         _ensure_run(run_store, run_id)
-        return run_store.read_status(run_id).model_dump(mode="json")
+        return run_store.read_status(run_id)
 
     @app.get("/api/runs/{run_id}/events")
     def run_events(run_id: str, tail: int = 200) -> list[dict[str, Any]]:
@@ -63,15 +72,15 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         ]
 
     @app.get("/api/runs/{run_id}/diagnosis")
-    def run_diagnosis(run_id: str) -> dict[str, Any]:
+    def run_diagnosis(run_id: str) -> DiagnosisReport:
         _ensure_run(run_store, run_id)
-        return diagnose_run(run_store, run_id).model_dump(mode="json")
+        return diagnose_run(run_store, run_id)
 
     @app.post("/api/runs/{run_id}/cancel")
-    def run_cancel(run_id: str) -> dict[str, Any]:
+    def run_cancel(run_id: str) -> CancelAck:
         _ensure_run(run_store, run_id)
         backend_for_run(run_store, run_id).cancel(run_id)
-        return {"run_id": run_id, "cancelled": True}
+        return CancelAck(run_id=run_id, cancelled=True)
 
     @app.get("/api/runs/{run_id}/artifacts")
     def run_artifacts(run_id: str) -> list[dict[str, Any]]:
@@ -87,15 +96,15 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="unknown artifact")
         return FileResponse(target, filename=target.name)
 
-    @app.get("/api/runs/{run_id}/repro")
-    def run_repro(run_id: str) -> dict[str, Any]:
+    @app.get("/api/runs/{run_id}/repro", response_model_exclude={"bundle_dir"})
+    def run_repro(run_id: str) -> ReproContext:
         from ai_experiments.repro import read_repro
 
         _ensure_run(run_store, run_id)
         context = read_repro(run_store.run_dir(run_id))
         if context is None:
             raise HTTPException(status_code=404, detail="no repro bundle")
-        context["has_diff"] = (run_store.run_dir(run_id) / "repro" / "diff.patch").exists()
+        context.has_diff = (run_store.run_dir(run_id) / "repro" / "diff.patch").exists()
         return context
 
     @app.get("/api/leaderboard")
@@ -109,7 +118,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             state = campaign_store.read_state(campaign_id)
             goal = campaign_store.read_goal(campaign_id)
             summary = summarize_campaign(state, goal)
-            if summary["best"] is None:
+            if summary.best is None:
                 continue
             rows.append(
                 {
@@ -118,12 +127,12 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
                     "status": state.status,
                     "metric": goal.objective.metric,
                     "mode": goal.objective.mode,
-                    "best_value": summary["best"]["objective_value"],
-                    "best_params": summary["best"]["params"],
-                    "best_run_id": summary["best"]["run_id"],
+                    "best_value": summary.best.objective_value,
+                    "best_params": summary.best.params,
+                    "best_run_id": summary.best.run_id,
                     "trials": len(state.trials),
-                    "gpu_hours": summary["gpu_hours"],
-                    "estimated_cost": summary["estimated_cost"],
+                    "gpu_hours": summary.gpu_hours,
+                    "estimated_cost": summary.estimated_cost,
                     "updated_at": state.updated_at.isoformat(),
                 }
             )
@@ -143,37 +152,33 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         ]
 
     @app.get("/api/campaigns/{campaign_id}")
-    def campaign_detail(campaign_id: str) -> dict[str, Any]:
+    def campaign_detail(campaign_id: str) -> CampaignDetail:
         _ensure_campaign(campaign_store, campaign_id)
         state = campaign_store.read_state(campaign_id)
         goal = campaign_store.read_goal(campaign_id)
-        return {
-            "state": state.model_dump(mode="json"),
-            "summary": summarize_campaign(state, goal),
-        }
+        return CampaignDetail(state=state, summary=summarize_campaign(state, goal))
 
     @app.post("/api/campaigns/{campaign_id}/stop")
-    def campaign_stop(campaign_id: str) -> dict[str, Any]:
+    def campaign_stop(campaign_id: str) -> CampaignState:
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
-        state = orchestrator.stop(campaign_id)
-        return state.model_dump(mode="json")
+        return orchestrator.stop(campaign_id)
 
     @app.post("/api/campaigns/{campaign_id}/pause")
-    def campaign_pause(campaign_id: str) -> dict[str, Any]:
+    def campaign_pause(campaign_id: str) -> CampaignState:
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:
-            return orchestrator.pause(campaign_id).model_dump(mode="json")
+            return orchestrator.pause(campaign_id)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/campaigns/{campaign_id}/resume")
-    def campaign_resume(campaign_id: str) -> dict[str, Any]:
+    def campaign_resume(campaign_id: str) -> CampaignState:
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:
-            return orchestrator.resume(campaign_id).model_dump(mode="json")
+            return orchestrator.resume(campaign_id)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

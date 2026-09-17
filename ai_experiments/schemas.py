@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -384,3 +384,118 @@ class CampaignState(BaseModel):
     trials: list[TrialRecord] = Field(default_factory=list)
     best_trial_id: str | None = None
     rounds: int = 0
+
+
+# --- Server / CLI response models ------------------------------------------
+
+
+class HealthStatus(BaseModel):
+    """The `/api/health` body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    runs_root: str
+
+
+class CancelAck(BaseModel):
+    """The `/api/runs/{run_id}/cancel` body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    cancelled: bool
+
+
+class ReproContext(BaseModel):
+    """Reproducibility bundle captured at submit time (`repro/context.json`).
+
+    `capture_repro` writes every field but `has_diff` and `bundle_dir` to disk; those two are
+    never part of the persisted bundle — the server sets `has_diff` and the CLI sets
+    `bundle_dir` on the instance after `read_repro` loads it back, so both must stay optional.
+    All other fields are optional too, tolerating a hand-authored or partial bundle that predates
+    a field being added.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    captured_at: str | None = None
+    git_sha: str | None = None
+    git_branch: str | None = None
+    git_dirty: bool | None = None
+    python: str | None = None
+    platform: str | None = None
+    working_dir: str | None = None
+    has_diff: bool | None = None
+    bundle_dir: str | None = None
+
+
+class CampaignHistoryEntry(BaseModel):
+    """One row of `CampaignSummary.history`: a completed trial's outcome."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: str
+    objective_value: float | None
+    params: dict[str, Any]
+
+
+class BestTrialSummary(BaseModel):
+    """`CampaignSummary.best`: the best-scoring trial so far, or absent if none has scored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: str
+    run_id: str | None
+    objective_value: float | None
+    params: dict[str, Any]
+
+
+class BudgetSummary(BaseModel):
+    """`CampaignSummary.budget`: the budget fields relevant to progress display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_trials: int
+    max_gpu_hours: float | None
+    gpu_hour_rate: float | None
+
+
+class ObjectiveSummary(BaseModel):
+    """`CampaignSummary.objective`: the objective fields relevant to progress display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str
+    mode: Literal["min", "max"]
+    target: float | None
+
+
+class CampaignSummary(BaseModel):
+    """`summarize_campaign`'s return: budget/objective snapshot, trial history, best trial."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: str
+    name: str
+    goal: str
+    status: CampaignStatus
+    stop_reason: str | None
+    gpu_hours: float
+    estimated_cost: float | None
+    budget: BudgetSummary
+    objective: ObjectiveSummary
+    rounds: int
+    trials_by_status: dict[str, int]
+    trials_total: int
+    best: BestTrialSummary | None
+    history: list[CampaignHistoryEntry]
+
+
+class CampaignDetail(BaseModel):
+    """The `/api/campaigns/{campaign_id}` body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: CampaignState
+    summary: CampaignSummary

@@ -21,9 +21,8 @@ import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
-from typing import Any
 
-from ai_experiments.schemas import utc_now
+from ai_experiments.schemas import ReproContext, utc_now
 
 GIT_TIMEOUT = 10
 MAX_DIFF_BYTES = 512_000
@@ -47,26 +46,26 @@ def _git(args: list[str], cwd: Path) -> str | None:
     return result.stdout.strip()
 
 
-def capture_repro(run_dir: Path, working_dir: str | Path) -> dict[str, Any]:
+def capture_repro(run_dir: Path, working_dir: str | Path) -> ReproContext:
     """Write the repro bundle into ``run_dir/repro/``; returns the context."""
     repro_dir = run_dir / "repro"
     repro_dir.mkdir(parents=True, exist_ok=True)
     cwd = Path(working_dir).resolve()
 
     sha = _git(["rev-parse", "HEAD"], cwd)
-    context: dict[str, Any] = {
-        "captured_at": utc_now().isoformat(),
-        "git_sha": sha,
-        "git_branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) if sha else None,
-        "git_dirty": None,
-        "python": sys.version.split()[0],
-        "platform": platform.platform(),
-        "working_dir": str(cwd),
-    }
+    context = ReproContext(
+        captured_at=utc_now().isoformat(),
+        git_sha=sha,
+        git_branch=_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) if sha else None,
+        git_dirty=None,
+        python=sys.version.split()[0],
+        platform=platform.platform(),
+        working_dir=str(cwd),
+    )
 
     if sha is not None:
         status = _git(["status", "--porcelain"], cwd)
-        context["git_dirty"] = bool(status)
+        context.git_dirty = bool(status)
         if status:
             diff = _git(["diff", "HEAD"], cwd) or ""
             (repro_dir / "diff.patch").write_text(diff[:MAX_DIFF_BYTES])
@@ -85,15 +84,17 @@ def capture_repro(run_dir: Path, working_dir: str | Path) -> dict[str, Any]:
         # this at debug level once the house logger exists.
         pass
 
-    (repro_dir / "context.json").write_text(json.dumps(context, indent=2))
+    (repro_dir / "context.json").write_text(
+        json.dumps(context.model_dump(mode="json", exclude={"has_diff", "bundle_dir"}), indent=2)
+    )
     return context
 
 
-def read_repro(run_dir: Path) -> dict[str, Any] | None:
+def read_repro(run_dir: Path) -> ReproContext | None:
     path = run_dir / "repro" / "context.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return ReproContext.model_validate_json(path.read_text())
 
 
 def current_git_sha(working_dir: str | Path) -> str | None:

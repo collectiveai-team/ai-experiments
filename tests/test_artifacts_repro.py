@@ -69,8 +69,8 @@ def test_repro_capture_in_git_repo(tmp_path):
     run_dir.mkdir()
     context = capture_repro(run_dir, repo)
 
-    assert context["git_sha"] == current_git_sha(repo)
-    assert context["git_dirty"] is True
+    assert context.git_sha == current_git_sha(repo)
+    assert context.git_dirty is True
     assert "changed" in (run_dir / "repro" / "diff.patch").read_text()
     assert (run_dir / "repro" / "environment.txt").exists()
     assert read_repro(run_dir) == context
@@ -84,8 +84,8 @@ def test_repro_capture_outside_git_repo(tmp_path):
 
     context = capture_repro(run_dir, plain)
 
-    assert context["git_sha"] is None
-    assert context["python"]
+    assert context.git_sha is None
+    assert context.python
     assert not (run_dir / "repro" / "diff.patch").exists()
 
 
@@ -97,5 +97,5 @@ def test_create_run_captures_repro_bundle(tmp_path):
 
     context = read_repro(run_dir)
     assert context is not None
-    assert context["git_sha"] is not None
-    assert context["git_dirty"] is False
+    assert context.git_sha is not None
+    assert context.git_dirty is False
