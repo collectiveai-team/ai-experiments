@@ -503,7 +503,34 @@ touch ai_experiments/core/__init__.py
 cp .agents/snippets/core/logger.py ai_experiments/core/logger.py
 ```
 
-Copy it unchanged. It already carries `# ast-grep-ignore: settings-module` on its two bootstrap `os.getenv` calls (logging configures before settings exists), so it does not fight Task 9. The only permitted edit is the package path in its docstring.
+Copy it, then make exactly three edits — no more. The snippet already carries
+`# ast-grep-ignore: settings-module` on its two bootstrap `os.getenv` calls (logging configures
+before settings exists), so it does not fight Task 9.
+
+1. The package path in its docstring.
+2. `_is_prod`'s single line is **104 columns** and would fail `ruff check` under this repo's
+   `line-length = 100`. The suppression must stay trailing on the `os.getenv` line (CES-46's
+   "Suppressing" section shows the same-line form), so split the statement instead:
+
+   ```python
+   def _is_prod() -> bool:
+       env = os.getenv("ENV", "dev")  # ast-grep-ignore: settings-module
+       return env.lower() in {"prod", "production"}
+   ```
+
+3. `logging.getLevelNamesMapping()` is Python 3.11+, and this repo declares
+   `requires-python = ">=3.10"`. CES-30 (`general-respect-local-repo`) makes the repo's pin the
+   binding contract, so use a 3.10-compatible lookup:
+
+   ```python
+   def _level() -> int:
+       name = os.getenv("LOG_LEVEL", "INFO").upper()  # ast-grep-ignore: settings-module
+       level = logging.getLevelName(name)  # 3.10-compatible; getLevelNamesMapping is 3.11+
+       return level if isinstance(level, int) else logging.INFO
+   ```
+
+Both snippet defects are upstream bugs in `collectiveai-team/scaffolding` and should be reported
+there.
 
 - [ ] **Step 5: Run the test**
 
@@ -512,17 +539,21 @@ Expected: PASS (3 tests).
 
 - [ ] **Step 6: Replace the three prints**
 
-`ai_experiments/daemon.py:290` is library code — it becomes a logger call:
+`ai_experiments/daemon.py:289` is **not** a stray diagnostic — it is `run_forever`'s output
+contract. It emits the whole tick report as one JSON line with `flush=True`, and `iax daemon`
+deliberately sends its human banner to stderr (`cli.py`, `typer.echo(..., err=True)`) to keep
+stdout machine-parseable. Replacing it with `log.info("tick_complete", ...)` would drop the
+report body (including `report.errors`) and, in dev mode, render colored console text over the
+JSON stream. CES-46 exempts output where "stdout *is* the product"; this is that case. Keep the
+print and suppress it visibly, the same way this task treats the example script:
 
 ```python
-# top of module
-from ai_experiments.core.logger import get_logger
-
-log = get_logger(__name__)
-
-# at the call site — key/value pairs, not an f-string
-log.info("tick_complete", actions=len(report.actions))
+print(  # ast-grep-ignore: log-no-print  # run_forever's stdout is the daemon's JSON stream
+    json.dumps(report.model_dump(mode="json")), flush=True
+)
 ```
+
+The logger module still lands, still ships with tests, and Task 10 consumes it.
 
 `examples/toy_train.py:32,43` is a standalone example script whose stdout *is* its output. CES-46 governs library code; an example that logs instead of printing teaches the wrong thing. Keep the prints, suppress each visibly:
 
@@ -532,15 +563,20 @@ print(f"epoch {epoch} loss {loss:.4f}")  # ast-grep-ignore: log-no-print  # exam
 
 - [ ] **Step 7: Fix the cross-test imports (3 pyrefly `missing-import` errors)**
 
-`tests/test_orchestrator.py` and `tests/test_tracking.py` import helpers by bare module name, which resolves only because pytest injects rootdir into `sys.path` — pyrefly cannot see it. Move the shared helpers into `tests/conftest.py` as fixtures. Prefer fixtures over a `tests/helpers.py`: `test-in-memory-adapters` (CES-64) wants shared fakes reachable as fixtures, and `no-utils` (CES-63) would reject a grab-bag module name anyway.
+The importers are `tests/test_daemon.py:103` (`from test_orchestrator import FakeBackend, _goal`)
+and `tests/test_ray_backend.py:170,190` (`from test_tracking import FakeMlflowModule`) — the bare
+module names resolve only because pytest injects rootdir into `sys.path`, which pyrefly cannot
+see. The three shared helpers are therefore `FakeBackend` and `_goal` (defined in
+`test_orchestrator.py`) and `FakeMlflowModule` (defined in `test_tracking.py`). Move the shared helpers into `tests/conftest.py` as fixtures. Prefer fixtures over a `tests/helpers.py`: `test-in-memory-adapters` (CES-64) wants shared fakes reachable as fixtures, and `no-utils` (CES-63) would reject a grab-bag module name anyway.
 
 - [ ] **Step 8: Verify and commit**
 
 ```bash
 uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c log-no-print          # expect 0
-uvx pyrefly check --config pyproject.toml 2>&1 | grep -c missing-import    # expect 0
-.venv/bin/python -m pytest tests -q 2>&1 | tail -1                         # expect 2 failed, 122 passed
-git add -A && git commit -m "refactor: adopt the house structlog logger and drop library prints (CES-74, CES-45, CES-46)"
+uvx pyrefly@latest check --config pyproject.toml 2>&1 | tail -1           # expect 0 errors
+.venv/bin/python -m pytest tests -q 2>&1 | tail -1              # expect 2 failed, 123 passed, 6 skipped
+git add pyproject.toml uv.lock ai_experiments tests examples
+git commit -m "refactor: adopt the house structlog logger and drop library prints (CES-74, CES-45, CES-46)"
 ```
 
 ---
