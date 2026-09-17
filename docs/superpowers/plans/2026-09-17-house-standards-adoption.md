@@ -233,8 +233,14 @@ Read the diff. `--unsafe-fixes` is allowed to change behavior. Apply only the ca
 
 ```bash
 git add -u
-git commit -m "style: apply ruff safe autofixes"
+git commit -m "refactor: apply ruff fixes (safe autofixes plus reviewed unsafe fixes)"
 ```
+
+The type is `refactor:`, not `style:`. Step 3 invites unsafe fixes, and two of the categories
+ruff offers here are not stylistic: `TC001` changes when a first-party import is evaluated, and
+`SIM105` changes the construct used to suppress an exception. `style:` is for changes with no
+semantic effect; claiming it for this commit would understate what the commit contains.
+
 
 ---
 
