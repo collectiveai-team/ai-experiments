@@ -607,6 +607,11 @@ Write a test that invokes it exactly the way the backend does, with the real fla
 
 Typer is already a dependency, so there is no new dependency decision. Derive the parser from the signature:
 
+The worker takes exactly two flags today (`worker.py:142-143`), both required, no defaults:
+`--run-id` and `--runs-dir`. Those two names are the wire protocol — `backends/local.py:53-62`
+builds `[sys.executable, "-m", "ai_experiments.worker", "--run-id", run_id, "--runs-dir",
+str(self.store.root)]`. A renamed flag is a silently broken spawn.
+
 ```python
 import typer
 
@@ -615,18 +620,21 @@ app = typer.Typer(add_completion=False)
 
 @app.command()
 def main(
-    manifest: Path = typer.Option(..., "--manifest", help="Path to the run manifest."),
-    run_dir: Path = typer.Option(..., "--run-dir", help="Directory to write run state into."),
+    run_id: str = typer.Option(..., "--run-id", help="Run id to supervise."),
+    runs_dir: Path = typer.Option(..., "--runs-dir", help="Run store root."),
 ) -> None:
-    """Execute one run and stream its metrics into the store."""
-    ...
+    """Supervise one run: spawn its workload and stream metrics into the store."""
+    FilesystemRunStore(runs_dir).…
 
 
 if __name__ == "__main__":
     app()
 ```
 
-Copy the flag **names and defaults verbatim** from the existing `add_argument` calls. A renamed flag is a broken spawn. `typer.Option` is already covered by the `extend-immutable-calls` config from Task 2, so this introduces no new B008.
+`runs_dir` may be typed `Path`: `FilesystemRunStore.__init__` accepts `str | Path | None`
+(`store/filesystem.py:54`), so `Path` is a tightening, not a change. `run_id` stays `str`.
+`typer.Option` is already covered by the `extend-immutable-calls` config from Task 2, so this
+introduces no new B008.
 
 - [ ] **Step 3: Run the characterization test**
 
@@ -644,10 +652,14 @@ import argparse  # ast-grep-ignore: cli-typed-framework  # standalone example: s
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c cli-typed-framework   # expect 0 beyond the justified ignore
-.venv/bin/python -m pytest tests -q 2>&1 | tail -1
-git add -u && git commit -m "refactor(worker): replace argparse with Typer (CES-67)"
+uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c cli-typed-framework   # expect 0
+.venv/bin/python -m pytest tests -q 2>&1 | tail -1     # expect 2 failed, 123+ passed, 6 skipped
+git add ai_experiments examples tests
+git commit -m "refactor(worker): replace argparse with Typer (CES-67)"
 ```
+
+A visible `ast-grep-ignore` suppresses the finding, so the expected count is 0, not "0 beyond the
+ignore". Use explicit paths, not `git add -u` — Step 1 may add a new test file, which `-u` skips.
 
 ---
 
