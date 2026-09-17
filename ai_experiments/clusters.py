@@ -22,7 +22,6 @@ Config file (first match wins): ``$IAX_CLUSTERS``, ``./clusters.yaml``,
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import urllib.error
@@ -32,6 +31,8 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel
+
+from ai_experiments.settings import get_settings
 
 ClusterProvider = Literal["local", "aws", "gcp", "azure"]
 _RAY = shutil.which("ray") or "ray"
@@ -52,7 +53,7 @@ class ClusterConfigError(RuntimeError):
 def clusters_config_path(explicit: str | Path | None = None) -> Path | None:
     if explicit is not None:
         return Path(explicit)
-    env = os.environ.get("IAX_CLUSTERS")
+    env = get_settings().clusters_config
     if env:
         return Path(env)
     for candidate in (

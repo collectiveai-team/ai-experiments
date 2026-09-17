@@ -32,6 +32,7 @@ from ai_experiments.schemas import (
     WorkloadSpec,
     utc_now,
 )
+from ai_experiments.settings import get_settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -178,3 +179,11 @@ def goal_factory() -> Callable[..., GoalSpec]:
 def fake_mlflow_module_factory() -> type[FakeMlflowModule]:
     """Return the fake ``mlflow`` module, as a constructor: ``fake_mlflow_module_factory()``."""
     return FakeMlflowModule
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """CES-76: get_settings() is process-cached, so env-mutating tests must start clean."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

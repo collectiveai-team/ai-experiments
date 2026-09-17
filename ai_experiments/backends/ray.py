@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +16,7 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
+from ai_experiments.settings import get_settings
 from ai_experiments.store import FilesystemRunStore
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ def resolve_ray_address(address: str | None = None) -> str:
         if not stripped:
             raise ValueError("Ray address must not be empty")
         return stripped
-    env_address = os.environ.get("RAY_ADDRESS")
+    env_address = get_settings().ray_address
     if env_address and env_address.strip():
         return env_address.strip()
     return DEFAULT_RAY_ADDRESS

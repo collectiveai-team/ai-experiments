@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import shlex
 import subprocess
 import urllib.error
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_experiments.schemas import utc_now
+from ai_experiments.settings import get_settings
 
 WEBHOOK_TIMEOUT = 10
 COMMAND_TIMEOUT = 30
@@ -39,8 +39,8 @@ class Notifier:
         command: str | None = None,
     ) -> None:
         self.runs_root = Path(runs_root)
-        self.webhook_url = webhook_url or os.environ.get("IAX_NOTIFY_WEBHOOK")
-        self.command = command or os.environ.get("IAX_NOTIFY_COMMAND")
+        self.webhook_url = webhook_url or get_settings().notify_webhook
+        self.command = command or get_settings().notify_command
 
     def send(self, title: str, message: str, **details: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {

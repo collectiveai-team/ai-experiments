@@ -38,7 +38,8 @@ def main() -> None:
 
     # "Checkpoint": anything written to $IAX_ARTIFACTS_DIR is listed by
     # `iax artifacts <run_id>` and downloadable from the dashboard.
-    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
+    # standalone example: stays dependency-free
+    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")  # ast-grep-ignore: settings-module
     if artifacts:
         with (Path(artifacts) / "model.json").open("w") as fh:
             json.dump({"x": x, "loss": loss}, fh)

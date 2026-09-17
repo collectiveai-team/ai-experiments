@@ -61,7 +61,8 @@ class LocalBackend(ExperimentBackend):
         ]
         log_path = run_dir / "worker.log"
         log_file = log_path.open("a")
-        env = os.environ.copy()
+        # child-process env propagation, not config
+        env = os.environ.copy()  # ast-grep-ignore: settings-module
         package_root = Path(__file__).resolve().parents[2]
         env["PYTHONPATH"] = f"{package_root}:{env.get('PYTHONPATH', '')}"
         process = subprocess.Popen(  # noqa: S603  # sys.executable + our own worker module

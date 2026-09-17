@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 from pathlib import Path
 from typing import Any
+
+from ai_experiments.settings import get_settings
 
 METRIC_PREFIX = "IAX_METRIC "
 
@@ -34,7 +35,7 @@ def artifacts_dir() -> Path | None:
     None when running outside the harness (local backend sets it; on remote
     Ray clusters artifacts stay on the cluster's own storage).
     """
-    value = os.environ.get("IAX_ARTIFACTS_DIR")
+    value = get_settings().artifacts_dir
     if not value:
         return None
     path = Path(value)

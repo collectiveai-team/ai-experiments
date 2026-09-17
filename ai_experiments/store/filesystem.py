@@ -16,6 +16,7 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
+from ai_experiments.settings import get_settings
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -52,7 +53,7 @@ class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
     def __init__(self, root: str | Path | None = None, capture_repro: bool = True) -> None:
-        self.root = Path(root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs"))
+        self.root = Path(root or get_settings().runs_dir)
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:

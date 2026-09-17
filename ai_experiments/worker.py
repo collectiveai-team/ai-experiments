@@ -50,7 +50,8 @@ class _Supervisor:
         manifest = ExperimentManifest.from_yaml(run_dir / "manifest.yaml")
 
         command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
-        env = os.environ.copy()
+        # child-process env propagation, not config
+        env = os.environ.copy()  # ast-grep-ignore: settings-module
         env.update(manifest.workload.env)
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)

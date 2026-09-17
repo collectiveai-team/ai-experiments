@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from ai_experiments.repro import read_repro
 from ai_experiments.schemas import ExperimentManifest, RunEvent, RunStatus
+from ai_experiments.settings import get_settings
 
 if TYPE_CHECKING:
     from ai_experiments.store import FilesystemRunStore
@@ -56,7 +57,7 @@ def _is_file_store(tracking_uri: str | None) -> bool:
 
     Covers ``file:...``, a plain path, or nothing — mlflow defaults to ./mlruns.
     """
-    resolved = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")
+    resolved = tracking_uri or get_settings().mlflow_tracking_uri
     return resolved == "" or resolved.startswith("file:") or "://" not in resolved
 
 
@@ -70,8 +71,11 @@ def _file_store_optout(tracking_uri: str | None) -> dict[str, str]:
     """
     if not _is_file_store(tracking_uri):
         return {}
-    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    return {"MLFLOW_ALLOW_FILE_STORE": os.environ["MLFLOW_ALLOW_FILE_STORE"]}
+    # mlflow reads this out of os.environ itself; we set it for mlflow and mirror it into the
+    # workload env. Not app config, and a cached settings read would not see the setdefault.
+    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")  # ast-grep-ignore: settings-module
+    value = os.environ["MLFLOW_ALLOW_FILE_STORE"]  # ast-grep-ignore: settings-module
+    return {"MLFLOW_ALLOW_FILE_STORE": value}
 
 
 class MlflowTracker:
