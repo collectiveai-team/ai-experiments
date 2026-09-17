@@ -47,9 +47,7 @@ def _running_run(
 
 def test_daemon_auto_kills_timed_out_run(tmp_path):
     store = _store(tmp_path)
-    run_id = _running_run(
-        store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None
-    )
+    run_id = _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None)
 
     report = MonitorDaemon(store).tick()
 
@@ -61,9 +59,7 @@ def test_daemon_auto_kills_timed_out_run(tmp_path):
 
 def test_daemon_escalates_fatal_without_auto_kill(tmp_path):
     store = _store(tmp_path)
-    run_id = _running_run(
-        store, MonitorPolicy(timeout_seconds=60, auto_kill=False), pid=None
-    )
+    run_id = _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=False), pid=None)
 
     report = MonitorDaemon(store).tick()
 
@@ -77,9 +73,7 @@ def test_daemon_reaps_dead_worker(tmp_path):
     store = _store(tmp_path)
     run_id = _running_run(store, MonitorPolicy(), pid=99999)
 
-    with patch(
-        "ai_experiments.monitoring.rules._default_pid_alive", return_value=False
-    ):
+    with patch("ai_experiments.monitoring.rules._default_pid_alive", return_value=False):
         report = MonitorDaemon(store).tick()
 
     actions = {a.run_id: a for a in report.actions}
@@ -92,9 +86,7 @@ def test_daemon_escalates_suspicious_run_after_ladder_threshold(tmp_path):
     stale_heartbeat = (utc_now() - timedelta(minutes=20)).isoformat()
     run_id = _running_run(
         store,
-        MonitorPolicy(
-            escalation=EscalationPolicy(after_suspicious_ticks=2, cooldown_minutes=0)
-        ),
+        MonitorPolicy(escalation=EscalationPolicy(after_suspicious_ticks=2, cooldown_minutes=0)),
         pid=None,
         details={"heartbeat_at": stale_heartbeat},
     )

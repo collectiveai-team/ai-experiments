@@ -48,9 +48,7 @@ def mlflow_uri() -> str:
     # The client library matters as much as the server: without it
     # begin_tracking degrades to a warning event and records no linkage, so
     # every assertion here would fail rather than skip.
-    pytest.importorskip(
-        "mlflow", reason="needs the mlflow extra: uv sync --extra mlflow"
-    )
+    pytest.importorskip("mlflow", reason="needs the mlflow extra: uv sync --extra mlflow")
     if not _reachable(f"{MLFLOW_URI}/health"):
         pytest.skip(
             f"no MLflow server at {MLFLOW_URI} -- "

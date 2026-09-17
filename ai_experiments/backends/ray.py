@@ -58,17 +58,13 @@ class RayBackend(ExperimentBackend):
         try:
             from ray.job_submission import JobSubmissionClient
         except ImportError as exc:  # pragma: no cover - depends on optional ray extra
-            raise RuntimeError(
-                "Ray is not installed. Install ai-experiments[ray]."
-            ) from exc
+            raise RuntimeError("Ray is not installed. Install ai-experiments[ray].") from exc
         return JobSubmissionClient(self.address)
 
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
-        entrypoint = " ".join(
-            [manifest.workload.entrypoint, *manifest.workload.args]
-        ).strip()
+        entrypoint = " ".join([manifest.workload.entrypoint, *manifest.workload.args]).strip()
 
         # Establish the real status *first*. `begin_tracking` below records the
         # MLflow linkage via update_status, and the Ray job id is only known
@@ -98,9 +94,7 @@ class RayBackend(ExperimentBackend):
             client = self._client()
         except RuntimeError as exc:
             error = "Ray is not installed. Install ai-experiments[ray]."
-            self.store.update_status(
-                run_id, status="failed", error=error, completed_at=utc_now()
-            )
+            self.store.update_status(run_id, status="failed", error=error, completed_at=utc_now())
             raise RuntimeError(error) from exc
 
         from ai_experiments.tracking import begin_tracking
@@ -128,10 +122,7 @@ class RayBackend(ExperimentBackend):
             ray_status = client.get_job_status(status.external_id)
             mapped = _map_ray_status(ray_status)
             details = self._ray_details(run_id, client, status.external_id, ray_status)
-            if (
-                mapped in {"completed", "failed", "cancelled"}
-                and status.completed_at is None
-            ):
+            if mapped in {"completed", "failed", "cancelled"} and status.completed_at is None:
                 status = self.store.update_status(
                     run_id,
                     status=mapped,
@@ -139,14 +130,10 @@ class RayBackend(ExperimentBackend):
                     details=details,
                 )
             else:
-                status = self.store.update_status(
-                    run_id, status=mapped, details=details
-                )
+                status = self.store.update_status(run_id, status=mapped, details=details)
             if mapped == "failed" and not status.error:
                 message = details.get("ray_message") or details.get("ray_error_type")
-                status = self.store.update_status(
-                    run_id, error=str(message or "Ray job failed")
-                )
+                status = self.store.update_status(run_id, error=str(message or "Ray job failed"))
             return status
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
@@ -182,9 +169,7 @@ class RayBackend(ExperimentBackend):
         details["ray_condition"] = classify_ray_condition(details)
         return details
 
-    def _sync_metrics_from_logs(
-        self, run_id: str, lines: list[str]
-    ) -> MetricPoint | None:
+    def _sync_metrics_from_logs(self, run_id: str, lines: list[str]) -> MetricPoint | None:
         """Append metric points newly seen in the job logs to the run store.
 
         Ray job logs carry no timestamps, so only points beyond the count

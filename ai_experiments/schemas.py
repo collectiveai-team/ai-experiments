@@ -327,9 +327,7 @@ class GoalSpec(BaseModel):
 
     @field_validator("search_space")
     @classmethod
-    def search_space_not_empty(
-        cls, value: dict[str, ParamSpec]
-    ) -> dict[str, ParamSpec]:
+    def search_space_not_empty(cls, value: dict[str, ParamSpec]) -> dict[str, ParamSpec]:
         if not value:
             raise ValueError("search_space needs at least one parameter")
         return value
@@ -358,9 +356,7 @@ TrialState = Literal[
     "cancelled",
 ]
 
-CampaignStatus = Literal[
-    "running", "paused", "stopping", "completed", "stopped", "failed"
-]
+CampaignStatus = Literal["running", "paused", "stopping", "completed", "stopped", "failed"]
 
 
 class TrialRecord(BaseModel):

@@ -57,12 +57,8 @@ class FakeBackend(ExperimentBackend):
             assert manifest is not None
             params = manifest.metadata["params"]
             value = self.objective_fn(params)
-            self.store.append_metric(
-                run_id, MetricPoint(step=1, values={"loss": value})
-            )
-            status = self.store.update_status(
-                run_id, status="completed", completed_at=utc_now()
-            )
+            self.store.append_metric(run_id, MetricPoint(step=1, values={"loss": value}))
+            status = self.store.update_status(run_id, status="completed", completed_at=utc_now())
         return status
 
     def logs(self, run_id: str, tail: int = 200) -> list[RunEvent]:
@@ -117,9 +113,7 @@ def test_campaign_runs_to_budget_exhaustion(tmp_path):
     assert best.objective_value == min(
         t.objective_value for t in state.trials if t.objective_value is not None
     )
-    summary = (
-        orchestrator.campaign_store.campaign_dir(state.campaign_id) / "summary.json"
-    )
+    summary = orchestrator.campaign_store.campaign_dir(state.campaign_id) / "summary.json"
     assert summary.exists()
 
 
@@ -235,9 +229,7 @@ def test_gpu_hours_recorded_and_budget_stops_campaign(tmp_path):
         if state.status == "completed":
             break
     finished = [t for t in state.trials if t.status == "completed"]
-    assert finished and all(
-        t.gpu_hours is not None and t.gpu_hours >= 0 for t in finished
-    )
+    assert finished and all(t.gpu_hours is not None and t.gpu_hours >= 0 for t in finished)
 
     # A zero GPU-hour budget halts a fresh campaign on its first step.
     capped = _goal(

@@ -127,9 +127,7 @@ def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
     monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     fake = FakeMlflowModule()
-    manifest = _manifest(
-        tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns")
-    )
+    manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
@@ -144,9 +142,7 @@ def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
 def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch):
     monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
     fake = FakeMlflowModule()
-    manifest = _manifest(
-        tracking=TrackingSpec(mlflow=True, tracking_uri="http://mlflow:5000")
-    )
+    manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="http://mlflow:5000"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
@@ -159,9 +155,7 @@ def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch):
 def test_user_file_store_opt_out_is_respected(tmp_path, monkeypatch):
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "false")
     fake = FakeMlflowModule()
-    manifest = _manifest(
-        tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns")
-    )
+    manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):

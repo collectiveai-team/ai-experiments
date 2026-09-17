@@ -89,9 +89,7 @@ class Notifier:
             pass
 
 
-def read_notifications(
-    runs_root: str | Path, tail: int | None = None
-) -> list[dict[str, Any]]:
+def read_notifications(runs_root: str | Path, tail: int | None = None) -> list[dict[str, Any]]:
     path = Path(runs_root) / "_notifications.jsonl"
     if not path.exists():
         return []

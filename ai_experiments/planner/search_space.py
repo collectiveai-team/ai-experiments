@@ -33,9 +33,7 @@ def _sample_param(spec: ParamSpec, rng: random.Random) -> Any:
     raise TypeError(f"unsupported param spec: {spec!r}")
 
 
-def grid_points(
-    space: dict[str, ParamSpec], resolution: int = 4
-) -> list[dict[str, Any]]:
+def grid_points(space: dict[str, ParamSpec], resolution: int = 4) -> list[dict[str, Any]]:
     """Expand the space into a full grid (continuous params get `resolution` steps)."""
     names = sorted(space)
     axes = [_grid_axis(space[name], resolution) for name in names]
@@ -49,9 +47,7 @@ def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
         span = spec.high - spec.low
         if span < resolution:
             return list(range(spec.low, spec.high + 1))
-        return sorted(
-            {spec.low + round(i * span / (resolution - 1)) for i in range(resolution)}
-        )
+        return sorted({spec.low + round(i * span / (resolution - 1)) for i in range(resolution)})
     if isinstance(spec, UniformParam):
         step = (spec.high - spec.low) / (resolution - 1)
         return [spec.low + i * step for i in range(resolution)]
@@ -80,9 +76,7 @@ def perturb(
     return result
 
 
-def _perturb_param(
-    spec: ParamSpec, value: Any, rng: random.Random, scale: float
-) -> Any:
+def _perturb_param(spec: ParamSpec, value: Any, rng: random.Random, scale: float) -> Any:
     if isinstance(spec, ChoiceParam):
         if len(spec.values) > 1 and rng.random() < scale:
             return rng.choice([v for v in spec.values if v != value])

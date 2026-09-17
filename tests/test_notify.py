@@ -22,8 +22,7 @@ def test_command_sink_receives_payload(tmp_path):
     sink_file = tmp_path / "received.json"
     script = tmp_path / "sink.py"
     script.write_text(
-        "import sys, pathlib\n"
-        f"pathlib.Path({str(sink_file)!r}).write_text(sys.stdin.read())\n"
+        f"import sys, pathlib\npathlib.Path({str(sink_file)!r}).write_text(sys.stdin.read())\n"
     )
     notifier = Notifier(tmp_path / "runs", command=f"{sys.executable} {script}")
 

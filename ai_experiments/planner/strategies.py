@@ -17,9 +17,7 @@ MAX_SAMPLE_ATTEMPTS = 50
 
 
 class Strategy(Protocol):
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         """Return up to `count` new parameter assignments given trial history."""
         ...
 
@@ -65,19 +63,13 @@ def _fresh_samples(
 
 
 class RandomStrategy:
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         rng = _rng(goal, trials)
-        return _fresh_samples(
-            goal, trials, count, lambda: sample(goal.search_space, rng)
-        )
+        return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
 
 
 class GridStrategy:
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         seen = _seen_keys(trials)
         remaining = [
             params
@@ -98,19 +90,13 @@ class AdaptiveStrategy:
 
     WARMUP_RESULTS = 3
 
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         rng = _rng(goal, trials)
         scored = [
-            t
-            for t in trials
-            if t.objective_value is not None and math.isfinite(t.objective_value)
+            t for t in trials if t.objective_value is not None and math.isfinite(t.objective_value)
         ]
         if len(scored) < self.WARMUP_RESULTS:
-            return _fresh_samples(
-                goal, trials, count, lambda: sample(goal.search_space, rng)
-            )
+            return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
 
         reverse = goal.objective.mode == "max"
         ranked = sorted(

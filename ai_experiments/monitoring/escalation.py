@@ -56,9 +56,7 @@ class EscalationLadder:
         return EscalationState(**json.loads(path.read_text()))
 
     def _write_state(self, run_id: str, state: EscalationState) -> None:
-        self._state_path(run_id).write_text(
-            json.dumps(state.model_dump(mode="json"), indent=2)
-        )
+        self._state_path(run_id).write_text(json.dumps(state.model_dump(mode="json"), indent=2))
 
     def observe(
         self,
@@ -156,9 +154,7 @@ def list_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
     return requests
 
 
-def _in_cooldown(
-    last_call: datetime | None, policy: EscalationPolicy, now: datetime
-) -> bool:
+def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: datetime) -> bool:
     if last_call is None:
         return False
     if last_call.tzinfo is None:
@@ -184,9 +180,7 @@ def _run_agent_command(
             timeout=policy.agent_timeout_seconds,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return AgentVerdict(
-            verdict="inconclusive", reason=f"agent command failed: {exc}"
-        )
+        return AgentVerdict(verdict="inconclusive", reason=f"agent command failed: {exc}")
 
     output = result.stdout.strip()
     try:

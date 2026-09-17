@@ -56,10 +56,7 @@ def test_goal_propagates_objective_metric_to_monitoring():
 def test_random_planning_avoids_duplicates_and_respects_count():
     goal = _goal()
     first = plan_next_params(goal, [], 3)
-    trials = [
-        TrialRecord(trial_id=f"t{i:03d}", params=params)
-        for i, params in enumerate(first)
-    ]
+    trials = [TrialRecord(trial_id=f"t{i:03d}", params=params) for i, params in enumerate(first)]
     second = plan_next_params(goal, trials, 3)
 
     keys = {params_key(p) for p in first} | {params_key(p) for p in second}
@@ -78,17 +75,12 @@ def test_grid_strategy_exhausts_grid():
     first = plan_next_params(goal, [], 10)
     assert len(first) == 4
 
-    trials = [
-        TrialRecord(trial_id=f"t{i:03d}", params=params)
-        for i, params in enumerate(first)
-    ]
+    trials = [TrialRecord(trial_id=f"t{i:03d}", params=params) for i, params in enumerate(first)]
     assert plan_next_params(goal, trials, 10) == []
 
 
 def test_adaptive_strategy_exploits_best_region():
-    goal = _goal(
-        strategy=StrategySpec(name="adaptive", seed=5, exploration=0.0, top_k=1)
-    )
+    goal = _goal(strategy=StrategySpec(name="adaptive", seed=5, exploration=0.0, top_k=1))
     trials = [
         TrialRecord(
             trial_id="t000",

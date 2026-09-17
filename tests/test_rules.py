@@ -47,9 +47,7 @@ def test_diagnose_run_terminal_reasons(tmp_path, status, expected_reason):
 
 
 def test_diagnose_run_active_reason(tmp_path):
-    store, run_id = _store_with_status(
-        tmp_path, "running", details={"ray_condition": "running"}
-    )
+    store, run_id = _store_with_status(tmp_path, "running", details={"ray_condition": "running"})
 
     report = diagnose_run(store, run_id)
 

@@ -67,17 +67,13 @@ def test_cooldown_blocks_back_to_back_agent_calls(tmp_path):
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "cooling_down"
 
     later = utc_now() + timedelta(minutes=31)
-    assert (
-        ladder.observe(run_id, _suspicious(run_id), policy, now=later) == "invoke_agent"
-    )
+    assert ladder.observe(run_id, _suspicious(run_id), policy, now=later) == "invoke_agent"
 
 
 def test_budget_caps_agent_calls(tmp_path):
     store, run_id = _setup(tmp_path)
     ladder = EscalationLadder(store)
-    policy = EscalationPolicy(
-        after_suspicious_ticks=1, cooldown_minutes=0, max_agent_calls=2
-    )
+    policy = EscalationPolicy(after_suspicious_ticks=1, cooldown_minutes=0, max_agent_calls=2)
 
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "invoke_agent"
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "invoke_agent"
@@ -109,9 +105,7 @@ def test_escalate_runs_agent_command_and_parses_verdict(tmp_path):
 
 def test_escalate_handles_non_json_agent_output(tmp_path):
     store, run_id = _setup(tmp_path)
-    policy = EscalationPolicy(
-        agent_command=f"{sys.executable} -c 'print(\"thinking...\")'"
-    )
+    policy = EscalationPolicy(agent_command=f"{sys.executable} -c 'print(\"thinking...\")'")
 
     verdict = escalate(store, _suspicious(run_id), policy)
 

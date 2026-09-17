@@ -76,9 +76,7 @@ class MonitorDaemon:
     ) -> None:
         self.run_store = run_store
         self.campaign_store = campaign_store or CampaignStore(run_store.root)
-        self.orchestrator = orchestrator or CampaignOrchestrator(
-            run_store, self.campaign_store
-        )
+        self.orchestrator = orchestrator or CampaignOrchestrator(run_store, self.campaign_store)
         self.ladder = EscalationLadder(run_store)
         self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
@@ -278,9 +276,7 @@ class MonitorDaemon:
     def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
         self._stop = True
 
-    def run_forever(
-        self, interval_seconds: int = 30, max_ticks: int | None = None
-    ) -> None:
+    def run_forever(self, interval_seconds: int = 30, max_ticks: int | None = None) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
         ticks = 0

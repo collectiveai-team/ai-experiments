@@ -33,9 +33,7 @@ def _manifest(tmp_path):
 
 def _sleep_manifest(tmp_path):
     script = tmp_path / "sleep_train.py"
-    script.write_text(
-        "import time\nprint('started', flush=True)\ntime.sleep(2)\nprint('done')\n"
-    )
+    script.write_text("import time\nprint('started', flush=True)\ntime.sleep(2)\nprint('done')\n")
     manifest = {
         "experiment": "sleep",
         "backend": "local",

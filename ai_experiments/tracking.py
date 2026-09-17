@@ -121,9 +121,7 @@ class MlflowTracker:
             self.client.log_param(mlflow_run_id, str(name), value)
         return mlflow_run_id
 
-    def finalize_run(
-        self, store: FilesystemRunStore, run_id: str, mlflow_run_id: str
-    ) -> None:
+    def finalize_run(self, store: FilesystemRunStore, run_id: str, mlflow_run_id: str) -> None:
         """Mirror collected metrics + local artifacts, then close the run."""
         for index, point in enumerate(store.read_metrics(run_id)):
             step = point.step if point.step is not None else index

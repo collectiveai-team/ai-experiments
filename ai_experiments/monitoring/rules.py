@@ -103,9 +103,7 @@ def _suspicious_reasons(
     elif ray_condition == "stuck_suspected":
         reasons.append("ray_stuck_suspected")
 
-    threshold = float(
-        policy.stuck_after_minutes or status.details.get("stuck_after_minutes", 30)
-    )
+    threshold = float(policy.stuck_after_minutes or status.details.get("stuck_after_minutes", 30))
 
     heartbeat_at = _parse_iso(status.details.get("heartbeat_at"))
     if heartbeat_at is not None:
@@ -191,9 +189,7 @@ def diagnose_run(
                 reasons=[status.status],
             ),
             events=events,
-            recommendations=[
-                "Delegate to a training monitor agent for failure diagnosis."
-            ],
+            recommendations=["Delegate to a training monitor agent for failure diagnosis."],
         )
 
     fatal = _fatal_reasons(status, policy, metrics, pid_check)
@@ -208,9 +204,7 @@ def diagnose_run(
                 reasons=fatal,
             ),
             events=events,
-            recommendations=[
-                "Terminate the run; the condition cannot recover on its own."
-            ],
+            recommendations=["Terminate the run; the condition cannot recover on its own."],
         )
 
     reasons = _suspicious_reasons(status, policy, metrics, events)
@@ -225,9 +219,7 @@ def diagnose_run(
                 reasons=reasons,
             ),
             events=events,
-            recommendations=[
-                "Ask the training monitor agent to inspect logs and backend state."
-            ],
+            recommendations=["Ask the training monitor agent to inspect logs and backend state."],
         )
 
     return DiagnosisReport(
@@ -245,7 +237,5 @@ def diagnose_run(
 
 
 def event_from_log_line(line: str) -> RunEvent:
-    level = (
-        "error" if "error" in line.lower() or "traceback" in line.lower() else "info"
-    )
+    level = "error" if "error" in line.lower() or "traceback" in line.lower() else "info"
     return RunEvent(level=level, message=line.rstrip())

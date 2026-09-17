@@ -94,15 +94,11 @@ def test_submit_writes_a_ray_status_not_the_store_fallback(completed_ray_run):
 
 def test_the_real_ray_job_completes(completed_ray_run):
     final = completed_ray_run["final"]
-    assert final.status == "completed", (
-        f"ray reported {final.details.get('ray_status')}"
-    )
+    assert final.status == "completed", f"ray reported {final.details.get('ray_status')}"
 
 
 def test_metrics_are_harvested_from_real_ray_job_logs(completed_ray_run):
-    metrics = completed_ray_run["store"].read_metrics(
-        completed_ray_run["handle"].run_id
-    )
+    metrics = completed_ray_run["store"].read_metrics(completed_ray_run["handle"].run_id)
     assert [p.step for p in metrics] == [1, 2, 3]
     assert metrics[-1].values["val_loss"] == pytest.approx(1 / 3, rel=1e-3)
 

@@ -102,9 +102,7 @@ class _Supervisor:
         exit_code = self.process.wait()
         self._stop.set()
         if exit_code == 0:
-            self._update_status(
-                status="completed", exit_code=exit_code, completed_at=utc_now()
-            )
+            self._update_status(status="completed", exit_code=exit_code, completed_at=utc_now())
             self.store.append_event(self.run_id, RunEvent(message="workload completed"))
         elif exit_code in (-signal.SIGTERM, -signal.SIGKILL):
             self._update_status(

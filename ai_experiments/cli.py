@@ -60,9 +60,7 @@ def validate(
 @app.command()
 def submit(
     config: Path = typer.Argument(..., help="Path to experiment manifest YAML"),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     try:
@@ -87,9 +85,7 @@ def submit(
 @app.command()
 def status(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -106,9 +102,7 @@ def status(
 def logs(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(200, "--tail", help="Number of recent events"),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -117,17 +111,13 @@ def logs(
         _echo_json([event.model_dump(mode="json") for event in events])
     else:
         for event in events:
-            typer.echo(
-                f"[{event.timestamp.isoformat()}] {event.level}: {event.message}"
-            )
+            typer.echo(f"[{event.timestamp.isoformat()}] {event.level}: {event.message}")
 
 
 @app.command()
 def diagnose(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
@@ -143,9 +133,7 @@ def diagnose(
 @app.command()
 def monitor(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
     quiet_when_waiting: bool = typer.Option(
         False,
@@ -171,9 +159,7 @@ def monitor(
 @app.command()
 def cancel(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     store = FilesystemRunStore(runs_dir)
     _backend_for_run(run_id, store).cancel(run_id)
@@ -182,9 +168,7 @@ def cancel(
 
 @app.command()
 def runs(
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """List all runs in the run store."""
@@ -195,18 +179,14 @@ def runs(
         return
     for status in statuses:
         experiment = status.details.get("experiment", "")
-        typer.echo(
-            f"{status.run_id}  {status.status:<10} {status.backend:<6} {experiment}"
-        )
+        typer.echo(f"{status.run_id}  {status.status:<10} {status.backend:<6} {experiment}")
 
 
 @app.command()
 def metrics(
     run_id: str = typer.Argument(...),
     tail: int = typer.Option(50, "--tail", help="Number of recent points"),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Show metrics reported by a run's workload."""
@@ -222,9 +202,7 @@ def metrics(
 
 @app.command()
 def escalations(
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """List pending escalations awaiting agent diagnosis (always JSON)."""
     from ai_experiments.monitoring.escalation import list_escalations
@@ -236,9 +214,7 @@ def escalations(
 @app.command()
 def artifacts(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """List files a run's workload wrote to $IAX_ARTIFACTS_DIR."""
@@ -258,9 +234,7 @@ def artifacts(
 @app.command()
 def repro(
     run_id: str = typer.Argument(...),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Show the reproducibility bundle captured at submit time (always JSON)."""
     from ai_experiments.repro import read_repro
@@ -277,9 +251,7 @@ def repro(
 @app.command()
 def rerun(
     run_id: str = typer.Argument(..., help="Run to repeat exactly"),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Resubmit a run's persisted manifest (params are baked in), warning when
@@ -310,9 +282,9 @@ def rerun(
             err=True,
         )
 
-    handle = get_backend(
-        manifest.backend, store=store, address=manifest.backend_address
-    ).submit(manifest)
+    handle = get_backend(manifest.backend, store=store, address=manifest.backend_address).submit(
+        manifest
+    )
     if output_json:
         _echo_json(handle)
     else:
@@ -321,9 +293,7 @@ def rerun(
 
 @app.command()
 def leaderboard(
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
     """Campaigns ranked by their best objective value."""
@@ -362,9 +332,7 @@ def leaderboard(
         _echo_json(rows)
         return
     for row in rows:
-        cost = (
-            f" ~${row['estimated_cost']}" if row["estimated_cost"] is not None else ""
-        )
+        cost = f" ~${row['estimated_cost']}" if row["estimated_cost"] is not None else ""
         typer.echo(
             f"{row['mode']} {row['metric']}={row['best_value']:.6g}  "
             f"{row['name']} ({row['campaign_id']}, {row['trials']} trials, "
@@ -382,9 +350,7 @@ def daemon(
     notify_command: Optional[str] = typer.Option(
         None, "--notify-command", help="Command run with the alert JSON on stdin"
     ),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Monitor daemon: check runs, kill/escalate stuck ones, advance campaigns."""
     from ai_experiments.daemon import MonitorDaemon
@@ -404,9 +370,7 @@ def daemon(
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8585, "--port"),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Web dashboard + REST API over the run and campaign stores."""
     try:
@@ -415,8 +379,7 @@ def serve(
         from ai_experiments.server.app import create_app
     except ImportError as exc:
         typer.echo(
-            "Error: the dashboard needs the server extra: "
-            "pip install 'ai-experiments[server]'",
+            "Error: the dashboard needs the server extra: pip install 'ai-experiments[server]'",
             err=True,
         )
         raise typer.Exit(code=1) from exc
@@ -433,12 +396,8 @@ def run_goal(
     serve_dashboard: bool = typer.Option(
         True, "--serve/--no-serve", help="Also serve the web dashboard"
     ),
-    open_browser: bool = typer.Option(
-        False, "--open", help="Open the dashboard in a browser"
-    ),
-    runs_dir: Optional[Path] = typer.Option(
-        None, "--runs-dir", help="Override run store root"
-    ),
+    open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser"),
+    runs_dir: Optional[Path] = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
     """Everything in one command: start the campaign, serve the dashboard,
     and drive the monitor/experiment loop until the campaign finishes."""
@@ -474,9 +433,7 @@ def run_goal(
         while True:
             report = monitor_daemon.tick()
             for action in report.actions:
-                typer.echo(
-                    f"  [{action.run_id}] {action.action}: {', '.join(action.reasons)}"
-                )
+                typer.echo(f"  [{action.run_id}] {action.action}: {', '.join(action.reasons)}")
             for error in report.errors:
                 typer.echo(f"  error: {error}", err=True)
             state = monitor_daemon.campaign_store.read_state(state.campaign_id)
@@ -494,9 +451,7 @@ def run_goal(
     typer.echo(f"\nCampaign {state.campaign_id}: {state.status} ({state.stop_reason})")
     best = next((t for t in state.trials if t.trial_id == state.best_trial_id), None)
     if best is not None:
-        typer.echo(
-            f"  Best: {best.trial_id} {goal.objective.metric}={best.objective_value:.6g}"
-        )
+        typer.echo(f"  Best: {best.trial_id} {goal.objective.metric}={best.objective_value:.6g}")
         typer.echo(f"        params={best.params}")
     typer.echo(f"  Revisit any time: iax serve --runs-dir {store.root}")
 
@@ -518,9 +473,7 @@ def _start_dashboard_thread(store: FilesystemRunStore, port: int) -> str | None:
         return None
 
     server = uvicorn.Server(
-        uvicorn.Config(
-            create_app(store), host="127.0.0.1", port=port, log_level="error"
-        )
+        uvicorn.Config(create_app(store), host="127.0.0.1", port=port, log_level="error")
     )
     threading.Thread(target=server.run, daemon=True).start()
     return f"http://127.0.0.1:{port}"
@@ -549,15 +502,9 @@ def campaign_validate(
     typer.echo(f"  Goal:      {goal.goal}")
     typer.echo(
         f"  Objective: {goal.objective.mode} {goal.objective.metric}"
-        + (
-            f" (target {goal.objective.target})"
-            if goal.objective.target is not None
-            else ""
-        )
+        + (f" (target {goal.objective.target})" if goal.objective.target is not None else "")
     )
-    typer.echo(
-        f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel"
-    )
+    typer.echo(f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel")
     typer.echo(f"  Strategy:  {goal.strategy.name}")
     typer.echo(f"  Backend:   {goal.backend}")
 

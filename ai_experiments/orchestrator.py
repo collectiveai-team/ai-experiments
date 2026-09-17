@@ -86,9 +86,7 @@ class CampaignOrchestrator:
         self.campaign_store.write_state(state)
         self.campaign_store.append_event(
             campaign_id,
-            RunEvent(
-                level="warning", message="campaign stopped", details={"reason": reason}
-            ),
+            RunEvent(level="warning", message="campaign stopped", details={"reason": reason}),
         )
         return state
 
@@ -100,9 +98,7 @@ class CampaignOrchestrator:
             raise ValueError(f"cannot pause a campaign in status '{state.status}'")
         state.status = "paused"
         self.campaign_store.write_state(state)
-        self.campaign_store.append_event(
-            campaign_id, RunEvent(message="campaign paused")
-        )
+        self.campaign_store.append_event(campaign_id, RunEvent(message="campaign paused"))
         return state
 
     def resume(self, campaign_id: str) -> CampaignState:
@@ -111,9 +107,7 @@ class CampaignOrchestrator:
             raise ValueError(f"cannot resume a campaign in status '{state.status}'")
         state.status = "running"
         self.campaign_store.write_state(state)
-        self.campaign_store.append_event(
-            campaign_id, RunEvent(message="campaign resumed")
-        )
+        self.campaign_store.append_event(campaign_id, RunEvent(message="campaign resumed"))
         return self.advance(campaign_id)
 
     def edit_goal(self, campaign_id: str, new_goal: GoalSpec) -> GoalSpec:
@@ -138,8 +132,7 @@ class CampaignOrchestrator:
                 message="goal edited",
                 details={
                     "search_space": {
-                        name: spec.model_dump()
-                        for name, spec in new_goal.search_space.items()
+                        name: spec.model_dump() for name, spec in new_goal.search_space.items()
                     },
                     "budget": new_goal.budget.model_dump(),
                     "strategy": new_goal.strategy.model_dump(),
@@ -148,9 +141,7 @@ class CampaignOrchestrator:
         )
         return new_goal
 
-    def suggest(
-        self, campaign_id: str, params: dict[str, Any], note: str = ""
-    ) -> TrialRecord:
+    def suggest(self, campaign_id: str, params: dict[str, Any], note: str = "") -> TrialRecord:
         """Queue an agent/human-suggested trial; submitted on the next advance."""
         state = self.campaign_store.read_state(campaign_id)
         trial = TrialRecord(
@@ -236,9 +227,7 @@ class CampaignOrchestrator:
                     run_status.started_at or run_status.submitted_at,
                     trial.completed_at,
                 )
-                value, final = extract_objective(
-                    self.run_store, trial.run_id, goal.objective
-                )
+                value, final = extract_objective(self.run_store, trial.run_id, goal.objective)
                 trial.objective_value = value
                 trial.final_metrics = final
                 finished.append(trial)
@@ -297,9 +286,7 @@ class CampaignOrchestrator:
         for trial in state.trials:
             if trial.status in ACTIVE_TRIAL_STATES and trial.run_id:
                 status = self.run_store.read_status(trial.run_id)
-                live = _trial_gpu_hours(
-                    goal, status.started_at or status.submitted_at, utc_now()
-                )
+                live = _trial_gpu_hours(goal, status.started_at or status.submitted_at, utc_now())
                 total += live or 0.0
         return total
 

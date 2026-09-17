@@ -189,8 +189,8 @@ def test_campaign_state_is_written_atomically(tmp_path):
     reloaded = campaigns.read_state(state.campaign_id)
     assert isinstance(reloaded, CampaignState)
     assert (
-        json.loads(
-            (campaigns.campaign_dir(state.campaign_id) / "state.json").read_text()
-        )["campaign_id"]
+        json.loads((campaigns.campaign_dir(state.campaign_id) / "state.json").read_text())[
+            "campaign_id"
+        ]
         == state.campaign_id
     )

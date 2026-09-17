@@ -53,17 +53,13 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
     @app.get("/api/runs/{run_id}/events")
     def run_events(run_id: str, tail: int = 200) -> list[dict[str, Any]]:
         _ensure_run(run_store, run_id)
-        return [
-            event.model_dump(mode="json")
-            for event in run_store.read_events(run_id, tail=tail)
-        ]
+        return [event.model_dump(mode="json") for event in run_store.read_events(run_id, tail=tail)]
 
     @app.get("/api/runs/{run_id}/metrics")
     def run_metrics(run_id: str, tail: int = 500) -> list[dict[str, Any]]:
         _ensure_run(run_store, run_id)
         return [
-            point.model_dump(mode="json")
-            for point in run_store.read_metrics(run_id, tail=tail)
+            point.model_dump(mode="json") for point in run_store.read_metrics(run_id, tail=tail)
         ]
 
     @app.get("/api/runs/{run_id}/diagnosis")
@@ -99,9 +95,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         context = read_repro(run_store.run_dir(run_id))
         if context is None:
             raise HTTPException(status_code=404, detail="no repro bundle")
-        context["has_diff"] = (
-            run_store.run_dir(run_id) / "repro" / "diff.patch"
-        ).exists()
+        context["has_diff"] = (run_store.run_dir(run_id) / "repro" / "diff.patch").exists()
         return context
 
     @app.get("/api/leaderboard")
@@ -183,9 +177,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.get("/api/escalations")
     def escalations() -> list[dict[str, Any]]:
-        return [
-            request.model_dump(mode="json") for request in list_escalations(run_store)
-        ]
+        return [request.model_dump(mode="json") for request in list_escalations(run_store)]
 
     @app.get("/api/clusters")
     def clusters() -> list[dict[str, Any]]:

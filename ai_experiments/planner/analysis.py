@@ -17,8 +17,7 @@ def extract_objective(
     values = [
         point.values[objective.metric]
         for point in metrics
-        if objective.metric in point.values
-        and math.isfinite(point.values[objective.metric])
+        if objective.metric in point.values and math.isfinite(point.values[objective.metric])
     ]
     best = None
     if values:
@@ -41,11 +40,7 @@ def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     ]
     if not scored:
         return None
-    key = (
-        (lambda t: -t.objective_value)
-        if mode == "max"
-        else (lambda t: t.objective_value)
-    )  # type: ignore[operator]
+    key = (lambda t: -t.objective_value) if mode == "max" else (lambda t: t.objective_value)  # type: ignore[operator]
     return min(scored, key=key)  # type: ignore[arg-type]
 
 
@@ -64,11 +59,7 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         if t.objective_value is not None
     ]
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
-    cost = (
-        gpu_hours * goal.budget.gpu_hour_rate
-        if goal.budget.gpu_hour_rate is not None
-        else None
-    )
+    cost = gpu_hours * goal.budget.gpu_hour_rate if goal.budget.gpu_hour_rate is not None else None
     return {
         "campaign_id": state.campaign_id,
         "name": state.name,

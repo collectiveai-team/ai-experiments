@@ -47,12 +47,8 @@ def atomic_write_text(path: Path, text: str) -> None:
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
-    def __init__(
-        self, root: str | Path | None = None, capture_repro: bool = True
-    ) -> None:
-        self.root = Path(
-            root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs")
-        )
+    def __init__(self, root: str | Path | None = None, capture_repro: bool = True) -> None:
+        self.root = Path(root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs"))
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
@@ -180,9 +176,7 @@ class FilesystemRunStore:
 
     def write_metrics(self, run_id: str, points: list[MetricPoint]) -> None:
         lines = [json.dumps(point.model_dump(mode="json")) for point in points]
-        atomic_write_text(
-            self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else "")
-        )
+        atomic_write_text(self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else ""))
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
         path = self.metrics_path(run_id)

@@ -111,9 +111,7 @@ def test_a_real_detached_worker_runs_the_workload(completed_local_run):
     assert final.exit_code == 0
     assert final.error is None
 
-    metrics = completed_local_run["store"].read_metrics(
-        completed_local_run["handle"].run_id
-    )
+    metrics = completed_local_run["store"].read_metrics(completed_local_run["handle"].run_id)
     assert [p.step for p in metrics] == [1, 2, 3]
 
 
