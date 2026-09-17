@@ -49,7 +49,7 @@ def validate(
         manifest = ExperimentManifest.from_yaml(config)
     except Exception as exc:
         typer.echo(f"Error: invalid manifest: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Manifest valid: {config}")
     typer.echo(f"  Experiment: {manifest.experiment}")
     typer.echo(f"  Backend:    {manifest.backend}")
@@ -72,7 +72,7 @@ def submit(
         ).submit(manifest)
     except Exception as exc:
         typer.echo(f"Error: submit failed: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     if output_json:
         _echo_json(handle)
@@ -406,7 +406,7 @@ def run_goal(
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
         typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     store = FilesystemRunStore(runs_dir)
     monitor_daemon = MonitorDaemon(store)
@@ -445,7 +445,7 @@ def run_goal(
             f"loop with `iax daemon` or check it with `iax campaign status "
             f"{state.campaign_id}`."
         )
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=0) from None
 
     typer.echo(f"\nCampaign {state.campaign_id}: {state.status} ({state.stop_reason})")
     best = next((t for t in state.trials if t.trial_id == state.best_trial_id), None)
@@ -496,7 +496,7 @@ def campaign_validate(
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
         typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Goal valid: {config}")
     typer.echo(f"  Goal:      {goal.goal}")
     typer.echo(
@@ -523,7 +523,7 @@ def campaign_start(
         state = _orchestrator(runs_dir).start(goal)
     except Exception as exc:
         typer.echo(f"Error: campaign start failed: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     if output_json:
         _echo_json(state)
     else:
@@ -625,7 +625,7 @@ def campaign_pause(
         _orchestrator(runs_dir).pause(campaign_id)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     typer.echo(
         f"Paused {campaign_id} — edit the goal with `iax campaign edit`, "
         "then `iax campaign resume`."
@@ -641,7 +641,7 @@ def campaign_resume(
         state = _orchestrator(runs_dir).resume(campaign_id)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Resumed {state.campaign_id} ({state.status})")
 
 
@@ -660,12 +660,12 @@ def campaign_edit(
         new_goal = GoalSpec.from_yaml(goal_file)
     except Exception as exc:
         typer.echo(f"Error: invalid goal: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     try:
         _orchestrator(runs_dir).edit_goal(campaign_id, new_goal)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Updated goal for {campaign_id}.")
 
 
@@ -685,7 +685,7 @@ def campaign_suggest(
             raise ValueError("params must be a JSON object")
     except (json.JSONDecodeError, ValueError) as exc:
         typer.echo(f"Error: invalid --params: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note)
     typer.echo(f"Queued {trial.trial_id} with params {trial.params}")
 

@@ -164,7 +164,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         try:
             return orchestrator.pause(campaign_id).model_dump(mode="json")
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/campaigns/{campaign_id}/resume")
     def campaign_resume(campaign_id: str) -> dict[str, Any]:
@@ -173,7 +173,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
         try:
             return orchestrator.resume(campaign_id).model_dump(mode="json")
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/escalations")
     def escalations() -> list[dict[str, Any]]:
