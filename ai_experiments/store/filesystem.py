@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ai_experiments.schemas import (
     ExperimentManifest,
@@ -15,6 +15,9 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 #: Marks a ``RunStatus`` the store synthesized because the real file was
 #: missing or unreadable. Such a status describes the *store's* inability to

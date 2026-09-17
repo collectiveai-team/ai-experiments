@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
-import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_experiments.schemas import (
     ChoiceParam,
@@ -14,6 +13,9 @@ from ai_experiments.schemas import (
     ParamSpec,
     UniformParam,
 )
+
+if TYPE_CHECKING:
+    import random
 
 
 def sample(space: dict[str, ParamSpec], rng: random.Random) -> dict[str, Any]:

@@ -7,12 +7,15 @@ import signal
 import subprocess
 import threading
 from pathlib import Path
-from types import FrameType
+from typing import TYPE_CHECKING
 
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import ExperimentManifest, MetricPoint, RunEvent, utc_now
 from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 HEARTBEAT_SECONDS = 15
 

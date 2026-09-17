@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.monitoring.rules import diagnose_run
@@ -21,6 +21,9 @@ from ai_experiments.schemas import (
 )
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class FakeBackend(ExperimentBackend):

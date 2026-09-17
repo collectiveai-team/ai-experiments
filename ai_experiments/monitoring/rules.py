@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -16,6 +15,8 @@ from ai_experiments.schemas import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ai_experiments.store import FilesystemRunStore
 
 HEARTBEAT_STALE_MINUTES = 3.0

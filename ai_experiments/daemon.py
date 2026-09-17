@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import signal
 import time
-from types import FrameType
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -40,6 +39,8 @@ from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
 
 if TYPE_CHECKING:
+    from types import FrameType
+
     from ai_experiments.store import FilesystemRunStore
 
 NOTIFY_ACTIONS = {

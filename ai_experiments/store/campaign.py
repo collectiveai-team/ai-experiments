@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent, utc_now
 from ai_experiments.store.filesystem import atomic_write_text
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class CampaignStore:
