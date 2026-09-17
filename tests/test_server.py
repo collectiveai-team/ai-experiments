@@ -42,10 +42,33 @@ def _seed_run(store: FilesystemRunStore) -> str:
     return run_id
 
 
+def _seed_campaign(store: FilesystemRunStore):
+    """Create a fresh running campaign with no trials; return (campaign_store, state)."""
+    from ai_experiments.schemas import BudgetSpec, GoalSpec, ObjectiveSpec, WorkloadSpec
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec(
+        goal="characterize",
+        name="characterize",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload=WorkloadSpec(entrypoint="python t.py"),
+        budget=BudgetSpec(max_trials=1),
+    )
+    state = campaign_store.create_campaign(goal)
+    return campaign_store, state
+
+
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_health_response_shape_is_stable(client):
+    body = client.get("/api/health").json()
+    assert set(body) == {"status", "runs_root"}
 
 
 def test_dashboard_served(client):
@@ -73,6 +96,27 @@ def test_runs_listing_and_detail(client, store):
     }
 
 
+def test_run_detail_body_matches_the_stored_status(client, store):
+    run_id = _seed_run(store)
+
+    response = client.get(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.json() == store.read_status(run_id).model_dump(mode="json")
+
+
+def test_run_diagnosis_body_matches_diagnose_run(client, store):
+    from ai_experiments.monitoring.rules import diagnose_run
+
+    run_id = _seed_run(store)
+    expected = diagnose_run(store, run_id).model_dump(mode="json")
+
+    response = client.get(f"/api/runs/{run_id}/diagnosis")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_unknown_run_is_404(client):
     assert client.get("/api/runs/run_nope").status_code == 404
     assert client.post("/api/runs/run_nope/cancel").status_code == 404
@@ -85,6 +129,14 @@ def test_cancel_run(client, store):
 
     assert response.status_code == 200
     assert store.read_status(run_id).status == "cancelled"
+
+
+def test_run_cancel_response_shape_is_stable(client, store):
+    run_id = _seed_run(store)
+
+    body = client.post(f"/api/runs/{run_id}/cancel").json()
+
+    assert body == {"run_id": run_id, "cancelled": True}
 
 
 def test_campaigns_empty(client):
@@ -135,6 +187,27 @@ def test_repro_endpoint(client, store):
     assert client.get(f"/api/runs/{missing}/repro").status_code == 404
 
 
+def test_run_repro_response_shape_for_a_real_capture(tmp_path):
+    """A real `capture_repro` bundle (not the hand-written fixture above)."""
+    real_store = FilesystemRunStore(tmp_path / "runs", capture_repro=True)
+    real_client = TestClient(create_app(real_store))
+    run_id = _seed_run(real_store)
+
+    body = real_client.get(f"/api/runs/{run_id}/repro").json()
+
+    assert set(body) == {
+        "captured_at",
+        "git_sha",
+        "git_branch",
+        "git_dirty",
+        "python",
+        "platform",
+        "working_dir",
+        "has_diff",
+    }
+    assert isinstance(body["has_diff"], bool)
+
+
 def test_leaderboard_ranks_campaigns(client, store):
     import json
 
@@ -178,6 +251,62 @@ def test_leaderboard_ranks_campaigns(client, store):
     assert json.loads(json.dumps(rows[0]["best_params"])) == {"x": 0.1}
 
 
+def test_campaign_detail_response_shape_is_stable(client, store):
+    from ai_experiments.schemas import TrialRecord
+
+    campaign_store, state = _seed_campaign(store)
+    state.trials.append(
+        TrialRecord(
+            trial_id="t000",
+            params={"x": 0.5},
+            status="completed",
+            objective_value=0.5,
+            gpu_hours=1.0,
+        )
+    )
+    state.best_trial_id = "t000"
+    campaign_store.write_state(state)
+
+    body = client.get(f"/api/campaigns/{state.campaign_id}").json()
+
+    assert set(body) == {"state", "summary"}
+    assert body["state"] == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+    assert set(body["summary"]) == {
+        "campaign_id",
+        "name",
+        "goal",
+        "status",
+        "stop_reason",
+        "gpu_hours",
+        "estimated_cost",
+        "budget",
+        "objective",
+        "rounds",
+        "trials_by_status",
+        "trials_total",
+        "best",
+        "history",
+    }
+    assert body["summary"]["best"] == {
+        "trial_id": "t000",
+        "run_id": None,
+        "objective_value": 0.5,
+        "params": {"x": 0.5},
+    }
+    assert body["summary"]["history"] == [
+        {"trial_id": "t000", "objective_value": 0.5, "params": {"x": 0.5}}
+    ]
+
+
+def test_campaign_stop_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/stop")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+
+
 def test_campaign_pause_resume_endpoints(client, store):
     from ai_experiments.schemas import (
         BudgetSpec,
@@ -207,6 +336,35 @@ def test_campaign_pause_resume_endpoints(client, store):
 
     resumed = client.post(f"/api/campaigns/{state.campaign_id}/resume")
     assert resumed.status_code == 200
+
+
+def test_campaign_pause_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+
+
+def test_campaign_pause_conflict_body_shape(client, store):
+    _campaign_store, state = _seed_campaign(store)
+    client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    assert response.status_code == 409
+    assert set(response.json()) == {"detail"}
+
+
+def test_campaign_resume_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+    client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/resume")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
 
 
 def test_clusters_endpoint(client, tmp_path, monkeypatch):
