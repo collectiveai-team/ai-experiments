@@ -1,6 +1,8 @@
-"""MLflow integration, tested against a fake mlflow module (the real package
-is optional and heavy). An end-to-end check against real mlflow lives in the
-live smoke flow, not in the unit suite."""
+"""MLflow integration, tested against a fake mlflow module.
+
+The real package is optional and heavy. An end-to-end check against real mlflow lives
+in the live smoke flow, not in the unit suite.
+"""
 
 from __future__ import annotations
 

@@ -36,8 +36,11 @@ TERMINAL = {"completed", "failed", "cancelled"}
 
 @pytest.fixture(scope="module")
 def completed_ray_run(tmp_path_factory, ray_address, mlflow_uri):
-    """One real Ray job, submitted once and reused: a live submit plus job
-    startup costs ~15s, and every assertion below inspects the same run."""
+    """One real Ray job, submitted once and reused.
+
+    A live submit plus job startup costs ~15s, and every assertion below inspects the
+    same run.
+    """
     work = tmp_path_factory.mktemp("ray_workload")
     (work / "train.py").write_text(WORKLOAD)
     store = FilesystemRunStore(work / "runs", capture_repro=False)
@@ -84,8 +87,11 @@ def test_submit_preserves_the_mlflow_linkage(completed_ray_run):
 
 
 def test_submit_writes_a_ray_status_not_the_store_fallback(completed_ray_run):
-    """begin_tracking used to create status.json through read_status's
-    "file not found" fallback, briefly labelling a Ray run backend="local"."""
+    """Regression guard for a status.json mislabelling bug.
+
+    begin_tracking used to create status.json through read_status's "file not found"
+    fallback, briefly labelling a Ray run backend="local".
+    """
     at_submit = completed_ray_run["at_submit"]
     assert at_submit.backend == "ray"
     assert at_submit.error is None

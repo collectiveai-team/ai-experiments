@@ -24,8 +24,11 @@ from ai_experiments.store.campaign import CampaignStore
 
 
 class FakeBackend(ExperimentBackend):
-    """Runs 'complete' instantly; the objective is a deterministic function
-    of the submitted params, recorded as a metric on inspect."""
+    """Runs 'complete' instantly.
+
+    The objective is a deterministic function of the submitted params, recorded as a
+    metric on inspect.
+    """
 
     def __init__(
         self,

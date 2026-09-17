@@ -253,8 +253,10 @@ def rerun(
     runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
     output_json: bool = typer.Option(False, "--json", help="Print JSON output"),
 ) -> None:
-    """Resubmit a run's persisted manifest (params are baked in), warning when
-    the current git state differs from the one recorded at submit time."""
+    """Resubmit a run's persisted manifest (params are baked in).
+
+    Warns when the current git state differs from the one recorded at submit time.
+    """
     from ai_experiments.repro import current_git_sha, read_repro
 
     store = FilesystemRunStore(runs_dir)
@@ -398,8 +400,11 @@ def run_goal(
     open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser"),
     runs_dir: Path | None = typer.Option(None, "--runs-dir", help="Override run store root"),
 ) -> None:
-    """Everything in one command: start the campaign, serve the dashboard,
-    and drive the monitor/experiment loop until the campaign finishes."""
+    """Everything in one command.
+
+    Starts the campaign, serves the dashboard, and drives the monitor/experiment loop until
+    the campaign finishes.
+    """
     from ai_experiments.daemon import MonitorDaemon
 
     try:
@@ -456,8 +461,11 @@ def run_goal(
 
 
 def _start_dashboard_thread(store: FilesystemRunStore, port: int) -> str | None:
-    """Serve the dashboard from a daemon thread; returns its URL, or None when
-    the server extra is missing (the loop still works without it)."""
+    """Serve the dashboard from a daemon thread.
+
+    Returns its URL, or None when the server extra is missing (the loop still works
+    without it).
+    """
     import threading
 
     try:

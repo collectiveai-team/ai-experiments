@@ -64,8 +64,11 @@ def perturb(
     rng: random.Random,
     scale: float = 0.2,
 ) -> dict[str, Any]:
-    """Sample a neighbor of `base`: gaussian moves for numeric params (log-space
-    for loguniform), a re-draw with probability `scale` for choices."""
+    """Sample a neighbor of `base`.
+
+    Gaussian moves for numeric params (log-space for loguniform), a re-draw with
+    probability `scale` for choices.
+    """
     result: dict[str, Any] = {}
     for name, spec in space.items():
         value = base.get(name)

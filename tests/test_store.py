@@ -104,8 +104,11 @@ def test_listing_runs_survives_one_corrupt_run(tmp_path):
 
 
 def test_update_status_refuses_to_overwrite_a_corrupt_file(tmp_path):
-    """Merging onto a synthetic status would fabricate history and destroy the
-    evidence of what went wrong."""
+    """Guards against fabricated history.
+
+    Merging onto a synthetic status would fabricate history and destroy the evidence of
+    what went wrong.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     store.status_path(run_id).write_text(TORN_STATUS)
@@ -130,8 +133,10 @@ def test_update_status_refuses_when_there_is_no_status_yet(tmp_path):
 
 
 def test_write_handle_refuses_to_clobber_an_existing_status(tmp_path):
-    """A handle carries no details, so overwriting would silently drop them --
-    this is how the Ray path lost its MLflow linkage."""
+    """A handle carries no details, so overwriting would silently drop them.
+
+    This is how the Ray path lost its MLflow linkage.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     store.update_status(run_id, details={"mlflow_run_id": "mlf_1"})
@@ -164,8 +169,10 @@ def test_write_status_leaves_no_temp_files_behind(tmp_path):
 
 
 def test_a_failed_write_leaves_the_previous_status_intact(tmp_path):
-    """A crash mid-write must leave the old document readable, never a
-    truncated one -- and must not litter the run dir with temp files."""
+    """A crash mid-write must leave the old document readable, never a truncated one.
+
+    It must also not litter the run dir with temp files.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     before = store.status_path(run_id).read_text()

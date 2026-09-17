@@ -95,8 +95,10 @@ class CampaignOrchestrator:
         return state
 
     def pause(self, campaign_id: str) -> CampaignState:
-        """Stop scheduling new trials; active trials keep running and stay
-        monitored by the daemon. Resume with `resume()`."""
+        """Stop scheduling new trials.
+
+        Active trials keep running and stay monitored by the daemon. Resume with `resume()`.
+        """
         state = self.campaign_store.read_state(campaign_id)
         if state.status != "running":
             raise ValueError(f"cannot pause a campaign in status '{state.status}'")
@@ -284,8 +286,11 @@ class CampaignOrchestrator:
         return None
 
     def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
-        """GPU-hours consumed so far: recorded for finished trials, a live
-        estimate (started -> now) for trials still running."""
+        """GPU-hours consumed so far.
+
+        Recorded for finished trials, a live estimate (started -> now) for trials still
+        running.
+        """
         total = sum(t.gpu_hours or 0.0 for t in state.trials)
         for trial in state.trials:
             if trial.status in ACTIVE_TRIAL_STATES and trial.run_id:
@@ -367,9 +372,11 @@ class CampaignOrchestrator:
         path.write_text(json.dumps(summary, indent=2))
 
     def _request_agent_review(self, state: CampaignState, goal: GoalSpec) -> None:
-        """Drop a review request for an agent session — analysis beyond the
-        built-in strategy (e.g. reshaping the search space) costs tokens, so
-        it is opt-in via ``analysis.agent_review`` and file-based."""
+        """Drop a review request for an agent session.
+
+        Analysis beyond the built-in strategy (e.g. reshaping the search space) costs tokens,
+        so it is opt-in via ``analysis.agent_review`` and file-based.
+        """
         escalations = self.run_store.root / "_escalations"
         escalations.mkdir(parents=True, exist_ok=True)
         payload = {

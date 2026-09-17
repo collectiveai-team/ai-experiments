@@ -132,8 +132,10 @@ def test_daemon_mirrors_a_completed_run_as_finished(completed_local_run, mlflow_
 
 
 def test_run_artifacts_are_uploaded_to_mlflow(completed_local_run, mlflow_api):
-    """The documented answer to "artifacts stay on the cluster": route them
-    through MLflow's artifact store."""
+    """The documented answer to "artifacts stay on the cluster".
+
+    Route them through MLflow's artifact store.
+    """
     mlflow_run_id = completed_local_run["at_submit"].details["mlflow_run_id"]
 
     listing = mlflow_api("artifacts/list", run_id=mlflow_run_id)
@@ -149,8 +151,10 @@ def test_mlflow_is_synced_only_once(completed_local_run):
 
 
 def test_workload_attaches_to_the_harness_mlflow_run(tmp_path, mlflow_uri, mlflow_api):
-    """MLFLOW_RUN_ID handoff: the workload's own writes must land on the run
-    the harness created, not a second one."""
+    """MLFLOW_RUN_ID handoff.
+
+    The workload's own writes must land on the run the harness created, not a second one.
+    """
     store, handle = _run(tmp_path, mlflow_uri, MLFLOW_AWARE_TRAINER, "mlflow_aware")
     mlflow_run_id = store.read_status(handle.run_id).details["mlflow_run_id"]
 

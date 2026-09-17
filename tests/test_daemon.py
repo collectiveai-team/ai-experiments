@@ -128,8 +128,10 @@ def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
 
 
 def test_daemon_keeps_supervising_when_one_run_is_corrupt(tmp_path):
-    """One truncated status.json used to kill the tick -- and with it,
-    supervision of every other run."""
+    """Regression guard: one truncated status.json used to kill the tick.
+
+    And with it, supervision of every other run.
+    """
     store = _store(tmp_path)
     healthy = _running_run(store, MonitorPolicy(), pid=None)
     corrupt = _running_run(store, MonitorPolicy(), pid=None)

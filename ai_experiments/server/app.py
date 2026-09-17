@@ -100,8 +100,10 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
 
     @app.get("/api/leaderboard")
     def leaderboard() -> list[dict[str, Any]]:
-        """Campaigns ranked by their best objective value, grouped per metric
-        client-side (each row carries metric + mode)."""
+        """Campaigns ranked by their best objective value.
+
+        Grouped per metric client-side (each row carries metric + mode).
+        """
         rows: list[dict[str, Any]] = []
         for campaign_id in campaign_store.list_campaigns():
             state = campaign_store.read_state(campaign_id)
