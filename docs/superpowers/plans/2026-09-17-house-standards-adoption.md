@@ -1014,27 +1014,66 @@ uvx ruff@0.15.22 check 2>&1 | grep -c C901                                      
 
 ---
 
-### Task 13: Full green and the PR
+### Task 13: CES-111, full green, and the PR
 
 **Files:**
-- Modify: none (verification only)
+- Modify: `pyproject.toml` (add `pytest-randomly` to the dev extra), `uv.lock`
+- Modify: whatever the randomized test order exposes (see Step 2)
 
 **Interfaces:**
 - Produces: a green `prek run --all-files` and an open PR.
 
-- [ ] **Step 1: The whole suite**
+- [ ] **Step 1: Adopt CES-111 (test order randomization)**
+
+This is the last unapplied standard and the only `[dependency]` one: `pytest-randomly` appears
+nowhere in `pyproject.toml`, so every "the suite is green" result in this plan was measured in
+pytest's *default* order. Read `.agents/rules/test-order-randomization-pytest-randomly.md`.
+
+Add `"pytest-randomly>=3.15"` to `[project.optional-dependencies].dev`, then:
+
+```bash
+uv lock
+.venv/bin/python -m pip install pytest-randomly
+```
+
+Do **not** run `uv sync` — four worktrees share this venv.
+
+- [ ] **Step 2: Run the suite several times and fix what order exposes**
+
+```bash
+for i in 1 2 3 4 5; do .venv/bin/python -m pytest tests -q 2>&1 | tail -1; done
+```
+
+Every line must read `2 failed, <N> passed, 6 skipped` with the same `<N>`. A test that passes in
+one order and fails in another is a state leak, and CES-111 exists to surface exactly that — fix
+the leak (a missing fixture teardown, a module-level singleton, a shared tmp path), never by
+pinning the seed. `ai_experiments/core/logger.py`'s `_configured` module global and
+`tests/test_logger.py`'s reset fixture are the known candidates; the `Notifier`/`MonitorDaemon`
+construction in `cli.py` is the other.
+
+Commit this before Step 3:
+
+```bash
+git add pyproject.toml uv.lock tests
+git commit -m "test: randomize test order (CES-111)"
+```
+
+- [ ] **Step 3: The whole hook suite**
 
 ```bash
 uvx prek run --all-files; echo "exit=$?"
 ```
 Expected: `exit=0`. If `ruff format` or `ruff check --fix` modify anything at this point, commit that diff — it means an earlier task left unformatted code.
 
-- [ ] **Step 2: The tests**
+- [ ] **Step 4: The tests**
 
 Run: `.venv/bin/python -m pytest tests -q 2>&1 | tail -1`
-Expected: `2 failed, 119 passed, 6 skipped` — the same two pre-existing MLflow integration failures, no new ones, and no lost passes.
+Expected: `2 failed, <N> passed, 6 skipped` — the same two pre-existing MLflow integration
+failures, no new ones, and no lost passes. `<N>` is the count Step 2 settled on; it is 119 plus
+every test this plan added (Task 5 added 1, Task 7 added 3), so it is **not** the 119 the baseline
+showed.
 
-- [ ] **Step 3: Install the hooks now that they are green**
+- [ ] **Step 5: Install the hooks now that they are green**
 
 ```bash
 prek install -t pre-commit -t commit-msg
@@ -1042,16 +1081,22 @@ prek install -t pre-commit -t commit-msg
 
 Deliberately last: installing earlier would have blocked every commit in this plan.
 
-- [ ] **Step 4: Open the PR**
+- [ ] **Step 6: Open the PR**
 
 ```bash
 git push -u origin feat/house-standards
 gh pr create --title "refactor: adopt house engineering standards" --body-file -
 ```
 
-The body must carry: the SHA of the Task 3 formatting commit and rebase instructions for the 13 open PRs; the `orchestrator.py` decision from Task 11 Step 7; every `ast-grep-ignore` and `noqa` added, with its justification; and the note that the two MLflow integration failures predate this branch.
+The body must carry: the SHA of the Task 3 formatting commit and rebase instructions for the 13
+open PRs; the `orchestrator.py` decision from Task 11 Step 7; every `ast-grep-ignore` and `noqa`
+added, with its justification; the note that the two MLflow integration failures predate this
+branch; and the three defects found in the upstream `core/logger.py` snippet (the 104-column
+`_is_prod` line, the 3.11-only `getLevelNamesMapping`, and the `-> BoundLogger` return annotation
+that `make_filtering_bound_logger` guarantees is never returned), which are to be filed against
+`collectiveai-team/scaffolding`.
 
-- [ ] **Step 5: Confirm CI**
+- [ ] **Step 7: Confirm CI**
 
 Run: `gh pr checks --watch`
 Expected: `tests`, `zizmor`, `osv-scanner`, `dependency-review`, `commit-policy`, `conventional-commits` all pass. `tests.yml` runs `uvx prek run --all-files`, so Step 1 already predicted this result.
