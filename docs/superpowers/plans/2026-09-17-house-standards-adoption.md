@@ -325,7 +325,7 @@ git add -u && git commit -m "fix: resolve remaining ruff findings"
 Task 2 removed the 3 `.agents/snippets/` errors; Task 7 removes the 3 cross-test `missing-import`s. This task clears the other 15, which are real type defects. All but one are in `tests/` — the production code is nearly clean, and the tests are where the type contract is being quietly bypassed.
 
 **Files:**
-- Modify: `ai_experiments/planner/strategies.py:116`, `tests/test_daemon.py:43,44`, `tests/test_manifest.py:16,17`, `tests/test_monitoring_v2.py:38,39`, `tests/test_ray_backend.py:163`, `tests/test_tracking.py:93,119,123,227`, `tests/test_e2e_campaign.py:87`
+- Modify: `ai_experiments/planner/strategies.py:116`, `ai_experiments/planner/analysis.py:43-44`, `tests/test_daemon.py:43,44`, `tests/test_manifest.py:16,17`, `tests/test_monitoring_v2.py:38,39`, `tests/test_ray_backend.py:163`, `tests/test_tracking.py:93,119,123,227`, `tests/test_e2e_campaign.py:87`
 - Possibly modify: `ai_experiments/schemas.py` (export the two `Literal` aliases), `ai_experiments/tracking.py` (narrow `last_client`)
 
 **Interfaces:**
@@ -406,6 +406,19 @@ ranked = sorted(scored, key=lambda t: t.objective_value or 0.0, reverse=reverse)
 Read the surrounding code first — `scored` may already be filtered upstream, in which case a narrowing assert is the honest fix and the `or 0.0` is not. Delete the `type: ignore` either way; a suppression over a real defect is worse than the defect.
 
 `tests/test_e2e_campaign.py:87` is the same `float | None` in a `max(...)` key. Fix it the same way.
+
+`ai_experiments/planner/analysis.py:43-44` is the third instance, and the clearest: `best_trial`
+already filters `scored` to `t.objective_value is not None and math.isfinite(...)`, then carries
+**two** blanket suppressions — `# type: ignore[operator]` on the lambda and `# type: ignore[arg-type]`
+on the `min(...)` — because the narrowing cannot survive into a lambda. The filter is the proof;
+the suppressions only hide it. Make the narrowing something the checker can see, delete both
+`type: ignore` comments, and keep `best_trial`'s behaviour identical (`min` over a negated key
+for `mode == "max"`).
+
+Task 3's reviewer flagged this same line for a second reason: at 118 characters it is the only
+line in the repo over the 100-column limit, escaping `ruff check` solely because E501 exempts
+lines ending in `# type: ignore[...]`. Removing the suppression removes the exemption, so the
+rewrite must land under 100 columns or `ruff check` will start failing on it.
 
 - [ ] **Step 6: Verify and commit**
 
