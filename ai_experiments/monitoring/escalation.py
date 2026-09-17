@@ -168,7 +168,7 @@ def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: date
 def _run_agent_command(
     store: FilesystemRunStore, run_id: str, policy: EscalationPolicy
 ) -> AgentVerdict:
-    assert policy.agent_command is not None
+    assert policy.agent_command is not None  # noqa: S101  # type narrowing, not a runtime check
     # Plain token replacement, not str.format: agent prompts legitimately
     # contain literal braces (JSON examples) that format() would reject.
     rendered = policy.agent_command.replace("{run_id}", run_id).replace(

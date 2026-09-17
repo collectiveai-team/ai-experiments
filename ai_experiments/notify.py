@@ -65,7 +65,7 @@ class Notifier:
             pass
 
     def _post_webhook(self, payload: dict[str, Any]) -> None:
-        assert self.webhook_url is not None
+        assert self.webhook_url is not None  # noqa: S101  # type narrowing, not a runtime check
         request = urllib.request.Request(
             self.webhook_url,
             data=json.dumps(payload).encode(),
@@ -77,7 +77,7 @@ class Notifier:
             pass
 
     def _run_command(self, payload: dict[str, Any]) -> None:
-        assert self.command is not None
+        assert self.command is not None  # noqa: S101  # type narrowing, not a runtime check
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(
                 shlex.split(self.command),

@@ -171,7 +171,7 @@ def begin_tracking(
         return {}
     try:
         tracker = tracker_for(manifest)
-        assert tracker is not None
+        assert tracker is not None  # noqa: S101  # type narrowing, not a runtime check
         mlflow_run_id = tracker.start_run(store, run_id, manifest)
     except Exception as exc:
         store.append_event(

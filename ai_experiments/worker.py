@@ -86,7 +86,7 @@ class _Supervisor:
         heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True)
         heartbeat.start()
 
-        assert self.process.stdout is not None
+        assert self.process.stdout is not None  # noqa: S101  # type narrowing, not a runtime check
         for line in self.process.stdout:
             metric = parse_metric_line(line)
             if metric is not None:
