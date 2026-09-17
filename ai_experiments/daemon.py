@@ -286,6 +286,7 @@ class MonitorDaemon:
         while not self._stop:
             report = self.tick()
             if report.actions or report.errors:
+                # ast-grep-ignore: log-no-print  # run_forever's stdout is the daemon's JSON stream
                 print(json.dumps(report.model_dump(mode="json")), flush=True)
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:

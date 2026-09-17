@@ -30,7 +30,9 @@ def main() -> None:
         grad = 2 * (x - 2.0) + rng.gauss(0, 0.1)
         x -= args.lr * grad
         loss = (x - 2.0) ** 2
-        print("IAX_METRIC " + json.dumps({"step": step, "loss": loss, "x": x}))
+        print(  # ast-grep-ignore: log-no-print  # example script, stdout is the artifact
+            "IAX_METRIC " + json.dumps({"step": step, "loss": loss, "x": x})
+        )
         sys.stdout.flush()
         time.sleep(args.sleep)
 
@@ -41,7 +43,9 @@ def main() -> None:
         with (Path(artifacts) / "model.json").open("w") as fh:
             json.dump({"x": x, "loss": loss}, fh)
 
-    print(f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}")
+    print(  # ast-grep-ignore: log-no-print  # example script, stdout is the artifact
+        f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}"
+    )
 
 
 if __name__ == "__main__":

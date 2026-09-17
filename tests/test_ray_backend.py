@@ -166,14 +166,12 @@ def _tracked_manifest(tmp_path, backend: BackendName) -> ExperimentManifest:
     )
 
 
-def test_ray_submit_preserves_the_mlflow_linkage(tmp_path):
-    from test_tracking import FakeMlflowModule
-
+def test_ray_submit_preserves_the_mlflow_linkage(tmp_path, fake_mlflow_module_factory):
     store = FilesystemRunStore(tmp_path / "runs")
     client = FakeRayClient(status="RUNNING")
     backend = RayBackend(store=store, client_factory=lambda _address: client)
 
-    with patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()):
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake_mlflow_module_factory()):
         handle = backend.submit(_tracked_manifest(tmp_path, "ray"))
 
     status = store.read_status(handle.run_id)
@@ -186,14 +184,12 @@ def test_ray_submit_preserves_the_mlflow_linkage(tmp_path):
     assert status.external_id == "ray-job-1"
 
 
-def test_local_submit_preserves_the_mlflow_linkage(tmp_path):
-    from test_tracking import FakeMlflowModule
-
+def test_local_submit_preserves_the_mlflow_linkage(tmp_path, fake_mlflow_module_factory):
     store = FilesystemRunStore(tmp_path / "runs")
     backend = LocalBackend(store=store)
 
     with (
-        patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()),
+        patch("ai_experiments.tracking._load_mlflow", return_value=fake_mlflow_module_factory()),
         patch("subprocess.Popen"),
     ):
         handle = backend.submit(_tracked_manifest(tmp_path, "local"))

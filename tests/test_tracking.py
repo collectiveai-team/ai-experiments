@@ -6,7 +6,6 @@ in the live smoke flow, not in the unit suite.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from ai_experiments.daemon import MonitorDaemon
@@ -24,63 +23,6 @@ from ai_experiments.tracking import (
     begin_tracking,
     finalize_tracking,
 )
-
-
-class FakeMlflowClient:
-    def __init__(self, tracking_uri=None):
-        self.tracking_uri = tracking_uri
-        self.experiments: dict[str, str] = {}
-        self.runs: dict[str, dict] = {}
-        self.counter = 0
-
-    def get_experiment_by_name(self, name):
-        if name in self.experiments:
-            return SimpleNamespace(experiment_id=self.experiments[name])
-        return None
-
-    def create_experiment(self, name):
-        self.experiments[name] = f"exp_{len(self.experiments)}"
-        return self.experiments[name]
-
-    def create_run(self, experiment_id, tags):
-        self.counter += 1
-        run_id = f"mlf_{self.counter}"
-        self.runs[run_id] = {
-            "experiment_id": experiment_id,
-            "tags": dict(tags),
-            "params": {},
-            "metrics": [],
-            "artifacts": [],
-            "status": "RUNNING",
-        }
-        return SimpleNamespace(info=SimpleNamespace(run_id=run_id))
-
-    def log_param(self, run_id, key, value):
-        self.runs[run_id]["params"][key] = value
-
-    def log_metric(self, run_id, key, value, timestamp=None, step=None):
-        self.runs[run_id]["metrics"].append((key, value, step))
-
-    def log_artifacts(self, run_id, local_dir):
-        self.runs[run_id]["artifacts"].append(local_dir)
-
-    def set_terminated(self, run_id, status):
-        self.runs[run_id]["status"] = status
-
-
-class FakeMlflowModule:
-    """Hands every MlflowClient() the same backing store, like a real server."""
-
-    def __init__(self):
-        self.last_client = None
-
-    def MlflowClient(self, tracking_uri=None):
-        if self.last_client is None:
-            self.last_client = FakeMlflowClient(tracking_uri)
-        return self.last_client
-
-    def get_tracking_uri(self):
-        return "file:///fake-mlruns"
 
 
 def _manifest(**overrides: object) -> ExperimentManifest:
@@ -110,8 +52,8 @@ def _seeded_run(tmp_path, manifest):
     return store, run_id
 
 
-def test_start_run_logs_params_and_tags(tmp_path):
-    fake = FakeMlflowModule()
+def test_start_run_logs_params_and_tags(tmp_path, fake_mlflow_module_factory):
+    fake = fake_mlflow_module_factory()
     manifest = _manifest()
     store, run_id = _seeded_run(tmp_path, manifest)
     tracker = MlflowTracker(mlflow_module=fake)
@@ -127,10 +69,10 @@ def test_start_run_logs_params_and_tags(tmp_path):
     assert client.experiments == {"camp": "exp_0"}
 
 
-def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
+def test_file_store_gets_allow_flag(tmp_path, monkeypatch, fake_mlflow_module_factory):
     monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-    fake = FakeMlflowModule()
+    fake = fake_mlflow_module_factory()
     manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
@@ -143,9 +85,9 @@ def test_file_store_gets_allow_flag(tmp_path, monkeypatch):
     assert __import__("os").environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
 
 
-def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch):
+def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch, fake_mlflow_module_factory):
     monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
-    fake = FakeMlflowModule()
+    fake = fake_mlflow_module_factory()
     manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="http://mlflow:5000"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
@@ -156,9 +98,9 @@ def test_remote_store_does_not_get_allow_flag(tmp_path, monkeypatch):
     assert "MLFLOW_ALLOW_FILE_STORE" not in __import__("os").environ
 
 
-def test_user_file_store_opt_out_is_respected(tmp_path, monkeypatch):
+def test_user_file_store_opt_out_is_respected(tmp_path, monkeypatch, fake_mlflow_module_factory):
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "false")
-    fake = FakeMlflowModule()
+    fake = fake_mlflow_module_factory()
     manifest = _manifest(tracking=TrackingSpec(mlflow=True, tracking_uri="file:///tmp/mlruns"))
     store, run_id = _seeded_run(tmp_path, manifest)
 
@@ -168,8 +110,8 @@ def test_user_file_store_opt_out_is_respected(tmp_path, monkeypatch):
     assert env["MLFLOW_ALLOW_FILE_STORE"] == "false"
 
 
-def test_begin_tracking_records_details_and_env(tmp_path):
-    fake = FakeMlflowModule()
+def test_begin_tracking_records_details_and_env(tmp_path, fake_mlflow_module_factory):
+    fake = fake_mlflow_module_factory()
     manifest = _manifest()
     store, run_id = _seeded_run(tmp_path, manifest)
 
@@ -204,8 +146,8 @@ def test_begin_tracking_survives_missing_mlflow(tmp_path):
     assert any("mlflow tracking unavailable" in e.message for e in events)
 
 
-def test_finalize_mirrors_metrics_artifacts_and_status(tmp_path):
-    fake = FakeMlflowModule()
+def test_finalize_mirrors_metrics_artifacts_and_status(tmp_path, fake_mlflow_module_factory):
+    fake = fake_mlflow_module_factory()
     manifest = _manifest()
     store, run_id = _seeded_run(tmp_path, manifest)
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
@@ -235,8 +177,8 @@ def test_finalize_mirrors_metrics_artifacts_and_status(tmp_path):
         assert finalize_tracking(store, store.read_status(run_id)) is False
 
 
-def test_daemon_finalizes_tracked_terminal_runs(tmp_path):
-    fake = FakeMlflowModule()
+def test_daemon_finalizes_tracked_terminal_runs(tmp_path, fake_mlflow_module_factory):
+    fake = fake_mlflow_module_factory()
     manifest = _manifest()
     store, run_id = _seeded_run(tmp_path, manifest)
     with patch("ai_experiments.tracking._load_mlflow", return_value=fake):
