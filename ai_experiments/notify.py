@@ -76,10 +76,12 @@ class Notifier:
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
-        try:
-            urllib.request.urlopen(request, timeout=WEBHOOK_TIMEOUT)  # noqa: S310  # scheme validated above
-        except (urllib.error.URLError, OSError):
-            pass
+        # Best-effort sink: a failing webhook must never break the daemon. Log this at
+        # debug level once the house logger exists.
+        with contextlib.suppress(urllib.error.URLError, OSError):
+            urllib.request.urlopen(  # noqa: S310  # scheme validated above
+                request, timeout=WEBHOOK_TIMEOUT
+            )
 
     def _run_command(self, payload: dict[str, Any]) -> None:
         assert self.command is not None  # noqa: S101  # type narrowing, not a runtime check

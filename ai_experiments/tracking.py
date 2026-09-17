@@ -135,8 +135,10 @@ class MlflowTracker:
                     self.client.log_metric(
                         mlflow_run_id, name, value, timestamp=timestamp, step=step
                     )
-                except Exception:
-                    continue  # non-finite values may be rejected by some stores
+                # Non-finite values may be rejected by some stores; log this at debug
+                # level once the house logger exists.
+                except self._mlflow.exceptions.MlflowException:  # noqa: PERF203  # per-item isolation is the point: one bad run must not abort the scan
+                    continue
 
         artifacts = store.artifacts_dir(run_id)
         if artifacts.exists() and any(artifacts.iterdir()):

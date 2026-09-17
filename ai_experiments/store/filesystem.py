@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import uuid
@@ -64,10 +65,10 @@ class FilesystemRunStore:
         if self.capture_repro:
             from ai_experiments.repro import capture_repro
 
-            try:
+            # reproducibility capture must never block a submit; log this at debug
+            # level once the house logger exists
+            with contextlib.suppress(Exception):
                 capture_repro(run_dir, manifest.workload.working_dir)
-            except Exception:
-                pass  # reproducibility capture must never block a submit
         return run_id, run_dir
 
     def run_dir(self, run_id: str) -> Path:

@@ -75,7 +75,11 @@ def capture_repro(run_dir: Path, working_dir: str | Path) -> dict[str, Any]:
             if dist.metadata["Name"]
         )
         (repro_dir / "environment.txt").write_text("\n".join(lines) + "\n")
-    except Exception:
+    except (OSError, UnicodeError, LookupError):
+        # A distribution's metadata can be malformed (bad encoding, missing
+        # fields) and the write itself can hit OSError; listing the environment
+        # must never block a submit. Log this at debug level once the house
+        # logger exists.
         pass
 
     (repro_dir / "context.json").write_text(json.dumps(context, indent=2))
