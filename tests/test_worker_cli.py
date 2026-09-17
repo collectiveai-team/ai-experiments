@@ -15,6 +15,7 @@ than a test of the rewrite.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +111,11 @@ def test_worker_cli_rejects_an_unknown_flag(tmp_path):
         text=True,
         timeout=30,
         check=False,
+        # Typer renders usage errors through Rich, which wraps them to the terminal width it
+        # infers from COLUMNS. An exported COLUMNS in the environment running pytest would split
+        # the message across lines of the error panel and break the substring assertion below,
+        # so pin a width wide enough that it never wraps.
+        env={**os.environ, "COLUMNS": "200"},
     )
 
     assert result.returncode == 2, result.stdout + result.stderr
