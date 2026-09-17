@@ -111,7 +111,9 @@ def cluster_status(profile: ClusterProfile, timeout: float = 5.0) -> dict[str, A
         }
     url = profile.address.rstrip("/") + "/api/version"
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310  # operator-configured cluster address, not user input
+            url, timeout=timeout
+        ) as response:
             payload = json.loads(response.read().decode())
         return {
             "name": profile.name,
