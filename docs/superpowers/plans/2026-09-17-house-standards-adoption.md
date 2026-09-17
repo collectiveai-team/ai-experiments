@@ -663,38 +663,60 @@ ignore". Use explicit paths, not `git add -u` — Step 1 may add a new test file
 
 ---
 
-### Task 9: CES-76 settings module (12 sites)
+### Task 9: CES-76 settings module (12 findings = 7 conversions + 5 suppressions)
 
 **Files:**
 - Create: `ai_experiments/settings.py`, `tests/test_settings.py`
-- Modify: `pyproject.toml` (add `pydantic-settings`), `ai_experiments/backends/local.py:64`, `ai_experiments/backends/ray.py:32`, `ai_experiments/clusters.py:53`, `ai_experiments/notify.py:40,41`, `ai_experiments/report.py:37`, `ai_experiments/store/filesystem.py:54`, `ai_experiments/tracking.py:55,69,70`, `ai_experiments/worker.py:47`, `examples/toy_train.py:38`
+- Modify (convert — 7 genuine config reads): `ai_experiments/notify.py:42,43`, `ai_experiments/clusters.py:55`, `ai_experiments/store/filesystem.py:55`, `ai_experiments/report.py:37`, `ai_experiments/tracking.py:59`, `ai_experiments/backends/ray.py:34`
+- Modify (suppress — 5 sites that are not config reads): `ai_experiments/worker.py:53`, `ai_experiments/backends/local.py:64`, `ai_experiments/tracking.py:73,74`, `examples/toy_train.py:41`
+- Modify: `pyproject.toml` (add `pydantic-settings`), `tests/conftest.py` (cache-clearing fixture), `tests/test_server.py`, `tests/test_ray_backend.py`, `tests/test_tracking.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `ai_experiments.settings.get_settings() -> Settings`, an `lru_cache`d accessor. **Call sites use `get_settings()`, never `Settings()`** — CES-76 names ad-hoc construction at call sites as the anti-pattern.
+- Produces: `ai_experiments.settings.get_settings() -> Settings`, an `lru_cache`d accessor, plus the `Settings` class. **Call sites use `get_settings()`, never `Settings()`** — CES-76 names ad-hoc construction at call sites as the anti-pattern.
 
 Read `.agents/rules/settings-module.md` and `.agents/snippets/settings.py`. The snippet uses `pydantic-settings`; `pydantic>=2.6` is already a dependency, so this is an in-family addition, not a new paradigm.
+
+**This task is behavior-stable.** Nothing it touches may change what any variable resolves to.
 
 - [ ] **Step 1: Add the dependency**
 
 Add `"pydantic-settings>=2.7"` to `[project].dependencies`, then `uv lock` and `.venv/bin/python -m pip install pydantic-settings`. Same constraint as Task 7 Step 1: never `uv sync` in this tree.
 
-- [ ] **Step 2: Inventory the real variables before writing a single field**
+- [ ] **Step 2: Know which findings are config, and which are not**
 
-```bash
-uvx --from ast-grep-cli ast-grep scan --json=compact 2>/dev/null | python3 -c "
-import json, sys
-for x in json.load(sys.stdin):
-    if x['ruleId'] == 'settings-module':
-        print(x['file'], x['range']['start']['line'] + 1, x['lines'].strip())
-"
-```
+The inventory is already done — these are the twelve `settings-module` findings, verified against the live tree. Do not re-derive them, and do not invent fields.
 
-Record each variable name, its inline default, and its type. Do not invent fields and do not rename variables — a rename is a deployment break, and this task is behavior-stable.
+**Seven genuine config reads → convert:**
+
+| Site | Variable | Today's expression |
+|---|---|---|
+| `notify.py:42` | `IAX_NOTIFY_WEBHOOK` | `webhook_url or os.environ.get("IAX_NOTIFY_WEBHOOK")` |
+| `notify.py:43` | `IAX_NOTIFY_COMMAND` | `command or os.environ.get("IAX_NOTIFY_COMMAND")` |
+| `clusters.py:55` | `IAX_CLUSTERS` | `os.environ.get("IAX_CLUSTERS")`, then `if env: return Path(env)` |
+| `store/filesystem.py:55` | `IAX_RUNS_DIR` | `Path(root or os.environ.get("IAX_RUNS_DIR", "outputs/experiments/runs"))` |
+| `report.py:37` | `IAX_ARTIFACTS_DIR` | `os.environ.get("IAX_ARTIFACTS_DIR")`, then `if not value: return None` |
+| `tracking.py:59` | `MLFLOW_TRACKING_URI` | `tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")` |
+| `backends/ray.py:34` | `RAY_ADDRESS` | `os.environ.get("RAY_ADDRESS")`, then `if env_address and env_address.strip()` |
+
+**Five findings that are not config reads → keep the call, add a visible suppression:**
+
+- `worker.py:53` and `backends/local.py:64` are `env = os.environ.copy()`. They propagate the *whole parent environment* into a child process. There is no variable and no default here — nothing a `Settings` field could hold. Suppress:
+  ```python
+  env = os.environ.copy()  # ast-grep-ignore: settings-module  # child-process env propagation, not config
+  ```
+- `tracking.py:73,74` live inside `_file_store_optout`, which *writes* `MLFLOW_ALLOW_FILE_STORE` with `os.environ.setdefault(...)` because mlflow reads that variable out of `os.environ` inside its own library code, then reads it back to propagate the identical value into the workload's env. CES-76 governs reading config; a `setdefault` write is not a read a settings module can own, and routing line 74 through a cached `get_settings()` would break the docstring's stated contract ("An explicit MLFLOW_ALLOW_FILE_STORE=false set by the user is respected") — a value `setdefault` installs at call time is invisible to a settings object constructed earlier. Suppress both, citing that:
+  ```python
+  # mlflow reads this out of os.environ itself; we set it for mlflow and mirror it into the
+  # workload env. Not app config, and a cached settings read would not see the setdefault.
+  os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")  # ast-grep-ignore: settings-module
+  return {"MLFLOW_ALLOW_FILE_STORE": os.environ["MLFLOW_ALLOW_FILE_STORE"]}  # ast-grep-ignore: settings-module
+  ```
+- `examples/toy_train.py:41` is a standalone example kept deliberately dependency-free — the same justification Task 8 already recorded on its `argparse` import. Suppress with the matching wording (Step 8).
 
 Cross-check against `.env.schema`, the committed contract, which must list every variable this task centralizes.
 
-> **Blocked sub-step — raise it, do not route around it.** The agent cannot read `.env.schema`: `.claude/settings.json` denies `Read(./.env.*)`, and that deny overrides its own `Read(./.env.schema)` allow (an upstream template defect). Ask the user to paste the file or to narrow the deny pattern. If no answer arrives, finish the rest of the task and report the reconciliation as outstanding — never guess its contents.
+> **Ruling (already made — do not stall on it).** `.env.schema` exists but is unreadable to agents: `.claude/settings.json` denies `Read(./.env.*)` and that deny shadows its own `Read(./.env.schema)` allow (an upstream template defect). This task centralizes **no new variable** — all seven already exist in the tree today — so `.env.schema` needs no edit and the reconciliation is a verification, not a change. Do not guess its contents, do not edit it, and do not ask. Note the unverified reconciliation in your report and move on.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -702,31 +724,34 @@ Tests are exempt from CES-76, so they may set env directly. `get_settings` is ca
 
 ```python
 # tests/test_settings.py
-import pytest
+"""CES-76: every environment read in the package resolves through this one module."""
+
+from __future__ import annotations
 
 from ai_experiments.settings import Settings, get_settings
 
 
-@pytest.fixture(autouse=True)
-def _clear_settings_cache():
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 def test_defaults_do_not_require_any_environment(monkeypatch):
     monkeypatch.delenv("IAX_RUNS_DIR", raising=False)
-    assert get_settings().runs_dir.name == "runs"
+    assert get_settings().runs_dir == "outputs/experiments/runs"
 
 
-def test_environment_overrides_the_default(monkeypatch, tmp_path):
-    monkeypatch.setenv("IAX_RUNS_DIR", str(tmp_path / "elsewhere"))
-    assert get_settings().runs_dir == tmp_path / "elsewhere"
+def test_environment_overrides_the_default(monkeypatch):
+    monkeypatch.setenv("IAX_RUNS_DIR", "/elsewhere/runs")
+    assert get_settings().runs_dir == "/elsewhere/runs"
 
 
-def test_binding_is_case_insensitive(monkeypatch, tmp_path):
-    monkeypatch.setenv("iax_runs_dir", str(tmp_path / "lower"))
-    assert get_settings().runs_dir == tmp_path / "lower"
+def test_binding_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("iax_runs_dir", "/lower/runs")
+    assert get_settings().runs_dir == "/lower/runs"
+
+
+def test_unprefixed_third_party_variables_bind_too(monkeypatch):
+    monkeypatch.setenv("RAY_ADDRESS", "http://ray:8265")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "file:///mlruns")
+    settings = get_settings()
+    assert settings.ray_address == "http://ray:8265"
+    assert settings.mlflow_tracking_uri == "file:///mlruns"
 
 
 def test_get_settings_is_cached():
@@ -738,57 +763,142 @@ def test_unknown_keys_are_ignored_not_fatal(monkeypatch):
     Settings()  # asserts no raise: model_config sets extra="ignore"
 ```
 
-Replace `IAX_RUNS_DIR` / `runs_dir` with the real names from Step 2, and set `env_prefix` to the prefix those variables actually use. If they share no prefix, use `env_prefix=""` and name the fields after the full variable names — do not rename the variables to fit a prefix.
+`test_binding_is_case_insensitive` and `test_unprefixed_third_party_variables_bind_too` are the two that actually pin the config: they fail loudly if the alias wiring in Step 5 is wrong. If either fails, fix `settings.py` — never the test.
+
+There is no `_clear_settings_cache` fixture in this file. Step 3b puts one in `tests/conftest.py` instead, where it protects the whole suite.
+
+- [ ] **Step 3b: Clear the cache for every test, suite-wide**
+
+`@lru_cache` makes `get_settings()` read the environment once per *process*. Every one of the seven sites reads env at *call* time today, and three test files rely on that by monkeypatching env mid-run: `tests/test_server.py:220,232` (`IAX_CLUSTERS`), `tests/test_ray_backend.py:127,129` (`RAY_ADDRESS`), `tests/test_tracking.py:73,74,89,102` (`MLFLOW_*`). Without a cache reset those tests would pass or fail depending on which test ran first — exactly the order-dependence CES-111 is about to start randomizing.
+
+Add to `tests/conftest.py` (created in Task 7):
+
+```python
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """CES-76: get_settings() is process-cached, so env-mutating tests must start clean."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+```
+
+One autouse fixture covers every current and future test and needs no per-test edits. Prefer it over touching the eight monkeypatch sites individually.
+
+**The accepted behavior change:** in production, env is now read once per process instead of on every call. That is the point of CES-76 and is deliberate. Say so in your report; do not smuggle it in.
 
 - [ ] **Step 4: Run it and watch it fail**
 
 Run: `.venv/bin/python -m pytest tests/test_settings.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'ai_experiments.settings'`.
 
-- [ ] **Step 5: Implement from the snippet**
+- [ ] **Step 5: Implement**
 
-Base `ai_experiments/settings.py` on `.agents/snippets/settings.py`: one typed field per variable from Step 2, each current inline default preserved exactly, `case_sensitive=False`, `env_file=".env"`, and the `@lru_cache def get_settings()` accessor. Export `Settings` too, so tests can construct it directly.
+Two decisions the snippet cannot make for you, both load-bearing:
+
+1. **`env_prefix` must be `""`, with an explicit `validation_alias` on every field.** The seven variables span three families: five `IAX_*`, plus `MLFLOW_TRACKING_URI` and `RAY_ADDRESS` — and those last two are third-party contracts that mlflow and Ray read from env themselves, so they cannot be renamed to fit a prefix. With `env_prefix=""` a field named `runs_dir` binds bare `RUNS_DIR`, *not* `IAX_RUNS_DIR`, silently. The alias is what makes it bind correctly.
+2. **Every field is typed `str` or `str | None`** — exactly what `os.environ.get` returns today — and the conversion logic (`Path(...)`, `.strip()`, `if not value`) stays at the call site where it already is. Typing `runs_dir: Path` would change behavior: `IAX_ARTIFACTS_DIR=""` returns `None` today but would become `Path(".")`, and `IAX_CLUSTERS=""` is ignored today but would become `Path(".")` too. This task centralizes reads; it does not retype them.
+
+```python
+# ai_experiments/settings.py
+"""CES-76 · the one module that reads the environment.
+
+Every `os.getenv` / `os.environ` read in the package resolves here, through the cached
+`get_settings()`. Fields are typed as the environment delivers them (`str`), and callers keep
+whatever coercion they already did -- this module centralizes the reads without changing what
+any of them mean.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,  # IAX_RUNS_DIR and iax_runs_dir both bind `runs_dir`
+        extra="ignore",
+    )
+
+    # No env_prefix: MLFLOW_TRACKING_URI and RAY_ADDRESS are third-party contracts that cannot
+    # be renamed, so every field names its variable outright.
+    runs_dir: str = Field(default="outputs/experiments/runs", validation_alias="IAX_RUNS_DIR")
+    artifacts_dir: str | None = Field(default=None, validation_alias="IAX_ARTIFACTS_DIR")
+    clusters_config: str | None = Field(default=None, validation_alias="IAX_CLUSTERS")
+    notify_webhook: str | None = Field(default=None, validation_alias="IAX_NOTIFY_WEBHOOK")
+    notify_command: str | None = Field(default=None, validation_alias="IAX_NOTIFY_COMMAND")
+    mlflow_tracking_uri: str = Field(default="", validation_alias="MLFLOW_TRACKING_URI")
+    ray_address: str | None = Field(default=None, validation_alias="RAY_ADDRESS")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Return the process-wide settings, constructed (and validated) once."""
+    return Settings()
+```
+
+If `case_sensitive=False` turns out not to apply to `validation_alias` in the installed pydantic-settings version, `test_binding_is_case_insensitive` will say so. Fix it with `AliasChoices` covering both cases rather than dropping the test.
 
 - [ ] **Step 6: Run the test**
 
 Run: `.venv/bin/python -m pytest tests/test_settings.py -v`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
-- [ ] **Step 7: Convert the 11 in-package call sites**
+- [ ] **Step 7: Convert the seven call sites**
+
+Each conversion replaces only the `os.environ.get(...)` expression. The surrounding logic is the behavior contract — leave it byte-for-byte:
 
 ```python
-# before
-runs_dir = Path(os.environ.get("IAX_RUNS_DIR", "runs"))
+# ai_experiments/store/filesystem.py:55
+self.root = Path(root or get_settings().runs_dir)
 
-# after
-from ai_experiments.settings import get_settings
+# ai_experiments/report.py:37
+value = get_settings().artifacts_dir
 
-runs_dir = get_settings().runs_dir
+# ai_experiments/clusters.py:55
+env = get_settings().clusters_config
+
+# ai_experiments/notify.py:42-43
+self.webhook_url = webhook_url or get_settings().notify_webhook
+self.command = command or get_settings().notify_command
+
+# ai_experiments/tracking.py:59
+resolved = tracking_uri or get_settings().mlflow_tracking_uri
+
+# ai_experiments/backends/ray.py:34
+env_address = get_settings().ray_address
 ```
 
-Read each site before converting: several read env *inside* a function precisely so a test can monkeypatch it. Those tests now need `get_settings.cache_clear()`. Find them first:
-
-```bash
-grep -rn "monkeypatch.setenv\|os.environ\[" tests/ | head -30
-```
-
-Fix each affected test in the same commit as the call site it covers — a settings refactor whose tests pass only by accident is worse than no refactor.
+Import as `from ai_experiments.settings import get_settings` (CES-5: absolute imports, `settings` is a leaf module nothing else imports). Drop the now-unused `import os` only where nothing else in the file uses it — `worker.py`, `backends/local.py` and `tracking.py` still need it.
 
 - [ ] **Step 8: Handle the example**
 
-`examples/toy_train.py:38` sits outside the package. Suppress rather than import package settings into a standalone script:
+`examples/toy_train.py:41` sits outside the package. Suppress rather than import package settings into a standalone script — matching the justification Task 8 recorded on the same file's `argparse` import:
 
 ```python
-epochs = int(os.environ.get("TOY_EPOCHS", "3"))  # ast-grep-ignore: settings-module  # standalone example
+    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")  # ast-grep-ignore: settings-module  # standalone example: stays dependency-free
 ```
+
+That line exceeds 100 columns with the comment attached; put the suppression comment on its own line above if `ruff check` complains, keeping `# ast-grep-ignore: settings-module` on the flagged line itself (ast-grep matches the comment on or immediately above the node — verify with a scan, do not assume).
 
 - [ ] **Step 9: Verify and commit**
 
 ```bash
-uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c settings-module   # expect 0 beyond the justified ignores
-.venv/bin/python -m pytest tests -q 2>&1 | tail -1
-git add -A && git commit -m "refactor: centralize environment reads behind get_settings (CES-76)"
+uvx --from ast-grep-cli ast-grep scan 2>&1 | grep -c settings-module            # expect 0
+uvx ruff@0.15.22 check . 2>&1 | tail -1                                         # expect: Found 4 errors.
+uvx ruff@0.15.22 format --check . 2>&1 | tail -1                                # expect: all formatted
+uvx pyrefly@latest check --config pyproject.toml 2>&1 | tail -1                 # expect: 0 errors
+uvx deptry@latest . 2>&1 | tail -1                                              # pydantic-settings must be declared
+.venv/bin/python -m pytest tests -q 2>&1 | tail -1                              # expect: 2 failed, 131 passed, 6 skipped
+git ls-files -m -o --exclude-standard | xargs awk 'length>100 {print FILENAME":"FNR}'   # expect: nothing
+git add pyproject.toml uv.lock ai_experiments tests examples
+git commit -m "refactor: centralize environment reads behind get_settings (CES-76)"
 ```
+
+The 2 failures are the pre-existing `tests/integration/test_local_mlflow.py` ones; 125 + 6 new settings tests = 131. If any *other* test moves, a conversion changed behavior — find it, do not adjust the expectation.
 
 ---
 
