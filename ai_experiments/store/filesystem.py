@@ -41,7 +41,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(text)
-        os.replace(tmp, path)
+        tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

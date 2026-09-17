@@ -13,6 +13,7 @@ import os
 import random
 import sys
 import time
+from pathlib import Path
 
 
 def main() -> None:
@@ -37,7 +38,7 @@ def main() -> None:
     # `iax artifacts <run_id>` and downloadable from the dashboard.
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
     if artifacts:
-        with open(os.path.join(artifacts, "model.json"), "w") as fh:
+        with (Path(artifacts) / "model.json").open("w") as fh:
             json.dump({"x": x, "loss": loss}, fh)
 
     print(f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}")
