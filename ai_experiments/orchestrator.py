@@ -256,35 +256,24 @@ class CampaignOrchestrator:
         state.best_trial_id = best.trial_id if best else None
 
     def _stop_reason(self, state: CampaignState, goal: GoalSpec) -> str | None:
-        best = best_trial(state, goal.objective.mode)
-        target = goal.objective.target
-        if best is not None and target is not None and best.objective_value is not None:
-            reached = (
-                best.objective_value >= target
-                if goal.objective.mode == "max"
-                else best.objective_value <= target
-            )
-            if reached:
-                return "target_reached"
+        """First stop condition that fires, evaluated in priority order.
 
-        if goal.budget.max_hours is not None:
-            created = state.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            age_hours = (utc_now() - created).total_seconds() / 3600
-            if age_hours > goal.budget.max_hours:
-                return "max_hours_exceeded"
+        `target_reached` outranks the budget/time checks: a campaign that has both
+        hit its target and exhausted its budget reports `target_reached`.
+        """
+        return (
+            _target_reached_reason(state, goal)
+            or _max_hours_reason(state, goal)
+            or self._gpu_hours_reason(state, goal)
+            or _budget_exhausted_reason(state, goal)
+        )
 
+    def _gpu_hours_reason(self, state: CampaignState, goal: GoalSpec) -> str | None:
         if (
             goal.budget.max_gpu_hours is not None
             and self.gpu_hours_spent(state, goal) >= goal.budget.max_gpu_hours
         ):
             return "gpu_hours_exhausted"
-
-        active = [t for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
-        planned = [t for t in state.trials if t.status == "planned"]
-        if len(state.trials) >= goal.budget.max_trials and not active and not planned:
-            return "budget_exhausted"
         return None
 
     def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
@@ -395,6 +384,40 @@ class CampaignOrchestrator:
         (escalations / f"campaign_{state.campaign_id}.json").write_text(
             json.dumps(payload, indent=2)
         )
+
+
+def _target_reached_reason(state: CampaignState, goal: GoalSpec) -> str | None:
+    best = best_trial(state, goal.objective.mode)
+    target = goal.objective.target
+    if best is None or target is None or best.objective_value is None:
+        return None
+    reached = (
+        best.objective_value >= target
+        if goal.objective.mode == "max"
+        else best.objective_value <= target
+    )
+    return "target_reached" if reached else None
+
+
+def _max_hours_reason(state: CampaignState, goal: GoalSpec) -> str | None:
+    if goal.budget.max_hours is None:
+        return None
+    # `created_at` may be persisted without a timezone; normalise before comparing.
+    created = state.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    age_hours = (utc_now() - created).total_seconds() / 3600
+    if age_hours > goal.budget.max_hours:
+        return "max_hours_exceeded"
+    return None
+
+
+def _budget_exhausted_reason(state: CampaignState, goal: GoalSpec) -> str | None:
+    active = [t for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
+    planned = [t for t in state.trials if t.status == "planned"]
+    if len(state.trials) >= goal.budget.max_trials and not active and not planned:
+        return "budget_exhausted"
+    return None
 
 
 def _trial_gpu_hours(
