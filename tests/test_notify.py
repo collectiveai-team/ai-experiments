@@ -58,9 +58,12 @@ def test_failing_sinks_never_raise(tmp_path):
 
 
 def test_send_flattens_extra_details_at_top_level(tmp_path):
-    """The payload is a wire contract: extras from **details sit alongside
-    timestamp/title/message/text, not nested under a details/extra key --
-    the webhook and command sinks both POST/pipe this object verbatim."""
+    """Pin the wire contract.
+
+    Extras from **details sit alongside timestamp/title/message/text, not
+    nested under a details/extra key -- the webhook and command sinks both
+    POST/pipe this object verbatim.
+    """
     notifier = Notifier(tmp_path / "runs")
 
     payload = notifier.send("t", "m", run_id="r1")

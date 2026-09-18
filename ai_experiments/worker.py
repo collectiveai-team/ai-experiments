@@ -96,7 +96,7 @@ class _Supervisor:
         for line in self.process.stdout:
             metric = parse_metric_line(line)
             if metric is not None:
-                point = MetricPoint(step=metric["step"], values=metric["values"])
+                point = MetricPoint(step=metric.step, values=metric.values)
                 self.store.append_metric(self.run_id, point)
                 self._update_status(
                     details={

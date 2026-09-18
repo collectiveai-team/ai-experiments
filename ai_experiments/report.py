@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ai_experiments.schemas import MetricLine
 from ai_experiments.settings import get_settings
 
 METRIC_PREFIX = "IAX_METRIC "
@@ -52,12 +53,12 @@ def report_metric(step: int | None = None, **values: float) -> None:
     sys.stdout.flush()
 
 
-def parse_metric_line(line: str) -> dict[str, Any] | None:
+def parse_metric_line(line: str) -> MetricLine | None:
     """Parse an ``IAX_METRIC {...}`` stdout line into step + numeric values.
 
-    Returns ``{"step": int | None, "values": {name: float}}`` or None when the
-    line is not a metric line or carries no usable values. Non-finite floats
-    (nan/inf) are preserved — detecting them is the monitor's job.
+    Returns a ``MetricLine`` or None when the line is not a metric line or
+    carries no usable values. Non-finite floats (nan/inf) are preserved --
+    detecting them is the monitor's job.
     """
     stripped = line.strip()
     idx = stripped.find(METRIC_PREFIX.strip())
@@ -88,7 +89,7 @@ def parse_metric_line(line: str) -> dict[str, Any] | None:
                 values[str(key)] = float(lowered.replace("infinity", "inf"))
     if not values and step is None:
         return None
-    return {"step": step, "values": values}
+    return MetricLine(step=step, values=values)
 
 
 def is_finite(value: float) -> bool:

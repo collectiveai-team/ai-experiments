@@ -178,6 +178,18 @@ class MetricPoint(BaseModel):
     values: dict[str, float] = Field(default_factory=dict)
 
 
+class MetricLine(BaseModel):
+    """One parsed ``IAX_METRIC`` stdout line, before it is stamped into a MetricPoint.
+
+    `step`/`values` are the fixed schema; `values` itself stays a raw
+    ``{name: float}`` map because the workload's own metric names are not
+    fixed. No timestamp here -- callers stamp that at observation time.
+    """
+
+    step: int | None = None
+    values: dict[str, float] = Field(default_factory=dict)
+
+
 class MonitorDecision(BaseModel):
     run_id: str
     decision: Literal[

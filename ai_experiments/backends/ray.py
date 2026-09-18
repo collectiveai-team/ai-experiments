@@ -182,7 +182,7 @@ class RayBackend(ExperimentBackend):
         existing = self.store.read_metrics(run_id)
         last: MetricPoint | None = existing[-1] if existing else None
         for metric in parsed[len(existing) :]:
-            last = MetricPoint(step=metric["step"], values=metric["values"])
+            last = MetricPoint(step=metric.step, values=metric.values)
             self.store.append_metric(run_id, last)
         return last
 
