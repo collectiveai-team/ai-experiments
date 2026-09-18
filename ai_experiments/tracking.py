@@ -210,8 +210,10 @@ def begin_tracking(  # ast-grep-ignore: no-dict-return-annotation
         },
     )
     # Env-var mapping spliced into the workload's subprocess environment
-    # (runtime_env["env_vars"] / env.update); the consumer is a dict splice,
-    # not a typed caller.
+    # (Ray's runtime_env["env_vars"]); the consumer is a dict splice, not a
+    # typed caller. backends/local.py calls begin_tracking for its side
+    # effects and discards this return value -- backends/ray.py is the only
+    # consumer.
     return {  # ast-grep-ignore: no-dict-literal-return
         "MLFLOW_RUN_ID": mlflow_run_id,
         "MLFLOW_TRACKING_URI": str(tracker.tracking_uri),
