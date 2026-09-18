@@ -1403,7 +1403,7 @@ uvx complexipy ai_experiments 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep FAILED
 ```
 
 **No behaviour changes.** Every one of these six is a pure restructuring. The existing tests are
-your regression net and their counts must not fall: `test_rules.py` 2, `test_daemon.py` 7,
+your regression net and their counts must not fall: `test_rules.py` 4, `test_daemon.py` 7,
 `test_monitoring_v2.py` 7, `test_server.py` 29, `test_report.py` 6, `test_orchestrator.py` 10.
 None of them names a private function — they drive these through public seams (`diagnose_run`,
 `create_app`, the CLI), which is CES-65 working as intended. Keep it that way: test the new
@@ -1447,7 +1447,7 @@ Not one may change spelling or order.
 - [ ] **Step 2: Run the monitoring tests**
 
 Run: `.venv/bin/python -m pytest tests/test_rules.py tests/test_daemon.py tests/test_monitoring_v2.py -v`
-Expected: PASS, 16 tests, unchanged.
+Expected: PASS, 18 tests, unchanged.
 
 - [ ] **Step 3: `_stop_reason` (19) — same shape, simpler**
 
@@ -1503,7 +1503,7 @@ explains. A `continue` becomes an early `return` in the extracted method — che
 
 - [ ] **Step 6: `create_app` (27) — this is the APIRouter split, not a complexity refactor**
 
-`ai_experiments/server/app.py:39`. It scores 27 because it nests **twenty route handlers inside one
+`ai_experiments/server/app.py:39`. It scores 27 because it nests **nineteen route handlers inside one
 function body**, closing over `store`. Its own control flow is unremarkable. So the fix is CES-17's
 boundary layout — group the handlers into `APIRouter`s by resource and include them — and the score
 falls out for free. Do not try to shave points any other way.
