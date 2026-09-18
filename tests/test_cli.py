@@ -186,3 +186,52 @@ def test_monitor_is_quiet_while_waiting(tmp_path):
     assert complete_monitor.exit_code == 0
     report = json.loads(complete_monitor.stdout)
     assert report["decision"]["decision"] == "training_complete"
+
+
+def test_cli_command_surface_is_stable():
+    """The split must not add, drop, or rename a single command."""
+    import typer.core
+    from typer.main import get_command
+
+    from ai_experiments.cli import app
+
+    root = get_command(app)
+    assert isinstance(root, typer.core.TyperGroup)
+    assert sorted(root.commands) == [
+        "artifacts",
+        "campaign",
+        "cancel",
+        "cluster",
+        "daemon",
+        "diagnose",
+        "escalations",
+        "leaderboard",
+        "logs",
+        "metrics",
+        "monitor",
+        "repro",
+        "rerun",
+        "run",
+        "runs",
+        "serve",
+        "status",
+        "submit",
+        "validate",
+    ]
+    campaign_group = root.commands["campaign"]
+    assert isinstance(campaign_group, typer.core.TyperGroup)
+    assert sorted(campaign_group.commands) == [
+        "advance",
+        "edit",
+        "list",
+        "pause",
+        "resume",
+        "start",
+        "status",
+        "stop",
+        "suggest",
+        "validate",
+    ]
+    cluster_group = root.commands["cluster"]
+    assert isinstance(cluster_group, typer.core.TyperGroup)
+    assert sorted(cluster_group.commands) == ["down", "list", "status", "up"]
