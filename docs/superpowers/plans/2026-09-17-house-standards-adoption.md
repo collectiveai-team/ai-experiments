@@ -1547,37 +1547,51 @@ git commit -m "refactor(monitoring): extract one predicate per suspicion rule (C
 - Modify: whatever the randomized test order exposes (see Step 2)
 
 **Interfaces:**
-- Produces: a green `prek run --all-files` and an open PR.
+- Produces: a green `prek run --all-files` and a PR *prepared* — see Step 6, which is a stop point.
 
 - [ ] **Step 1: Adopt CES-111 (test order randomization)**
 
-This is the last unapplied standard and the only `[dependency]` one: `pytest-randomly` appears
-nowhere in `pyproject.toml`, so every "the suite is green" result in this plan was measured in
-pytest's *default* order. Read `.agents/rules/test-order-randomization-pytest-randomly.md`.
+The last unapplied standard and the only `[dependency]` one. Verified on 2026-09-18:
+`pytest-randomly` appears nowhere in `pyproject.toml` **and** `import pytest_randomly` raises
+`ModuleNotFoundError`, so it is not merely unconfigured here — it is absent. Every "the suite is
+green" result in this plan was therefore measured in pytest's *default* order, and none of them says
+anything about order-independence. Read `.agents/rules/test-order-randomization-pytest-randomly.md`.
 
-Add `"pytest-randomly>=3.15"` to `[project.optional-dependencies].dev`, then:
+`[tool.pytest.ini_options]` currently sets `testpaths` and three markers and has no `addopts`, so
+nothing is pinning a seed today. Add `"pytest-randomly>=3.15"` to
+`[project.optional-dependencies].dev` (the group at `pyproject.toml:27-33`), then:
 
 ```bash
 uv lock
 .venv/bin/python -m pip install pytest-randomly
 ```
 
-Do **not** run `uv sync` — four worktrees share this venv.
+Do **not** run `uv sync` — five worktrees share this venv.
 
-- [ ] **Step 2: Run the suite several times and fix what order exposes**
+- [ ] **Step 2: Run the suite five times and fix what order exposes**
 
 ```bash
 for i in 1 2 3 4 5; do .venv/bin/python -m pytest tests -q 2>&1 | tail -1; done
 ```
 
-Every line must read `2 failed, <N> passed, 6 skipped` with the same `<N>`. A test that passes in
-one order and fails in another is a state leak, and CES-111 exists to surface exactly that — fix
-the leak (a missing fixture teardown, a module-level singleton, a shared tmp path), never by
-pinning the seed. `ai_experiments/core/logger.py`'s `_configured` module global and
-`tests/test_logger.py`'s reset fixture are the known candidates; the `Notifier`/`MonitorDaemon`
-construction in `cli.py` is the other.
+All five lines must be **identical**. That identity is the invariant — do not predict the number
+from an earlier baseline, because every task in this plan added tests. As of Task 10b fix round 1
+the suite reads `2 failed, 156 passed, 6 skipped`; Tasks 11 and 12 add more. The two failures are
+`tests/integration/test_local_mlflow.py`, which predate this branch and need a live MLflow server
+that does not exist in this environment.
 
-Commit this before Step 3:
+A test that passes in one order and fails in another is a state leak, and CES-111 exists to surface
+exactly that. Fix the leak — a missing fixture teardown, a module-level singleton, a shared tmp path
+— **never by pinning the seed**. Known candidates, in order of likelihood:
+
+- `ai_experiments/core/logger.py`'s `_configured` module global, against
+  `tests/test_logger.py`'s reset fixture.
+- The `Notifier` / `MonitorDaemon` construction in the CLI (`ai_experiments/cli/` after Task 11).
+- Any module-level singleton added by Tasks 11 or 12 that did not exist when this list was written.
+
+**Already ruled out, so do not chase it:** `get_settings()` is `@lru_cache`d, but
+`tests/conftest.py:184` clears it in an `autouse` fixture on both sides of every test. That is the
+shape of guard the other candidates need; it is the pattern to copy, not a bug to find.
 
 ```bash
 git add pyproject.toml uv.lock tests
@@ -1589,49 +1603,74 @@ git commit -m "test: randomize test order (CES-111)"
 ```bash
 uvx prek run --all-files; echo "exit=$?"
 ```
-Expected: `exit=0`. If `ruff format` or `ruff check --fix` modify anything at this point, commit that diff — it means an earlier task left unformatted code.
+Expected: `exit=0`. This is the first point in the plan where nothing may be skipped. If
+`ruff format` or `ruff check --fix` modify anything here, commit that diff — it means an earlier
+task left unformatted code.
 
-- [ ] **Step 4: The tests**
+- [ ] **Step 4: Confirm the hooks are installed (they already are)**
 
-Run: `.venv/bin/python -m pytest tests -q 2>&1 | tail -1`
-Expected: `2 failed, <N> passed, 6 skipped` — the same two pre-existing MLflow integration
-failures, no new ones, and no lost passes. `<N>` is the count Step 2 settled on; it is 119 plus
-every test this plan added (Task 5 added 1, Task 7 added 3), so it is **not** the 119 the baseline
-showed.
-
-- [ ] **Step 5: Install the hooks now that they are green**
+Not an install step. `prek install` was run at the start of this session, before this plan existed:
+`/home/lio/Projects/collectiveai/ai-experiments/.git/hooks/pre-commit` and `commit-msg` exist and
+are headed `# File generated by prek`. That is *why* every task in this plan has carried a SKIP
+list. Verify, do not reinstall:
 
 ```bash
-prek install -t pre-commit -t commit-msg
+head -2 "$(git rev-parse --git-common-dir)/hooks/pre-commit"   # expect the prek banner
 ```
 
-Deliberately last: installing earlier would have blocked every commit in this plan.
+**These hooks are shared.** `git rev-parse --git-common-dir` resolves to the primary repo's `.git`
+for every worktree, so all five worktrees — and any other session committing in them — run the same
+hooks. Do not install, uninstall, or reconfigure them.
 
-- [ ] **Step 6: Open the PR**
+- [ ] **Step 5: Assemble the PR body**
+
+Write it to `.superpowers/sdd/2026-09-17-house-standards-adoption/pr-body.md`. It must carry:
+
+- the SHA of the Task 3 formatting commit, with rebase instructions for the 13 open PRs;
+- the `orchestrator.py` (412 lines) decision from Task 11 Step 8, with its reasoning;
+- every `ast-grep-ignore` and `noqa` added by this branch, each with its justification;
+- the note that the two MLflow integration failures predate this branch and need a live server;
+- the deferred `NamedTuple` conversion for the two integration fixtures
+  (`test_local_mlflow.py`, `test_ray_mlflow.py`), flagged as a follow-up for whoever next has a live
+  MLflow/Ray environment — it was ruled a deliberate, revisitable exception, not a dismissal;
+- the five defects found in upstream `collectiveai-team/scaffolding`, to be filed there:
+  the `core/logger.py` snippet's 104-column `_is_prod` line; its use of 3.11-only
+  `getLevelNamesMapping` against a `requires-python = ">=3.10"`; its `get_logger` annotated
+  `-> structlog.stdlib.BoundLogger` when `make_filtering_bound_logger` guarantees it never returns
+  one; the `prek.toml` `python` vs `python3` defect; and the `.env.schema` deny-rule shadowing.
+
+- [ ] **Step 6: STOP — the push and the PR need the user's approval**
+
+`git push -u origin feat/house-standards` and `gh pr create` are side effects outside this worktree,
+against a shared repository. That is one of the four things that stops a running plan. Do **not**
+run them autonomously.
+
+Present to the user: the branch's commit count, the final gate results, the prepared PR body, and
+the list of rulings made during execution. Then ask. On approval:
 
 ```bash
 git push -u origin feat/house-standards
-gh pr create --title "refactor: adopt house engineering standards" --body-file -
+gh pr create --title "refactor: adopt house engineering standards" \
+  --body-file .superpowers/sdd/2026-09-17-house-standards-adoption/pr-body.md
 ```
-
-The body must carry: the SHA of the Task 3 formatting commit and rebase instructions for the 13
-open PRs; the `orchestrator.py` decision from Task 11 Step 7; every `ast-grep-ignore` and `noqa`
-added, with its justification; the note that the two MLflow integration failures predate this
-branch; and the three defects found in the upstream `core/logger.py` snippet (the 104-column
-`_is_prod` line, the 3.11-only `getLevelNamesMapping`, and the `-> BoundLogger` return annotation
-that `make_filtering_bound_logger` guarantees is never returned), which are to be filed against
-`collectiveai-team/scaffolding`.
 
 - [ ] **Step 7: Confirm CI**
 
 Run: `gh pr checks --watch`
-Expected: `tests`, `zizmor`, `osv-scanner`, `dependency-review`, `commit-policy`, `conventional-commits` all pass. `tests.yml` runs `uvx prek run --all-files`, so Step 1 already predicted this result.
+Expected: `tests`, `zizmor`, `osv-scanner`, `dependency-review`, `commit-policy`,
+`conventional-commits` all pass. `tests.yml` runs `uvx prek run --all-files`, so Step 3 already
+predicted that result.
 
 ---
 
 ## Risks
 
-- **The formatting commit (Task 3) conflicts with all 13 open PRs.** Accepted deliberately on 2026-09-17. Mitigation is the rebase note in the PR body; there is no way to make a line-length change conflict-free.
+- **The formatting commit (Task 3) conflicts with all 13 open PRs.** Accepted deliberately on 2026-09-17. It is **`e97b0ff`** (`style: reformat to line-length 100 (ruff format)`); that SHA is what the rebase note in the PR body must name. There is no way to make a line-length change conflict-free.
 - **Task 10 changes the HTTP response contract if a model is wrong.** The characterization tests in Step 1 are the only thing standing between this refactor and a silent API break. Do not skip them, and do not edit them to match new output.
-- **The plan runs in the primary working tree**, shared with four other worktrees and other sessions. Every task commits before the next begins, so no task leaves a dirty tree for someone else to trip over.
+- **The plan runs in the `house-standards` worktree, not the primary tree** -- but the two share one
+  `.git`, so hooks, the stash stack and `refs/` are common to all five worktrees and to the other
+  live sessions using them. Three consequences that bit during execution: prek's hooks were already
+  installed before the plan began (which is why every task carries a SKIP list); never use bare
+  `git stash`; and do not commit controller-side artifacts while an implementer has unstaged edits,
+  because prek's patch save/restore will run across them.
 - **`.env.schema` is unreadable to the agent** (Task 9 Step 2). That blocks only the reconciliation sub-step, not the task.
