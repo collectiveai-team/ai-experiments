@@ -48,9 +48,9 @@ Each rule is a **CES — Collective Engineering Standard** (`CES-<issue#>` is th
 the kebab-case slug is the machine id used by tooling and `# ast-grep-ignore: <slug>`
 suppressions). `[ast-grep]` / `[prek]` rules are enforced automatically by `prek`; `[ci]` rules
 are enforced by a GitHub Actions workflow (no local hook); `[dependency]` rules ship as a
-dev-dependency that activates automatically, no separate check; `[judgment]` rules are
-reviewer/agent judgment; `[snippet]` ships canonical drop-in code. Full convention:
-`docs/engineering-standards.md`.
+dev-dependency that activates automatically, no separate check; `[script]` rules are maintained
+by a repo script; `[judgment]` rules are reviewer/agent judgment; `[snippet]` ships canonical
+drop-in code. Full convention: [`docs/engineering-standards.md`](docs/engineering-standards.md).
 
 ### Standards
 
