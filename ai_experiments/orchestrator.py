@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,7 @@ from ai_experiments.schemas import (
 from ai_experiments.store.campaign import CampaignStore
 
 if TYPE_CHECKING:
+    from ai_experiments.daemon import TickReport
     from ai_experiments.store import FilesystemRunStore
 
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
@@ -199,6 +201,28 @@ class CampaignOrchestrator:
 
         self.campaign_store.write_state(state)
         return state
+
+    def run_to_completion(
+        self,
+        state: CampaignState,
+        tick: Callable[[], TickReport],
+        on_tick: Callable[[TickReport], None],
+        interval: int,
+    ) -> CampaignState:
+        """Drive `tick()` (typically `MonitorDaemon.tick`) until the campaign stops.
+
+        Reports every tick via `on_tick`, sleeping `interval` seconds in between, and
+        returns the campaign's final state once it is completed, stopped, or failed. A
+        `KeyboardInterrupt` propagates to the caller mid-loop, leaving the campaign
+        active for a later `MonitorDaemon` to resume.
+        """
+        while True:
+            report = tick()
+            on_tick(report)
+            state = self.campaign_store.read_state(state.campaign_id)
+            if state.status in {"completed", "stopped", "failed"}:
+                return state
+            time.sleep(interval)
 
     # -- internals -------------------------------------------------------------
 
