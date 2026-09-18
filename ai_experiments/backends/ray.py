@@ -140,9 +140,11 @@ class RayBackend(ExperimentBackend):
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
 
-    def _ray_details(
+    def _ray_details(  # ast-grep-ignore: no-dict-return-annotation
         self, run_id: str, client: Any, external_id: str, ray_status: Any
     ) -> dict[str, Any]:
+        # Ray's own job-info keys pass through into the free-form
+        # RunStatus.details blob; not a fixed schema iax defines.
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
             "ray_address": self.address,
@@ -228,9 +230,11 @@ def _safe_call(client: Any, method_name: str, *args: Any) -> Any:
         return None
 
 
-def _job_info_dict(job_info: Any) -> dict[str, Any]:
+def _job_info_dict(job_info: Any) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+    # Passes Ray's own job-info keys through into the free-form
+    # RunStatus.details blob; not a fixed schema iax defines.
     if job_info is None:
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # empty job-info, same shape as above
     if isinstance(job_info, dict):
         return {str(k): _jsonable(v) for k, v in job_info.items()}
     if hasattr(job_info, "model_dump"):

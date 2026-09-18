@@ -26,8 +26,12 @@ class FakeRayClient:
         assert job_id == "ray-job-1"
         return self.status
 
-    def get_job_info(self, job_id: str) -> dict:
+    def get_job_info(self, job_id: str) -> dict:  # ast-grep-ignore: no-dict-return-annotation
+        # Imitates Ray's JobSubmissionClient.get_job_info() shape, which
+        # _job_info_dict then converts; modeling this fake would make it
+        # diverge from the third-party API it stands in for.
         assert job_id == "ray-job-1"
+        # ast-grep-ignore: no-dict-literal-return
         return {"status": self.status, "message": self.message}
 
     def get_job_logs(self, job_id: str) -> str:

@@ -67,7 +67,11 @@ def completed_ray_run(tmp_path_factory, ray_address, mlflow_uri):
             break
         time.sleep(3)
 
-    return {
+    # A grab-bag of this fixture's own local objects (store/backend/handle/
+    # statuses), read back only by the sibling test functions below via
+    # string keys within this module -- not a schema any production caller
+    # depends on, so a model would only add ceremony around test glue.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "store": store,
         "backend": backend,
         "handle": handle,

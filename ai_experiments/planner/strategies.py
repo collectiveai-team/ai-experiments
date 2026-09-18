@@ -110,7 +110,9 @@ class AdaptiveStrategy:
         ranked = sorted(scored, key=_objective, reverse=reverse)
         top = ranked[: max(goal.strategy.top_k, 1)]
 
-        def draw() -> dict[str, Any]:
+        def draw() -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+            # A sampled hyperparameter assignment; the keys are the user's own
+            # search-space parameter names (goal.search_space), not a fixed schema.
             if rng.random() < goal.strategy.exploration:
                 return sample(goal.search_space, rng)
             anchor = rng.choice(top)

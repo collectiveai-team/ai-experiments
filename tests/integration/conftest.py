@@ -65,7 +65,9 @@ def mlflow_api(mlflow_uri: str):
     harness writes with would hide a broken write.
     """
 
-    def _get(path: str, **params: str) -> dict:
+    def _get(path: str, **params: str) -> dict:  # ast-grep-ignore: no-dict-return-annotation
+        # Returns the real MLflow REST API's JSON payload verbatim; the shape
+        # is MLflow's, not ours, so modeling it would drift from the real API.
         url = f"{mlflow_uri}/api/2.0/mlflow/{path}"
         if params:
             url += "?" + "&".join(f"{k}={v}" for k, v in params.items())

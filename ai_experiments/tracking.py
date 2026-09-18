@@ -61,21 +61,29 @@ def _is_file_store(tracking_uri: str | None) -> bool:
     return resolved == "" or resolved.startswith("file:") or "://" not in resolved
 
 
-def _file_store_optout(tracking_uri: str | None) -> dict[str, str]:
+def _file_store_optout(  # ast-grep-ignore: no-dict-return-annotation
+    tracking_uri: str | None,
+) -> dict[str, str]:
     """MLflow 3.x gates the filesystem store behind MLFLOW_ALLOW_FILE_STORE.
 
     Configuring a file store in iax is an explicit choice (and the only local
     option with mlflow-skinny, which has no SQL store), so opt out of the
     gate on the user's behalf — for this process and for the workload env.
     An explicit MLFLOW_ALLOW_FILE_STORE=false set by the user is respected.
+
+    Returns an env-var mapping spliced into the workload's subprocess
+    environment (``**tracker.extra_env`` below); the consumer is a dict
+    splice, not a typed caller.
     """
     if not _is_file_store(tracking_uri):
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # no opt-out needed, same shape
     # mlflow reads this out of os.environ itself; we set it for mlflow and mirror it into the
     # workload env. Not app config, and a cached settings read would not see the setdefault.
     os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")  # ast-grep-ignore: settings-module
     value = os.environ["MLFLOW_ALLOW_FILE_STORE"]  # ast-grep-ignore: settings-module
-    return {"MLFLOW_ALLOW_FILE_STORE": value}
+    # env-var mapping spliced into the workload's subprocess environment; the
+    # consumer is a dict splice (`**tracker.extra_env`), not a typed caller.
+    return {"MLFLOW_ALLOW_FILE_STORE": value}  # ast-grep-ignore: no-dict-literal-return
 
 
 class MlflowTracker:
@@ -165,17 +173,19 @@ def tracker_for(manifest: ExperimentManifest) -> MlflowTracker | None:
     )
 
 
-def begin_tracking(
+def begin_tracking(  # ast-grep-ignore: no-dict-return-annotation
     store: FilesystemRunStore, run_id: str, manifest: ExperimentManifest
 ) -> dict[str, str]:
     """Submit-time hook used by the backends.
 
     Returns env vars for the workload ({} when tracking is off or broken) and
     records the mlflow run id in the run's status details for the daemon's
-    finalization pass.
+    finalization pass. This is an env-var mapping spliced into the workload's
+    subprocess environment (Ray's `runtime_env["env_vars"]`, or `env.update`
+    for the local backend); the consumer is a dict splice, not a typed caller.
     """
     if not manifest.tracking.mlflow:
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # tracking off, same shape
     try:
         tracker = tracker_for(manifest)
         assert tracker is not None  # noqa: S101  # type narrowing, not a runtime check
@@ -189,7 +199,7 @@ def begin_tracking(
                 details={"error": str(exc)},
             ),
         )
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # tracking broke, same shape
     store.update_status(
         run_id,
         details={
@@ -197,7 +207,10 @@ def begin_tracking(
             "mlflow_tracking_uri": tracker.tracking_uri,
         },
     )
-    return {
+    # Env-var mapping spliced into the workload's subprocess environment
+    # (runtime_env["env_vars"] / env.update); the consumer is a dict splice,
+    # not a typed caller.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "MLFLOW_RUN_ID": mlflow_run_id,
         "MLFLOW_TRACKING_URI": str(tracker.tracking_uri),
         **tracker.extra_env,

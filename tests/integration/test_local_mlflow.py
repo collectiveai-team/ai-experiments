@@ -90,7 +90,11 @@ def completed_local_run(tmp_path_factory, mlflow_uri):
     at_submit = store.read_status(handle.run_id)
     final = _wait_terminal(store, handle.run_id)
     report = MonitorDaemon(store).tick()
-    return {
+    # A grab-bag of this fixture's own local objects (store/handle/statuses/
+    # report), read back only by the sibling test functions below via string
+    # keys within this module -- not a schema any production caller depends
+    # on, so a model would only add ceremony around test glue.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "store": store,
         "handle": handle,
         "at_submit": at_submit,

@@ -18,8 +18,15 @@ if TYPE_CHECKING:
     import random
 
 
-def sample(space: dict[str, ParamSpec], rng: random.Random) -> dict[str, Any]:
-    """Draw one random parameter assignment."""
+def sample(  # ast-grep-ignore: no-dict-return-annotation
+    space: dict[str, ParamSpec], rng: random.Random
+) -> dict[str, Any]:
+    """Draw one random parameter assignment.
+
+    Keys are the user's own search-space parameter names (from `space`), not
+    a fixed schema -- a sampled hyperparameter assignment, one value per
+    parameter the goal's search space defines.
+    """
     return {name: _sample_param(spec, rng) for name, spec in space.items()}
 
 
@@ -60,7 +67,7 @@ def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
     raise TypeError(f"unsupported param spec: {spec!r}")
 
 
-def perturb(
+def perturb(  # ast-grep-ignore: no-dict-return-annotation
     space: dict[str, ParamSpec],
     base: dict[str, Any],
     rng: random.Random,
@@ -69,7 +76,8 @@ def perturb(
     """Sample a neighbor of `base`.
 
     Gaussian moves for numeric params (log-space for loguniform), a re-draw with
-    probability `scale` for choices.
+    probability `scale` for choices. Keys are the user's own search-space
+    parameter names, not a fixed schema.
     """
     result: dict[str, Any] = {}
     for name, spec in space.items():

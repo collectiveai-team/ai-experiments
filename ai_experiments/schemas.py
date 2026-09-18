@@ -339,7 +339,12 @@ class GoalSpec(BaseModel):
 
     @field_validator("search_space")
     @classmethod
-    def search_space_not_empty(cls, value: dict[str, ParamSpec]) -> dict[str, ParamSpec]:
+    def search_space_not_empty(  # ast-grep-ignore: no-dict-return-annotation
+        cls, value: dict[str, ParamSpec]
+    ) -> dict[str, ParamSpec]:
+        # A pydantic field validator's signature must return exactly the type
+        # it validates -- search_space is itself a name -> ParamSpec mapping,
+        # not a fixed schema.
         if not value:
             raise ValueError("search_space needs at least one parameter")
         return value
