@@ -1132,7 +1132,7 @@ report rather than quietly doing the other thing.
 | Site | Why |
 |---|---|
 | `clusters.py:105` + its three return literals (`:108,:119,:126`) | `cluster_status` returns `name`/`reachable`/`address`/`ray_version`/`error` across three branches — one fixed schema with optional fields. One model, three constructions; make sure all three construct the *same* model rather than three near-identical ones. |
-| `notify.py:45` | a fixed delivery result. |
+| `notify.py:45` | a fixed *core* (`timestamp`/`title`/`message`/`text`) that `**details` then splices arbitrary caller keys into, flattened at the top level. Model the core with `model_config = ConfigDict(extra="allow")` so the extras still serialize flat. **The flattening is a wire contract** -- `text` is the Slack-compatible field and the webhook POSTs this object verbatim -- so pin it with a test asserting that a `send(..., run_id="r1")` payload has `run_id` at the top level, not nested. If `extra="allow"` will not round-trip the extras into the POST body, suppress instead and say so in your report; do not nest them. |
 | `report.py:91` | `{"step": ..., "values": ...}` — a fixed metric line. `values` stays a raw map *inside* the model. |
 
 **Suppress — genuinely not a fixed schema (20 sites).** Each keeps its `dict` and gains a visible
@@ -1169,6 +1169,19 @@ with a scan rather than assuming, and hoist the expression to its own line if th
 ```bash
 git add -u && git commit -m "refactor: justify the raw-dict boundaries CES-79 does not govern"
 ```
+
+- [ ] **Step 2b: Type `list_artifacts` at the store layer (carried over from Task 10)**
+
+Task 10's review left `ArtifactEntry` as an `extra="forbid"` hand-mirror of an untyped producer:
+`FilesystemRunStore.list_artifacts` (`store/filesystem.py:198-217`) returns raw dicts that the
+server's `/api/runs/{run_id}/artifacts` handler feeds straight into the model. A fourth key added at
+the store becomes a 500 at the boundary. ast-grep does not flag it (the annotation is
+`list[dict[...]]`, a shape the rule does not match), so this is judgment, not a finding.
+
+Return `list[ArtifactEntry]` from `list_artifacts` itself and let the handler pass it through. The
+shape is already fixed and confirmed -- `modified_at` is an ISO string at the source, so nothing
+leans on a datetime coercion. `tests/test_server.py::test_run_artifacts_body_shape_is_stable` writes
+a real file through the real store, so it covers this hop; run it.
 
 - [ ] **Step 3: Verify the gate is clean**
 
