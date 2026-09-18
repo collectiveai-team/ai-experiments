@@ -34,7 +34,7 @@ from ai_experiments.monitoring.escalation import (
 )
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
-from ai_experiments.schemas import MonitorPolicy, RunEvent, utc_now
+from ai_experiments.schemas import MonitorPolicy, RunEvent, RunStatus, utc_now
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
 
@@ -93,49 +93,56 @@ class MonitorDaemon:
         return report
 
     def _check_runs(self, report: TickReport) -> None:
+        for run_id in sorted(self.run_store.list_runs()):
+            self._check_one_run(run_id, report)
+
+    def _check_one_run(self, run_id: str, report: TickReport) -> None:
+        # Reading the status is itself fallible (a torn or truncated
+        # status.json), so it belongs inside the guard: one unreadable run
+        # must not end the tick for every other run being supervised.
+        try:
+            status = self.run_store.read_status(run_id)
+            if status.details.get(SYNTHETIC_STATUS_KEY):
+                raise RuntimeError(status.error or "status unreadable")
+        except Exception as exc:
+            report.errors.append(f"{run_id}: {exc}")
+            return
+
+        if status.status not in ACTIVE_RUN_STATES:
+            self._sync_finished_run(run_id, status, report)
+            return
+
+        report.runs_checked += 1
+        try:
+            action = self._check_run(run_id)
+        except Exception as exc:
+            report.errors.append(f"{run_id}: {exc}")
+            return
+        if action is not None:
+            report.actions.append(action)
+            if action.action in NOTIFY_ACTIONS:
+                self.notifier.send(
+                    f"run {action.action}",
+                    f"{action.run_id}: {', '.join(action.reasons)}",
+                    run_id=action.run_id,
+                    action=action.action,
+                    reasons=action.reasons,
+                )
+
+    def _sync_finished_run(self, run_id: str, status: RunStatus, report: TickReport) -> None:
         from ai_experiments.tracking import finalize_tracking
 
-        for run_id in sorted(self.run_store.list_runs()):
-            # Reading the status is itself fallible (a torn or truncated
-            # status.json), so it belongs inside the guard: one unreadable run
-            # must not end the tick for every other run being supervised.
-            try:
-                status = self.run_store.read_status(run_id)
-                if status.details.get(SYNTHETIC_STATUS_KEY):
-                    raise RuntimeError(status.error or "status unreadable")
-            except Exception as exc:
-                report.errors.append(f"{run_id}: {exc}")
-                continue
-
-            if status.status not in ACTIVE_RUN_STATES:
-                try:
-                    if finalize_tracking(self.run_store, status):
-                        report.actions.append(
-                            RunAction(
-                                run_id=run_id,
-                                decision=status.status,
-                                action="mlflow_synced",
-                            )
-                        )
-                except Exception as exc:
-                    report.errors.append(f"{run_id}: mlflow finalize: {exc}")
-                continue
-            report.runs_checked += 1
-            try:
-                action = self._check_run(run_id)
-            except Exception as exc:
-                report.errors.append(f"{run_id}: {exc}")
-                continue
-            if action is not None:
-                report.actions.append(action)
-                if action.action in NOTIFY_ACTIONS:
-                    self.notifier.send(
-                        f"run {action.action}",
-                        f"{action.run_id}: {', '.join(action.reasons)}",
-                        run_id=action.run_id,
-                        action=action.action,
-                        reasons=action.reasons,
+        try:
+            if finalize_tracking(self.run_store, status):
+                report.actions.append(
+                    RunAction(
+                        run_id=run_id,
+                        decision=status.status,
+                        action="mlflow_synced",
                     )
+                )
+        except Exception as exc:
+            report.errors.append(f"{run_id}: mlflow finalize: {exc}")
 
     def _check_run(self, run_id: str) -> RunAction | None:
         backend = backend_for_run(self.run_store, run_id)
