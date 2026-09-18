@@ -92,8 +92,12 @@ def completed_local_run(tmp_path_factory, mlflow_uri):
     report = MonitorDaemon(store).tick()
     # A grab-bag of this fixture's own local objects (store/handle/statuses/
     # report), read back only by the sibling test functions below via string
-    # keys within this module -- not a schema any production caller depends
-    # on, so a model would only add ceremony around test glue.
+    # keys within this module. A NamedTuple would genuinely be better here --
+    # a fixed 5-key bag read by subscript is this rule's paradigm case -- but
+    # this module can't be exercised in this environment (no reachable
+    # MLflow server), so the conversion is deferred, not dismissed: pyrefly
+    # still checks this file whether or not the service is up, so the payoff
+    # of typing it is static and available now.
     return {  # ast-grep-ignore: no-dict-literal-return
         "store": store,
         "handle": handle,

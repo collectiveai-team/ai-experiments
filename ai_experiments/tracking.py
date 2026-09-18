@@ -181,8 +181,10 @@ def begin_tracking(  # ast-grep-ignore: no-dict-return-annotation
     Returns env vars for the workload ({} when tracking is off or broken) and
     records the mlflow run id in the run's status details for the daemon's
     finalization pass. This is an env-var mapping spliced into the workload's
-    subprocess environment (Ray's `runtime_env["env_vars"]`, or `env.update`
-    for the local backend); the consumer is a dict splice, not a typed caller.
+    subprocess environment (Ray's `runtime_env["env_vars"]`); the consumer is
+    a dict splice, not a typed caller. Only `backends/ray.py` consumes the
+    return value -- `backends/local.py` calls this for its side effects and
+    discards it.
     """
     if not manifest.tracking.mlflow:
         return {}  # ast-grep-ignore: no-dict-literal-return  # tracking off, same shape
