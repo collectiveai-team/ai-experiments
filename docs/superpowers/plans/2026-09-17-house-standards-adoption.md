@@ -1363,48 +1363,179 @@ A *warning*, not a failure. Do not split it reflexively. Apply the deletion test
 lines is fine and the warning is noise. Record the decision and its reasoning in your report either
 way; the PR description will carry it.
 
+---
+
 ### Task 12: CES-110 cognitive complexity (6 functions)
 
 **Files:**
-- Modify: `ai_experiments/server/app.py` (`create_app`, 29), `ai_experiments/monitoring/rules.py` (`_suspicious_reasons`, 26), `ai_experiments/daemon.py` (`MonitorDaemon._check_runs`, 21), `ai_experiments/cli/runs.py` (`run_goal`, 20), `ai_experiments/orchestrator.py` (`CampaignOrchestrator._stop_reason`, 20), `ai_experiments/report.py:54` (`parse_metric_line`, 16)
+- Modify: `ai_experiments/server/app.py` (`create_app`), `ai_experiments/monitoring/rules.py`
+  (`_suspicious_reasons`), `ai_experiments/daemon.py` (`MonitorDaemon._check_runs`),
+  `ai_experiments/cli/goals.py` (`run_goal`, after Task 11 moves it),
+  `ai_experiments/orchestrator.py` (`CampaignOrchestrator._stop_reason`),
+  `ai_experiments/report.py` (`parse_metric_line`)
+- Test: `tests/test_rules.py`, `tests/test_daemon.py`, `tests/test_report.py`,
+  `tests/test_orchestrator.py`, `tests/test_server.py`
 
 **Interfaces:**
-- Consumes: the models from Task 10, the package layout from Task 11.
-- Produces: every function at or under complexity 15.
+- Consumes: the models from Tasks 10 and 10b, the `cli/` package layout from Task 11.
+- Produces: every function at or under cognitive complexity 15 and cyclomatic complexity 10.
 
-Ceiling is 15. These also clear the 4 remaining ruff `C901` findings.
+**Two gates, not one.** `complexipy` measures *cognitive* complexity (ceiling 15); ruff `C901`
+measures *cyclomatic* complexity (ceiling 10). They disagree about which functions fail — nesting
+depth drives one, branch count the other. The union must clear. Scores measured at `cd997fe`:
 
-- [ ] **Step 1: Take `_suspicious_reasons` (26) first**
+| Function | File:line | ruff C901 (>10) | complexipy (>15) |
+|---|---|---|---|
+| `create_app` | `server/app.py:39` | 27 | 27 |
+| `_suspicious_reasons` | `monitoring/rules.py:93` | 13 | 26 |
+| `MonitorDaemon._check_runs` | `daemon.py:95` | — | 21 |
+| `run_goal` | `cli.py:395` → `cli/goals.py` | 11 | 20 |
+| `CampaignOrchestrator._stop_reason` | `orchestrator.py:258` | — | 19 |
+| `parse_metric_line` | `report.py:56` | 11 | 16 |
 
-It is the clearest case of `spaghetti-mixed-orchestration` (CES-8): a chain of independent heuristics in one function. Extract one predicate per reason, then collect:
+**Re-measure before you start.** Task 11 moves `run_goal` into `cli/goals.py`, so its line number
+is stale by construction, and every other row shifts if Task 11's split touched the file. Run both
+gates first and work from your own reading:
 
-```python
-def _suspicious_reasons(run: Run, policy: MonitorPolicy) -> list[str]:
-    """Return every reason `run` looks suspicious under `policy`."""
-    checks = (
-        _stale_heartbeat_reason,
-        _no_metric_progress_reason,
-        _excessive_restart_reason,
-    )
-    return [reason for check in checks if (reason := check(run, policy)) is not None]
+```bash
+uvx complexipy ai_experiments 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep FAILED
+.venv/bin/ruff check --select C901 --output-format=concise
 ```
 
-Each `_*_reason` returns `str | None` and is independently testable. Write a test per predicate before extracting it — that is the point of the split.
+**No behaviour changes.** Every one of these six is a pure restructuring. The existing tests are
+your regression net and their counts must not fall: `test_rules.py` 2, `test_daemon.py` 7,
+`test_monitoring_v2.py` 7, `test_server.py` 29, `test_report.py` 6, `test_orchestrator.py` 10.
+None of them names a private function — they drive these through public seams (`diagnose_run`,
+`create_app`, the CLI), which is CES-65 working as intended. Keep it that way: test the new
+predicates through the same seams, or add direct tests only where a predicate has a branch the
+seam cannot reach.
+
+- [ ] **Step 1: `_suspicious_reasons` (26) — the clearest case**
+
+The real signature, read from `ai_experiments/monitoring/rules.py:93`:
+
+```python
+def _suspicious_reasons(
+    status: RunStatus,
+    policy: MonitorPolicy,
+    metrics: list[MetricPoint],
+    events: list[RunEvent],
+) -> list[str]:
+```
+
+It is `spaghetti-mixed-orchestration` (CES-8): independent heuristics inlined into one body, each
+appending a reason string. The score is nesting depth, not branch count — which is why ruff only
+scores it 13 while complexipy scores 26.
+
+Two structural facts to preserve, both load-bearing:
+
+1. `threshold` is computed once from `policy.stuck_after_minutes or status.details.get(
+   "stuck_after_minutes", 30)` and used by three separate checks. Pass it in; do not recompute it
+   per predicate, and do not let the `or` fallback drift.
+2. The `if metrics: ... else: ...` split is **not** cosmetic. With metrics present it checks metric
+   age and plateau; with none it falls back to status age, then event age, then the `no_run_events`
+   case. Those are two different rule sets, not one set with a guard. Extracting
+   `_reasons_with_metrics(...)` and `_reasons_without_metrics(...)` respects that; a flat list of
+   predicates each re-testing `if metrics` does not, and will silently change behaviour.
+
+The existing eleven reason strings (`status_error_present`, `ray_resource_starved`,
+`ray_stuck_suspected`, `heartbeat_stale_for_{n}m`, `no_metric_progress_for_{n}m`,
+`objective_plateau:{name}:{n}_points`, `no_status_update_for_{n}m`, `no_event_progress_for_{n}m`,
+`no_run_events`) are an observable output — `diagnose_run` surfaces them and the CLI prints them.
+Not one may change spelling or order.
 
 - [ ] **Step 2: Run the monitoring tests**
 
-Run: `.venv/bin/python -m pytest tests/test_rules.py tests/test_daemon.py -v`
-Expected: PASS, unchanged count.
+Run: `.venv/bin/python -m pytest tests/test_rules.py tests/test_daemon.py tests/test_monitoring_v2.py -v`
+Expected: PASS, 16 tests, unchanged.
 
-- [ ] **Step 3: Commit, then repeat for the other five**
+- [ ] **Step 3: `_stop_reason` (19) — same shape, simpler**
 
-`create_app` (29) is usually route registration plus wiring — extract per-concern registration helpers (`_register_run_routes(app, store)`), not a generic loop. `run_goal` (20) mixes CLI parsing, orchestration and output: push orchestration into `ai_experiments/orchestrator.py` and leave the command thin (CES-8).
+`ai_experiments/orchestrator.py:258`. Four independent stop conditions, each returning a reason
+string, evaluated in priority order: `target_reached`, `max_hours_exceeded`, `gpu_hours_exhausted`,
+`budget_exhausted`. The nesting inside the first two (a three-way `and`, then a nested `if reached`;
+a `tzinfo is None` normalisation, then a threshold compare) is what earns the 19.
 
-- [ ] **Step 4: Verify the ceiling**
+Extract one `str | None` predicate per condition and compose them in the same order — first
+non-`None` wins. **Priority order is observable**: a campaign that has both hit its target and
+exhausted its budget reports `target_reached`, and `tests/test_orchestrator.py` will catch a
+reordering.
+
+Keep the naive-datetime guard (`created.replace(tzinfo=timezone.utc)`) with the `max_hours` check
+that needs it. It exists because persisted `created_at` values may lack a timezone.
+
+- [ ] **Step 4: `parse_metric_line` (16 / C901 11)**
+
+`ai_experiments/report.py:56`. One parse followed by one coercion loop. The loop is the complexity:
+for each key it distinguishes bool (skip), int/float (accept), and the string spellings of
+non-finite values (`nan`, `inf`, `-inf`, `infinity`, `-infinity`). Extract it:
+
+```python
+def _coerce_metric_value(value: object) -> float | None:
+    """One metric value as a float, or None when it is not a usable number.
+
+    Bools are rejected before ints: `isinstance(True, int)` is True in Python, and a
+    reported flag is not a measurement.
+    """
+```
+
+That drops both scores at once and gives the non-finite string handling a test seam it does not
+have today — `tests/test_report.py` has 6 tests and none reaches the `"infinity"` spellings.
+Add one.
+
+Two traps: the `isinstance(value, bool)` check **must** stay ahead of the int/float check, and
+`lowered.replace("infinity", "inf")` is what makes `-infinity` parse — keep both.
+
+- [ ] **Step 5: `_check_runs` (21)**
+
+`ai_experiments/daemon.py:95`. One `for run_id in sorted(...)` loop whose body carries three
+separate `try/except Exception` guards and two `continue`s. The score is loop-times-guard nesting,
+not logic.
+
+Split the body into `_check_one_run(self, run_id: str, report: TickReport) -> None` — the loop then
+has no nesting at all — and lift the terminal-run branch into
+`_sync_finished_run(self, run_id: str, status: RunStatus, report: TickReport) -> None`.
+
+**The per-run isolation is the point of the function, not an accident.** The comment at
+`daemon.py:99-101` says so: one unreadable `status.json` must not end the tick for every other run
+being supervised. Every guard survives the split verbatim, and that comment moves with the code it
+explains. A `continue` becomes an early `return` in the extracted method — check each one.
+
+- [ ] **Step 6: `create_app` (27) — this is the APIRouter split, not a complexity refactor**
+
+`ai_experiments/server/app.py:39`. It scores 27 because it nests **twenty route handlers inside one
+function body**, closing over `store`. Its own control flow is unremarkable. So the fix is CES-17's
+boundary layout — group the handlers into `APIRouter`s by resource and include them — and the score
+falls out for free. Do not try to shave points any other way.
+
+The handlers currently close over `store`; an `APIRouter` cannot, so each router module needs the
+store injected. Use FastAPI's `Depends` with a module-level provider, or build the routers inside
+factory functions (`def build_run_router(store) -> APIRouter`). The factory form is a smaller change
+and keeps the wiring explicit — prefer it unless you find a reason not to, and say which you chose.
+
+`tests/test_server.py` has 29 tests hitting these routes through `TestClient`. They must all pass
+with no edit: if a route path, method, status code or response shape changes, the split is wrong.
+
+- [ ] **Step 7: `run_goal` (20)**
+
+In `ai_experiments/cli/goals.py` after Task 11. It mixes CLI argument handling, campaign
+orchestration and output formatting. Push the orchestration into `ai_experiments/orchestrator.py`
+and leave the command thin (CES-8). `tests/test_run_command.py` drives it end to end.
+
+- [ ] **Step 8: Verify both ceilings**
 
 ```bash
-uvx complexipy --max-complexity-allowed 15 ai_experiments tests >/dev/null 2>&1; echo "exit=$?"   # expect exit=0
-uvx ruff@0.15.22 check 2>&1 | grep -c C901                                                        # expect 0
+uvx complexipy ai_experiments >/dev/null 2>&1; echo "complexipy exit=$?"   # expect 0
+.venv/bin/ruff check --select C901 --output-format=concise                 # expect "All checks passed!"
+.venv/bin/python -m pytest -q
+uvx prek run --all-files --hook-stage pre-commit 2>&1 | tail -30
+```
+
+Commit each function separately, so a reviewer can reject one restructuring without rejecting all
+six:
+
+```bash
+git commit -m "refactor(monitoring): extract one predicate per suspicion rule (CES-110)"
 ```
 
 ---
