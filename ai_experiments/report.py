@@ -79,17 +79,29 @@ def parse_metric_line(line: str) -> MetricLine | None:
 
     values: dict[str, float] = {}
     for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
+        coerced = _coerce_metric_value(value)
+        if coerced is not None:
+            values[str(key)] = coerced
     if not values and step is None:
         return None
     return MetricLine(step=step, values=values)
+
+
+def _coerce_metric_value(value: object) -> float | None:
+    """One metric value as a float, or None when it is not a usable number.
+
+    Bools are rejected before ints: `isinstance(True, int)` is True in Python, and a
+    reported flag is not a measurement.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
+            return float(lowered.replace("infinity", "inf"))
+    return None
 
 
 def is_finite(value: float) -> bool:

@@ -47,3 +47,16 @@ def test_skips_non_numeric_values():
 
     assert parsed is not None
     assert parsed.values == {"loss": 0.1}
+
+
+def test_parses_non_finite_string_spellings():
+    parsed = parse_metric_line(
+        'IAX_METRIC {"a": "nan", "b": "inf", "c": "-inf", "d": "infinity", "e": "-infinity"}'
+    )
+
+    assert parsed is not None
+    assert parsed.values["a"] != parsed.values["a"]  # NaN
+    assert parsed.values["b"] == float("inf")
+    assert parsed.values["c"] == float("-inf")
+    assert parsed.values["d"] == float("inf")
+    assert parsed.values["e"] == float("-inf")
