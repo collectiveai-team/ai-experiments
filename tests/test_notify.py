@@ -37,7 +37,7 @@ def test_disallowed_webhook_scheme_is_skipped_not_raised(tmp_path):
 
     payload = notifier.send("t", "m")
 
-    assert payload["title"] == "t"
+    assert payload.title == "t"
     logged = read_notifications(tmp_path / "runs")
     assert len(logged) == 2
     assert "notify_sink_error" in logged[-1]
@@ -53,5 +53,21 @@ def test_failing_sinks_never_raise(tmp_path):
 
     payload = notifier.send("t", "m")
 
-    assert payload["title"] == "t"
+    assert payload.title == "t"
     assert len(read_notifications(tmp_path / "runs")) == 1
+
+
+def test_send_flattens_extra_details_at_top_level(tmp_path):
+    """The payload is a wire contract: extras from **details sit alongside
+    timestamp/title/message/text, not nested under a details/extra key --
+    the webhook and command sinks both POST/pipe this object verbatim."""
+    notifier = Notifier(tmp_path / "runs")
+
+    payload = notifier.send("t", "m", run_id="r1")
+
+    dumped = payload.model_dump(mode="json")
+    assert dumped["run_id"] == "r1"
+    assert dumped["title"] == "t"
+    assert "details" not in dumped
+    assert "extra" not in dumped
+    assert '"run_id"' in payload.model_dump_json()

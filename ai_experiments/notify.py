@@ -23,12 +23,33 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
 from ai_experiments.schemas import utc_now
 from ai_experiments.settings import get_settings
 
 WEBHOOK_TIMEOUT = 10
 COMMAND_TIMEOUT = 30
 _ALLOWED_WEBHOOK_SCHEMES = ("http://", "https://")
+
+
+class NotifyPayload(BaseModel):
+    """The wire payload every sink receives.
+
+    `timestamp`/`title`/`message`/`text` are the fixed core; `text` is the
+    Slack-compatible field an incoming webhook renders directly. Callers pass
+    arbitrary extra context through `Notifier.send(**details)` (e.g.
+    `run_id`, `campaign_id`) -- `extra="allow"` keeps those flattened at the
+    top level rather than nested, which is the wire contract the webhook and
+    the command sink both rely on.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    timestamp: str
+    title: str
+    message: str
+    text: str
 
 
 class Notifier:
@@ -42,14 +63,14 @@ class Notifier:
         self.webhook_url = webhook_url or get_settings().notify_webhook
         self.command = command or get_settings().notify_command
 
-    def send(self, title: str, message: str, **details: Any) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "timestamp": utc_now().isoformat(),
-            "title": title,
-            "message": message,
-            "text": f"{title}: {message}",  # Slack-compatible field
+    def send(self, title: str, message: str, **details: Any) -> NotifyPayload:
+        payload = NotifyPayload(
+            timestamp=utc_now().isoformat(),
+            title=title,
+            message=message,
+            text=f"{title}: {message}",  # Slack-compatible field
             **details,
-        }
+        )
         self._log(payload)
         if self.webhook_url:
             self._post_webhook(payload)
@@ -57,29 +78,29 @@ class Notifier:
             self._run_command(payload)
         return payload
 
-    def _log(self, payload: dict[str, Any]) -> None:
+    def _log(self, payload: NotifyPayload) -> None:
         try:
             self.runs_root.mkdir(parents=True, exist_ok=True)
             with (self.runs_root / "_notifications.jsonl").open("a") as fh:
-                fh.write(json.dumps(payload) + "\n")
+                fh.write(payload.model_dump_json() + "\n")
         except OSError:
             pass
 
-    def _post_webhook(self, payload: dict[str, Any]) -> None:
+    def _post_webhook(self, payload: NotifyPayload) -> None:
         assert self.webhook_url is not None  # noqa: S101  # type narrowing, not a runtime check
         if not self.webhook_url.startswith(_ALLOWED_WEBHOOK_SCHEMES):
             # A misconfigured scheme (e.g. file://) must not raise -- this sink is best-effort --
             # but it also must not vanish silently, so record why it was skipped.
             self._log(
-                {
-                    **payload,
-                    "notify_sink_error": f"webhook scheme not allowed: {self.webhook_url!r}",
-                }
+                NotifyPayload(
+                    **payload.model_dump(mode="json"),
+                    notify_sink_error=f"webhook scheme not allowed: {self.webhook_url!r}",
+                )
             )
             return
         request = urllib.request.Request(  # noqa: S310  # scheme allowlisted immediately above
             self.webhook_url,
-            data=json.dumps(payload).encode(),
+            data=payload.model_dump_json().encode(),
             headers={"Content-Type": "application/json"},
         )
         # Best-effort sink: a failing webhook must never break the daemon. Log this at
@@ -89,12 +110,12 @@ class Notifier:
                 request, timeout=WEBHOOK_TIMEOUT
             )
 
-    def _run_command(self, payload: dict[str, Any]) -> None:
+    def _run_command(self, payload: NotifyPayload) -> None:
         assert self.command is not None  # noqa: S101  # type narrowing, not a runtime check
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(  # noqa: S603  # user-configured notify command, this is the product
                 shlex.split(self.command),
-                input=json.dumps(payload),
+                input=payload.model_dump_json(),
                 text=True,
                 capture_output=True,
                 timeout=COMMAND_TIMEOUT,
