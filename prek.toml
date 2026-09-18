@@ -1,3 +1,8 @@
+# Two hooks below run at the commit-msg stage (CES-75 conventional commits, CES-91 no AI
+# co-authorship). Without this, a plain `prek install` wires up only the pre-commit stage and
+# both silently never run -- the failure mode is invisible, because commits just succeed.
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
 # MARK: uv-lock
 [[repos]]
 repo = "https://github.com/astral-sh/uv-pre-commit"

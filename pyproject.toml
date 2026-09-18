@@ -30,7 +30,10 @@ dev = [
   "httpx>=0.27.0",
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
-  "ruff>=0.4.0",
+  # Pinned exactly to the ruff-pre-commit rev in prek.toml: `uv run ruff` and the gate
+  # that blocks a commit must not disagree about what counts as a lint error. A floor is not
+  # enough: uv resolved >=0.15.22 straight to 0.16.8, reintroducing the skew.
+  "ruff==0.15.22",
 ]
 
 [project.scripts]
