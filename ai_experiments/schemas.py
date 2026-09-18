@@ -434,6 +434,11 @@ class ReproContext(BaseModel):
     a crash for every older reader that opens an existing run directory; ignoring extras keeps that
     read forward-compatible. All fields are optional, tolerating a hand-authored or partial bundle
     that predates a field being added.
+
+    Forward-compatible here means "does not crash", not "does not lose data": an unknown key is
+    dropped, so a field written by a newer `capture_repro` is invisible to an older reader and to
+    `GET /api/runs/{run_id}/repro`, which serialises this model. `capture_repro` writes exactly
+    the fields declared below, so no shipped bundle is affected today.
     """
 
     model_config = ConfigDict(extra="ignore")
