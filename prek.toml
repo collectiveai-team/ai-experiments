@@ -154,7 +154,11 @@ priority = 2
 [[repos.hooks]]
 id = "ast-grep"
 name = "ast-grep"
-entry = "uvx --from ast-grep-cli ast-grep scan"
+# --globs excludes the vendored standards catalog: .agents/snippets/ is upstream template
+# code kept byte-identical for diffing against collectiveai-team/scaffolding, so a defect in
+# it is an upstream bug to report, not a gate this repo can pass. Same rationale as ruff's
+# extend-exclude and [tool.pyrefly] project-excludes.
+entry = "uvx --from ast-grep-cli ast-grep scan --globs '!.agents/**'"
 language = "system"
 types = ["python"]
 pass_filenames = false

@@ -55,6 +55,14 @@ markers = [
 [tool.ruff]
 line-length = 100
 
+# .agents/ is the vendored standards catalog, not this project's source. The snippets are
+# upstream template code kept byte-identical so they stay diffable against
+# collectiveai-team/scaffolding; linting or reformatting them here would destroy that and
+# report defects we cannot fix in this repo. Matches [tool.pyrefly] project-excludes below.
+# force-exclude so the prek hooks, which pass filenames explicitly, honour it too.
+extend-exclude = [".agents"]
+force-exclude = true
+
 [tool.ruff.format]
 quote-style = "double"
 

@@ -14,7 +14,6 @@ manual_test/
 
 # Shared across worktrees: real dir lives in the primary worktree, symlinked here.
 .scratch
-.agents
 .serena/
 .orquestalite/
 team.json
@@ -26,5 +25,8 @@ team.json
 .scratch/
 .worktrees/
 .journals/
-.agents/skills/
+# CES-107: skills are derived from skills-lock.json, so the manifest is tracked and the
+# installed tree is not. .agents/rules/ and .agents/snippets/ ARE tracked -- AGENTS.md and
+# CLAUDE.md link to them by path, so a clone that lacks them has a broken standards catalog.
+.agents/skills
 .superpowers/
