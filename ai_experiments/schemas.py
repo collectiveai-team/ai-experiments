@@ -538,9 +538,8 @@ class CampaignDetail(BaseModel):
 class ArtifactEntry(BaseModel):
     """One row of the `/api/runs/{run_id}/artifacts` listing.
 
-    Mirrors `FilesystemRunStore.list_artifacts`'s fixed 3-key shape (`path`, `size_bytes`,
-    `modified_at`) at the server boundary; the store method itself still returns
-    `list[dict[str, object]]`, which is out of scope for this task.
+    Returned directly by `FilesystemRunStore.list_artifacts`; the server
+    handler passes the list through rather than re-validating raw dicts.
     """
 
     model_config = ConfigDict(extra="forbid")

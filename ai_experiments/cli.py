@@ -220,14 +220,14 @@ def artifacts(
     store = FilesystemRunStore(runs_dir)
     entries = store.list_artifacts(run_id)
     if output_json:
-        _echo_json(entries)
+        _echo_json([entry.model_dump(mode="json") for entry in entries])
         return
     if not entries:
         typer.echo(f"No artifacts for {run_id} ({store.artifacts_dir(run_id)})")
         return
     typer.echo(f"Artifacts in {store.artifacts_dir(run_id)}:")
     for entry in entries:
-        typer.echo(f"  {entry['path']}  ({entry['size_bytes']} bytes)")
+        typer.echo(f"  {entry.path}  ({entry.size_bytes} bytes)")
 
 
 @app.command()

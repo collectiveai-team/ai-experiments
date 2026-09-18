@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ai_experiments.schemas import (
+    ArtifactEntry,
     ExperimentManifest,
     MetricPoint,
     RunEvent,
@@ -195,24 +196,22 @@ class FilesystemRunStore:
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
 
-    def list_artifacts(self, run_id: str) -> list[dict[str, object]]:
+    def list_artifacts(self, run_id: str) -> list[ArtifactEntry]:
         """Relative path, size, and mtime for every file under artifacts/."""
         root = self.artifacts_dir(run_id)
         if not root.exists():
             return []
-        entries: list[dict[str, object]] = []
+        entries: list[ArtifactEntry] = []
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
             stat = path.stat()
             entries.append(
-                {
-                    "path": str(path.relative_to(root)),
-                    "size_bytes": stat.st_size,
-                    "modified_at": datetime.fromtimestamp(
-                        stat.st_mtime, tz=timezone.utc
-                    ).isoformat(),
-                }
+                ArtifactEntry(
+                    path=str(path.relative_to(root)),
+                    size_bytes=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                )
             )
         return entries
 

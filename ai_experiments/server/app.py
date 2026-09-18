@@ -85,7 +85,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
     @app.get("/api/runs/{run_id}/artifacts")
     def run_artifacts(run_id: str) -> list[ArtifactEntry]:
         _ensure_run(run_store, run_id)
-        return [ArtifactEntry.model_validate(entry) for entry in run_store.list_artifacts(run_id)]
+        return run_store.list_artifacts(run_id)
 
     @app.get("/api/runs/{run_id}/artifacts/{artifact_path:path}")
     def run_artifact_download(run_id: str, artifact_path: str) -> FileResponse:

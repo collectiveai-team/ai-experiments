@@ -50,9 +50,9 @@ def test_artifacts_listing(tmp_path):
     (artifacts / "loss.png").write_bytes(b"y" * 5)
 
     entries = store.list_artifacts(run_id)
-    paths = [e["path"] for e in entries]
+    paths = [e.path for e in entries]
     assert paths == ["checkpoints/best.pt", "loss.png"]
-    assert entries[0]["size_bytes"] == 100
+    assert entries[0].size_bytes == 100
 
 
 def test_artifacts_empty_for_fresh_run(tmp_path):
