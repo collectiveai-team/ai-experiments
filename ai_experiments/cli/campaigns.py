@@ -9,7 +9,6 @@ from ai_experiments.cli import _echo_json, campaign_app
 from ai_experiments.schemas import GoalSpec
 from ai_experiments.store import FilesystemRunStore
 
-
 # --- campaign commands -------------------------------------------------------
 
 

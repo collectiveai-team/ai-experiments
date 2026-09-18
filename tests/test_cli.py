@@ -241,7 +241,7 @@ def test_cli_command_surface_is_stable():
 
 def test_module_entry_point_runs():
     """`python -m ai_experiments.cli` must work, not silently exit 0 doing nothing."""
-    result = subprocess.run(  # noqa: S603  # fixed argv, our own module
+    result = subprocess.run(  # fixed argv, our own module
         [sys.executable, "-m", "ai_experiments.cli", "--help"],
         capture_output=True,
         text=True,

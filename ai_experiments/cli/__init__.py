@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 import typer
 from pydantic import BaseModel
 
 from ai_experiments.backends.factory import backend_for_run
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 app = typer.Typer(
     name="iax",
