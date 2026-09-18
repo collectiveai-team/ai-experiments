@@ -1200,40 +1200,80 @@ the four `C901` reserved for Task 12.
 
 ### Task 11: CES-71 split `cli.py` (755 lines, limit 700)
 
+`file-size-guard` errors at 700 lines and warns at 400. `cli.py` is 755, so this is a hard gate.
+
 **Files:**
 - Delete: `ai_experiments/cli.py`
-- Create: `ai_experiments/cli/__init__.py`, `ai_experiments/cli/runs.py`, `ai_experiments/cli/campaigns.py`, `ai_experiments/cli/clusters.py`
-- Modify: `pyproject.toml` if the wheel's package list needs it
+- Create: `ai_experiments/cli/__init__.py`, `cli/runs.py`, `cli/goals.py`, `cli/serving.py`,
+  `cli/campaigns.py`, `cli/clusters.py`, `cli/__main__.py`
+- Modify: `pyproject.toml` only if the wheel's package list enumerates modules (check; it may not)
 
 **Interfaces:**
-- Consumes: `ai_experiments.settings` (Task 9), `ai_experiments.core.logger` (Task 7), the models from Task 10.
-- Produces: `ai_experiments.cli:app` — unchanged import path, unchanged CLI surface.
+- Consumes: `ai_experiments.settings` (Task 9), `ai_experiments.core.logger` (Task 7), the models
+  from Tasks 10 and 10b.
+- Produces: `ai_experiments.cli:app` — **unchanged import path, unchanged CLI surface.**
+  `[project.scripts] iax = "ai_experiments.cli:app"` (pyproject.toml:36) must keep resolving.
 
-The file already has three Typer apps (`app`, `campaign_app`, `cluster_app`), so the seam is drawn for you (`arch-vocabulary`: this is the existing seam, not a new abstraction).
+The file already builds three Typer apps (`app` at line 13, `campaign_app` at 19, `cluster_app` at
+24) and wires them with bare `app.add_typer(campaign_app)` / `add_typer(cluster_app)` at lines 29-30
+— **no `name=` argument; the names come from each `typer.Typer(name=...)` constructor.** Preserve
+that exactly. Passing `name=` at the `add_typer` call instead would work but is a gratuitous change
+to a line you are only moving.
+
+Measured spans in the current file, so you can cut rather than hunt:
+
+| Target file | What moves | Current lines | Size |
+|---|---|---|---|
+| `cli/runs.py` | `validate` … `leaderboard` (14 commands) | 44-343 | ~300 |
+| `cli/serving.py` | `daemon`, `serve` | 346-391 | ~46 |
+| `cli/goals.py` | `run_goal` (the `run` command) + `_start_dashboard_thread` | 394-488 | ~95 |
+| `cli/campaigns.py` | `_orchestrator` + the 10 `campaign_*` commands | 491-698 | ~208 |
+| `cli/clusters.py` | the 4 `cluster_*` commands | 701-755 | ~55 |
+| `cli/__init__.py` | imports, the three `Typer(...)` constructors, `_echo_json`, `_backend_for_run`, the `add_typer` wiring | 1-41 | ~60 |
+
+Cutting only campaigns and clusters would leave `runs.py` at 499 lines — under the 700 error but over
+the 400 warning, i.e. the same design smell one file to the left. Do the full split.
+
+**Naming note:** `ai_experiments/cli/clusters.py` sits alongside the existing
+`ai_experiments/clusters.py`. That is legal and the import paths are unambiguous, but be careful
+which one you are editing, and use absolute imports (`from ai_experiments.clusters import ...`) in
+the new module so the intent is visible at the import line.
 
 - [ ] **Step 1: Pin the CLI surface first**
 
 ```python
 # tests/test_cli.py — add
 def test_cli_command_surface_is_stable():
+    """The split must not add, drop, or rename a single command."""
     from typer.main import get_command
 
     from ai_experiments.cli import app
 
-    names = sorted(get_command(app).commands)
-    assert names == [
+    root = get_command(app)
+    assert sorted(root.commands) == [
         "artifacts", "campaign", "cancel", "cluster", "daemon", "diagnose",
         "escalations", "leaderboard", "logs", "metrics", "monitor", "repro",
         "rerun", "run", "runs", "serve", "status", "submit", "validate",
     ]
+    assert sorted(root.commands["campaign"].commands) == [
+        "advance", "edit", "list", "pause", "resume", "start", "status",
+        "stop", "suggest", "validate",
+    ]
+    assert sorted(root.commands["cluster"].commands) == ["down", "list", "status", "up"]
 ```
 
-Correct the list against the real output before committing — run `.venv/bin/python -c "from typer.main import get_command; from ai_experiments.cli import app; print(sorted(get_command(app).commands))"` and paste what it prints.
+Those three lists are **verified against the live tree** — I ran `get_command` and captured them, so
+use them as given. A sub-app is a `click.Group`, which is why `.commands` works on it.
 
 - [ ] **Step 2: Run it against the unsplit file**
 
 Run: `.venv/bin/python -m pytest tests/test_cli.py -v`
-Expected: PASS. Characterization test, same contract as Task 10 Step 1.
+Expected: PASS. This is a characterization test — it must pass *before* the split.
+
+```bash
+git add tests/test_cli.py
+git commit -m "test(cli): pin the command surface before the split (CES-71)"
+```
 
 - [ ] **Step 3: Move, do not rewrite**
 
@@ -1242,50 +1282,86 @@ mkdir ai_experiments/cli
 git mv ai_experiments/cli.py ai_experiments/cli/runs.py
 ```
 
-Then cut the `campaign_*` commands into `campaigns.py` and the `cluster_*` commands into `clusters.py`, moving the lines verbatim. No renaming, no logic edits, no signature changes in this task — `py-no-formatter-churn` and reviewability both depend on this being a pure move.
+Then cut each block out of `runs.py` into its target file per the table, **moving the lines
+verbatim**. No renaming, no logic edits, no signature changes, no reordering in this task — both
+`py-no-formatter-churn` and this diff's reviewability depend on it being a pure move. The only new
+code is the import headers each new module needs and the `__init__.py` below.
 
 - [ ] **Step 4: Assemble in `__init__.py`**
 
+The three `typer.Typer(...)` constructors move here, and each command module imports the app object
+it decorates. That makes the modules import-for-side-effect, so `__init__.py` must import all five
+*after* constructing the apps, and the imports need a `# noqa: E402` if they end up below other
+statements. Keep the bare `add_typer` calls:
+
 ```python
-"""The `iax` command-line interface.
-
-Entry point for `[project.scripts] iax = "ai_experiments.cli:app"`.
-"""
-
-import typer
-
-from ai_experiments.cli.campaigns import campaign_app
-from ai_experiments.cli.clusters import cluster_app
-from ai_experiments.cli.runs import app
-
-app.add_typer(campaign_app, name="campaign")
-app.add_typer(cluster_app, name="cluster")
-
-__all__ = ["app"]
+app.add_typer(campaign_app)
+app.add_typer(cluster_app)
 ```
 
-Check how `add_typer` is called in the current `cli.py` and preserve the exact names and help strings.
+Watch for a circular import: `cli/campaigns.py` importing `campaign_app` from `cli/__init__.py`
+while `__init__.py` imports `cli/campaigns.py`. If it bites, put the three constructors and the two
+shared helpers in a small `cli/app.py` that every command module imports, and let `__init__.py`
+import only for registration. **Do not name that module `utils.py`, `helpers.py` or `common.py`** —
+CES-63 forbids exactly those names and the `no-utils` prek hook will reject the commit.
 
-- [ ] **Step 5: Verify the surface and the entrypoint**
+- [ ] **Step 5: Add the missing `__main__` guard**
+
+`python -m ai_experiments.cli <anything>` currently exits 0 and prints nothing — the module has no
+`if __name__ == "__main__"` block, so only the `iax` console script works. Task 8 gave `worker.py`
+such a guard, so the package's two entry points disagree today. Close it:
+
+```python
+# ai_experiments/cli/__main__.py
+"""Allow `python -m ai_experiments.cli`, matching how `ai_experiments.worker` is launched."""
+
+from ai_experiments.cli import app
+
+if __name__ == "__main__":
+    app()
+```
+
+Pin it, because nothing else would notice it regressing:
+
+```python
+def test_module_entry_point_runs():
+    """`python -m ai_experiments.cli` must work, not silently exit 0 doing nothing."""
+    result = subprocess.run(  # noqa: S603  # fixed argv, our own module
+        [sys.executable, "-m", "ai_experiments.cli", "--help"],
+        capture_output=True, text=True, timeout=30, check=False,
+        env={**os.environ, "COLUMNS": "200"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Detached experiment runtime" in result.stdout
+```
+
+- [ ] **Step 6: Verify the surface, the entrypoint, and the gate**
 
 ```bash
-.venv/bin/python -m pytest tests/test_cli.py -v          # the Step 1 test must still pass
+.venv/bin/python -m pytest tests/test_cli.py -v
 .venv/bin/python -c "from ai_experiments.cli import app; print(app)"
-.venv/bin/iax --help                                      # if installed; else: .venv/bin/python -m ai_experiments.cli --help
-uvx prek run --all-files file-size-guard                  # expect: Passed
+.venv/bin/iax --help
+.venv/bin/python -m ai_experiments.cli --help
+uvx prek run --all-files file-size-guard
+wc -l ai_experiments/cli/*.py
 ```
 
-- [ ] **Step 6: Commit**
+Every new file must be under 400 lines, not merely under 700. `iax --help` and
+`python -m ai_experiments.cli --help` must print the same command list.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add -A && git commit -m "refactor(cli): split the command module into a package (CES-71)"
+git add ai_experiments/cli tests/test_cli.py && git rm --cached ai_experiments/cli.py 2>/dev/null
+git commit -m "refactor(cli): split the command module into a package (CES-71)"
 ```
 
-- [ ] **Step 7: Decide on `orchestrator.py` (412 lines)**
+- [ ] **Step 8: Decide on `orchestrator.py` (412 lines) — a decision, not a split**
 
-This is a *warning*, not a failure — the guard errors at 700 and warns at 400. Do not split it reflexively. Apply the deletion test from `arch-deep-modules`: if `CampaignOrchestrator` is one coherent module with a narrow interface, 412 lines is fine and the warning is noise. Record the decision in the PR description either way.
-
----
+A *warning*, not a failure. Do not split it reflexively. Apply the deletion test from
+`arch-deep-modules`: if `CampaignOrchestrator` is one coherent module behind a narrow interface, 412
+lines is fine and the warning is noise. Record the decision and its reasoning in your report either
+way; the PR description will carry it.
 
 ### Task 12: CES-110 cognitive complexity (6 functions)
 
