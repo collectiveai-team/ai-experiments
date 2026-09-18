@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 
@@ -235,3 +237,17 @@ def test_cli_command_surface_is_stable():
     cluster_group = root.commands["cluster"]
     assert isinstance(cluster_group, typer.core.TyperGroup)
     assert sorted(cluster_group.commands) == ["down", "list", "status", "up"]
+
+
+def test_module_entry_point_runs():
+    """`python -m ai_experiments.cli` must work, not silently exit 0 doing nothing."""
+    result = subprocess.run(  # noqa: S603  # fixed argv, our own module
+        [sys.executable, "-m", "ai_experiments.cli", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={**os.environ, "COLUMNS": "200"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Detached experiment runtime" in result.stdout
