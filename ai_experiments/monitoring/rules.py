@@ -90,6 +90,59 @@ def _fatal_reasons(
     return reasons
 
 
+def _ray_condition_reason(ray_condition: object) -> str | None:
+    if ray_condition == "resource_starved":
+        return "ray_resource_starved"
+    if ray_condition == "stuck_suspected":
+        return "ray_stuck_suspected"
+    return None
+
+
+def _heartbeat_reason(status: RunStatus) -> str | None:
+    heartbeat_at = _parse_iso(status.details.get("heartbeat_at"))
+    if heartbeat_at is None:
+        return None
+    heartbeat_age = _age_minutes(heartbeat_at)
+    if heartbeat_age is not None and heartbeat_age > HEARTBEAT_STALE_MINUTES:
+        return f"heartbeat_stale_for_{int(heartbeat_age)}m"
+    return None
+
+
+def _reasons_with_metrics(
+    policy: MonitorPolicy, metrics: list[MetricPoint], threshold: float
+) -> list[str]:
+    reasons: list[str] = []
+    metric_age = _age_minutes(metrics[-1].timestamp)
+    if metric_age is not None and metric_age > threshold:
+        reasons.append(f"no_metric_progress_for_{int(metric_age)}m")
+    plateau = _plateau_reason(policy, metrics)
+    if plateau:
+        reasons.append(plateau)
+    return reasons
+
+
+def _reasons_without_metrics(
+    status: RunStatus,
+    events: list[RunEvent],
+    threshold: float,
+    ray_condition: object,
+) -> list[str]:
+    reasons: list[str] = []
+    updated_age = _age_minutes(status.updated_at)
+    if updated_age is not None and updated_age > threshold:
+        reasons.append(f"no_status_update_for_{int(updated_age)}m")
+    if events:
+        event_age = _age_minutes(events[-1].timestamp)
+        if event_age is not None and event_age > threshold:
+            reasons.append(f"no_event_progress_for_{int(event_age)}m")
+    elif status.status in {"submitted", "running"} and ray_condition not in {
+        "queued",
+        "running",
+    }:
+        reasons.append("no_run_events")
+    return reasons
+
+
 def _suspicious_reasons(
     status: RunStatus,
     policy: MonitorPolicy,
@@ -102,39 +155,20 @@ def _suspicious_reasons(
         reasons.append("status_error_present")
 
     ray_condition = status.details.get("ray_condition")
-    if ray_condition == "resource_starved":
-        reasons.append("ray_resource_starved")
-    elif ray_condition == "stuck_suspected":
-        reasons.append("ray_stuck_suspected")
+    ray_reason = _ray_condition_reason(ray_condition)
+    if ray_reason:
+        reasons.append(ray_reason)
 
     threshold = float(policy.stuck_after_minutes or status.details.get("stuck_after_minutes", 30))
 
-    heartbeat_at = _parse_iso(status.details.get("heartbeat_at"))
-    if heartbeat_at is not None:
-        heartbeat_age = _age_minutes(heartbeat_at)
-        if heartbeat_age is not None and heartbeat_age > HEARTBEAT_STALE_MINUTES:
-            reasons.append(f"heartbeat_stale_for_{int(heartbeat_age)}m")
+    heartbeat_reason = _heartbeat_reason(status)
+    if heartbeat_reason:
+        reasons.append(heartbeat_reason)
 
     if metrics:
-        metric_age = _age_minutes(metrics[-1].timestamp)
-        if metric_age is not None and metric_age > threshold:
-            reasons.append(f"no_metric_progress_for_{int(metric_age)}m")
-        plateau = _plateau_reason(policy, metrics)
-        if plateau:
-            reasons.append(plateau)
+        reasons.extend(_reasons_with_metrics(policy, metrics, threshold))
     else:
-        updated_age = _age_minutes(status.updated_at)
-        if updated_age is not None and updated_age > threshold:
-            reasons.append(f"no_status_update_for_{int(updated_age)}m")
-        if events:
-            event_age = _age_minutes(events[-1].timestamp)
-            if event_age is not None and event_age > threshold:
-                reasons.append(f"no_event_progress_for_{int(event_age)}m")
-        elif status.status in {"submitted", "running"} and ray_condition not in {
-            "queued",
-            "running",
-        }:
-            reasons.append("no_run_events")
+        reasons.extend(_reasons_without_metrics(status, events, threshold, ray_condition))
 
     return reasons
 
