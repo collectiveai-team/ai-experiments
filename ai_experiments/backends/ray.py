@@ -143,8 +143,16 @@ class RayBackend(ExperimentBackend):
     def _ray_details(  # ast-grep-ignore: no-dict-return-annotation
         self, run_id: str, client: Any, external_id: str, ray_status: Any
     ) -> dict[str, Any]:
-        # Ray's own job-info keys pass through into the free-form
-        # RunStatus.details blob; not a fixed schema iax defines.
+        # An iax-invented vocabulary (ray_status/ray_address/ray_job_info/...),
+        # not Ray's own keys -- those live only inside the nested ray_job_info
+        # value (see _job_info_dict). This dict is consumed in-process, across
+        # a module boundary, by this function's own last line:
+        # classify_ray_condition (monitoring/ray_rules.py) reads ray_status,
+        # ray_message, ray_error_type, ray_log_tail and ray_job_info by string
+        # literal. The destination, RunStatus.details, is a genuinely
+        # free-form dict[str, Any] written by several unrelated producers
+        # (worker.py, tracking.py, backends/local.py), so typing one half of
+        # that hop buys little.
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
             "ray_address": self.address,
