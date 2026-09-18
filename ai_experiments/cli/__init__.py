@@ -39,4 +39,9 @@ def _backend_for_run(run_id: str, store: FilesystemRunStore):
     return backend_for_run(store, run_id)
 
 
+# Registration imports, deliberately last: each command module decorates one of the
+# three Typer apps above and imports _echo_json/_backend_for_run from here, so every
+# name above must already be bound. Moving this line up raises ImportError from a
+# partially initialized module at interpreter start -- loud, and it takes the whole
+# suite's collection with it, so this ordering cannot regress silently.
 from ai_experiments.cli import campaigns, clusters, goals, runs, serving  # noqa: E402,F401
