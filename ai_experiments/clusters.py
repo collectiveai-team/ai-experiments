@@ -27,7 +27,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel
@@ -44,6 +44,20 @@ class ClusterProfile(BaseModel):
     address: str | None = None
     cluster_config: str | None = None
     description: str = ""
+
+
+class ClusterStatus(BaseModel):
+    """Reachability of one cluster profile's Ray dashboard.
+
+    `address`/`ray_version`/`error` are optional because which ones are set
+    depends on how far the ping got (never attempted, reached, or failed).
+    """
+
+    name: str
+    reachable: bool
+    address: str | None = None
+    ray_version: str | None = None
+    error: str | None = None
 
 
 class ClusterConfigError(RuntimeError):
@@ -65,10 +79,14 @@ def clusters_config_path(explicit: str | Path | None = None) -> Path | None:
     return None
 
 
-def load_clusters(path: str | Path | None = None) -> dict[str, ClusterProfile]:
+def load_clusters(  # ast-grep-ignore: no-dict-return-annotation
+    path: str | Path | None = None,
+) -> dict[str, ClusterProfile]:
+    # profile name -> ClusterProfile registry; the keys are the operator's own
+    # cluster names from clusters.yaml, not a fixed schema a caller guesses at.
     config_path = clusters_config_path(path)
     if config_path is None:
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # empty registry, same shape as above
     if not config_path.exists():
         raise ClusterConfigError(f"clusters config not found: {config_path}")
     with config_path.open() as fh:
@@ -102,33 +120,33 @@ def resolve_cluster_address(name: str, path: str | Path | None = None) -> str:
     return profile.address
 
 
-def cluster_status(profile: ClusterProfile, timeout: float = 5.0) -> dict[str, Any]:
+def cluster_status(profile: ClusterProfile, timeout: float = 5.0) -> ClusterStatus:
     """Ping the Ray dashboard. Network-only; no Ray dependency needed."""
     if not profile.address:
-        return {
-            "name": profile.name,
-            "reachable": False,
-            "error": "no address configured",
-        }
+        return ClusterStatus(
+            name=profile.name,
+            reachable=False,
+            error="no address configured",
+        )
     url = profile.address.rstrip("/") + "/api/version"
     try:
         with urllib.request.urlopen(  # noqa: S310  # operator-configured cluster address
             url, timeout=timeout
         ) as response:
             payload = json.loads(response.read().decode())
-        return {
-            "name": profile.name,
-            "reachable": True,
-            "address": profile.address,
-            "ray_version": payload.get("ray_version"),
-        }
+        return ClusterStatus(
+            name=profile.name,
+            reachable=True,
+            address=profile.address,
+            ray_version=payload.get("ray_version"),
+        )
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return {
-            "name": profile.name,
-            "reachable": False,
-            "address": profile.address,
-            "error": str(exc),
-        }
+        return ClusterStatus(
+            name=profile.name,
+            reachable=False,
+            address=profile.address,
+            error=str(exc),
+        )
 
 
 def cluster_up(profile: ClusterProfile) -> subprocess.CompletedProcess[str]:

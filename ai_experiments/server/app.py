@@ -203,7 +203,7 @@ def create_app(store: FilesystemRunStore | None = None) -> FastAPI:
             return [{"name": "(config error)", "reachable": False, "error": str(exc)}]
         return [
             {
-                **cluster_status(profile, timeout=2.0),
+                **cluster_status(profile, timeout=2.0).model_dump(mode="json"),
                 "provider": profile.provider,
                 "description": profile.description,
             }
