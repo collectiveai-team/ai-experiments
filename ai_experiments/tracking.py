@@ -24,12 +24,15 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+from ai_experiments.core.logger import get_logger
 from ai_experiments.repro import read_repro
 from ai_experiments.schemas import ExperimentManifest, RunEvent, RunStatus
 from ai_experiments.settings import get_settings
 
 if TYPE_CHECKING:
     from ai_experiments.store import FilesystemRunStore
+
+log = get_logger(__name__)
 
 _TERMINAL_MLFLOW_STATUS = {
     "completed": "FINISHED",
@@ -148,9 +151,9 @@ class MlflowTracker:
                         mlflow_run_id, name, value, timestamp=timestamp, step=step
                     )
                 # Stores differ in what they raise for a rejected (e.g. non-finite) value; one
-                # bad value must not cost the artifact upload and set_terminated below. Log at
-                # debug once the house logger exists.
-                except Exception:  # noqa: S112,PERF203  # unknown rejection; per-value isolation
+                # bad value must not cost the artifact upload and set_terminated below.
+                except Exception as exc:  # noqa: PERF203  # per-value isolation is the point
+                    log.debug("mlflow_log_metric_failed", metric=name, error=str(exc))
                     continue
 
         artifacts = store.artifacts_dir(run_id)

@@ -22,7 +22,10 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
+from ai_experiments.core.logger import get_logger
 from ai_experiments.schemas import ReproContext, utc_now
+
+log = get_logger(__name__)
 
 GIT_TIMEOUT = 10
 MAX_DIFF_BYTES = 512_000
@@ -77,12 +80,11 @@ def capture_repro(run_dir: Path, working_dir: str | Path) -> ReproContext:
             if dist.metadata["Name"]
         )
         (repro_dir / "environment.txt").write_text("\n".join(lines) + "\n")
-    except Exception:  # noqa: S110  # unknown metadata failure must not cost context.json below
+    except Exception as exc:
         # A distribution's metadata can be malformed in ways we can't enumerate up front (bad
         # encoding, missing fields, a broken finder); the write itself can also hit OSError.
-        # Losing this must not cost the context.json write below (git SHA for `iax rerun`). Log
-        # this at debug level once the house logger exists.
-        pass
+        # Losing this must not cost the context.json write below (git SHA for `iax rerun`).
+        log.debug("repro_environment_capture_failed", error=str(exc))
 
     (repro_dir / "context.json").write_text(json.dumps(context.model_dump(mode="json"), indent=2))
     return context

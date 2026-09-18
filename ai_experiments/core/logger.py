@@ -61,7 +61,10 @@ def _configure() -> None:
         else structlog.dev.ConsoleRenderer(colors=True)
     )
 
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=_level())
+    # stderr, not the snippet's stdout: `iax daemon run` streams newline-delimited JSON
+    # reports on stdout (daemon.py run_forever) and a console-rendered log line interleaved
+    # into that stream breaks every line-by-line consumer of it.
+    logging.basicConfig(format="%(message)s", stream=sys.stderr, level=_level())
     structlog.configure(
         processors=[*shared, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(_level()),

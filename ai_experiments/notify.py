@@ -14,7 +14,6 @@ Three sinks, all best-effort (a failing sink never breaks the daemon):
 
 from __future__ import annotations
 
-import contextlib
 import json
 import shlex
 import subprocess
@@ -25,8 +24,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from ai_experiments.core.logger import get_logger
 from ai_experiments.schemas import utc_now
 from ai_experiments.settings import get_settings
+
+log = get_logger(__name__)
 
 WEBHOOK_TIMEOUT = 10
 COMMAND_TIMEOUT = 30
@@ -103,16 +105,18 @@ class Notifier:
             data=payload.model_dump_json().encode(),
             headers={"Content-Type": "application/json"},
         )
-        # Best-effort sink: a failing webhook must never break the daemon. Log this at
-        # debug level once the house logger exists.
-        with contextlib.suppress(urllib.error.URLError, OSError):
+        # Best-effort sink: a failing webhook must never break the daemon.
+        try:
             urllib.request.urlopen(  # noqa: S310  # scheme allowlisted immediately above
                 request, timeout=WEBHOOK_TIMEOUT
             )
+        except (urllib.error.URLError, OSError) as exc:
+            log.debug("notify_webhook_failed", url=self.webhook_url, error=str(exc))
 
     def _run_command(self, payload: NotifyPayload) -> None:
         assert self.command is not None  # noqa: S101  # type narrowing, not a runtime check
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        # Best-effort sink: a failing command must never break the daemon.
+        try:
             subprocess.run(  # noqa: S603  # user-configured notify command, this is the product
                 shlex.split(self.command),
                 input=payload.model_dump_json(),
@@ -121,6 +125,8 @@ class Notifier:
                 timeout=COMMAND_TIMEOUT,
                 check=False,
             )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.debug("notify_command_failed", command=self.command, error=str(exc))
 
 
 def read_notifications(runs_root: str | Path, tail: int | None = None) -> list[dict[str, Any]]:

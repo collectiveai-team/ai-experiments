@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import uuid
@@ -8,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ai_experiments.core.logger import get_logger
 from ai_experiments.schemas import (
     ArtifactEntry,
     ExperimentManifest,
@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 #: missing or unreadable. Such a status describes the *store's* inability to
 #: answer, not the run — persisting it would fabricate history, so
 #: :meth:`FilesystemRunStore.update_status` refuses to write on top of one.
+log = get_logger(__name__)
+
 SYNTHETIC_STATUS_KEY = "_synthetic"
 
 
@@ -67,10 +69,11 @@ class FilesystemRunStore:
         if self.capture_repro:
             from ai_experiments.repro import capture_repro
 
-            # reproducibility capture must never block a submit; log this at debug
-            # level once the house logger exists
-            with contextlib.suppress(Exception):
+            # Reproducibility capture must never block a submit.
+            try:
                 capture_repro(run_dir, manifest.workload.working_dir)
+            except Exception as exc:
+                log.debug("repro_capture_failed", run_id=run_id, error=str(exc))
         return run_id, run_dir
 
     def run_dir(self, run_id: str) -> Path:
