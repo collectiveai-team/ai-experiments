@@ -8,13 +8,13 @@ exactly the failure mode this split exists to avoid.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
 from ai_experiments.backends.factory import backend_for_run
 from ai_experiments.monitoring.rules import diagnose_run
-from ai_experiments.schemas import CancelAck, DiagnosisReport, RunEvent, RunStatus
+from ai_experiments.schemas import CancelAck, DiagnosisReport, MetricPoint, RunEvent, RunStatus
 
 if TYPE_CHECKING:
     from ai_experiments.store import FilesystemRunStore
@@ -39,9 +39,9 @@ def build_runs_router(store: FilesystemRunStore) -> APIRouter:
         return store.read_events(run_id, tail=tail)
 
     @router.get("/api/runs/{run_id}/metrics")
-    def run_metrics(run_id: str, tail: int = 500) -> list[dict[str, Any]]:
+    def run_metrics(run_id: str, tail: int = 500) -> list[MetricPoint]:
         ensure_run(store, run_id)
-        return [point.model_dump(mode="json") for point in store.read_metrics(run_id, tail=tail)]
+        return store.read_metrics(run_id, tail=tail)
 
     @router.get("/api/runs/{run_id}/diagnosis")
     def run_diagnosis(run_id: str) -> DiagnosisReport:

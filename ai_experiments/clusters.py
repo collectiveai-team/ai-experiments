@@ -60,6 +60,19 @@ class ClusterStatus(BaseModel):
     error: str | None = None
 
 
+class ClusterSummary(ClusterStatus):
+    """One row of `GET /api/clusters` and `iax cluster status --json`.
+
+    A `ClusterStatus` (the live ping result) plus the two static fields the dashboard shows
+    beside it. Declared rather than assembled ad hoc so the payload has one documented shape:
+    every row carries all seven keys, including the config-error row, instead of the key set
+    silently depending on how far the ping got.
+    """
+
+    provider: str | None = None
+    description: str | None = None
+
+
 class ClusterConfigError(RuntimeError):
     pass
 
