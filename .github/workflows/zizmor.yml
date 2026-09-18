@@ -32,6 +32,10 @@ jobs:
           version: "0.11.12"
           enable-cache: true
 
+      # --config is required: zizmor does NOT auto-discover .github/zizmor.yml, so
+      # without it the repo's documented unpinned-uses/superfluous-actions policy has
+      # no effect and the run fails on findings the policy deliberately accepts.
+      #
       # --strict-collection: without it, an input that fails schema validation is
       # only WARNed about and then silently dropped from the audit, so a malformed
       # workflow is never scanned and the run still reports success. It restores
@@ -40,6 +44,6 @@ jobs:
       # GH_TOKEN puts zizmor in online mode so it can resolve referenced
       # actions (e.g. for the unpinned-uses audit). contents: read is enough.
       - name: Run zizmor
-        run: uvx zizmor --strict-collection .
+        run: uvx zizmor --strict-collection --config .github/zizmor.yml .
         env:
           GH_TOKEN: ${{ github.token }}

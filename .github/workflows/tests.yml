@@ -49,3 +49,9 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+      # Folded in from the retired ci.yml: catches a pyproject/build-backend
+      # break that the test suite cannot see, since tests run from the source
+      # tree rather than from a built artifact.
+      - name: Build package
+        run: uv build
