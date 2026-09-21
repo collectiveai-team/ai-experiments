@@ -338,6 +338,13 @@ ParamSpec = Annotated[
 
 class ObjectiveSpec(ConfigModel):
     metric: str
+    #: A metric that is a property of the trial's *data* rather than its
+    #: model: a class base rate, a naive forecast, last release's number.
+    #: When set, a trial scores ``metric - baseline_metric`` taken from the
+    #: same observation, so trials evaluated on different slices stay
+    #: comparable. Without it, a search space dimension that moves the
+    #: baseline is rewarded for moving it.
+    baseline_metric: str | None = None
     mode: Literal["min", "max"] = "min"
     target: float | None = None
 

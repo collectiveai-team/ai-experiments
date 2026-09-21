@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
+from ai_experiments.schemas import (
+    CampaignState,
+    GoalSpec,
+    MetricPoint,
+    ObjectiveSpec,
+    TrialRecord,
+)
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -24,7 +31,9 @@ class ObjectiveReading(BaseModel):
     value: float | None = None
     final_metrics: dict[str, float] = Field(default_factory=dict)
     observed_metrics: list[str] = Field(default_factory=list)
-    miss_reason: Literal["no_metrics", "metric_absent", "not_finite"] | None = None
+    miss_reason: (
+        Literal["no_metrics", "metric_absent", "not_finite", "baseline_absent"] | None
+    ) = None
 
     def miss_message(self, metric: str) -> str | None:
         if self.miss_reason is None:
@@ -38,6 +47,12 @@ class ObjectiveReading(BaseModel):
         if self.miss_reason == "metric_absent":
             return (
                 f"objective metric '{metric}' was never reported; "
+                f"observed metrics: {observed}"
+            )
+        if self.miss_reason == "baseline_absent":
+            return (
+                f"objective metric '{metric}' was reported but its baseline "
+                f"never was, so the trial has no comparable score; "
                 f"observed metrics: {observed}"
             )
         return (
@@ -63,20 +78,43 @@ def extract_objective(
             miss_reason="metric_absent",
         )
 
-    values = [
-        point.values[objective.metric]
-        for point in metrics
-        if objective.metric in point.values
-        and math.isfinite(point.values[objective.metric])
-    ]
+    values = list(_scored(metrics, objective))
     if not values:
+        # A baseline the workload never reported is its own failure: scoring
+        # the raw metric instead would rank this trial on a different scale
+        # from the rest, which is the whole thing `baseline_metric` prevents.
+        reason = (
+            "baseline_absent"
+            if objective.baseline_metric is not None
+            and objective.baseline_metric not in observed
+            else "not_finite"
+        )
         return ObjectiveReading(
             final_metrics=final,
             observed_metrics=observed,
-            miss_reason="not_finite",
+            miss_reason=reason,
         )
     best = max(values) if objective.mode == "max" else min(values)
     return ObjectiveReading(value=best, final_metrics=final, observed_metrics=observed)
+
+
+def _scored(metrics: list[MetricPoint], objective: ObjectiveSpec) -> Iterator[float]:
+    """Every observation that carries a usable value of the objective.
+
+    With a baseline, the two metrics are paired *within one observation*.
+    Taking the best metric and the best baseline separately would produce a
+    lift no single observation ever achieved.
+    """
+    for point in metrics:
+        if objective.metric not in point.values:
+            continue
+        value = point.values[objective.metric]
+        if objective.baseline_metric is not None:
+            if objective.baseline_metric not in point.values:
+                continue
+            value -= point.values[objective.baseline_metric]
+        if math.isfinite(value):
+            yield value
 
 
 def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool:
