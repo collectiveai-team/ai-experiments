@@ -39,10 +39,13 @@ jobs:
       - name: Set up Python
         run: uv python install
 
-      # --frozen fails if uv.lock is out of date. Add --extra / --group flags
-      # here if the test suite needs optional dependencies.
+      # --frozen fails if uv.lock is out of date. Every extra, not just dev:
+      # pyrefly resolves `import mlflow` and `ray.job_submission` against the
+      # installed interpreter, so a missing optional dependency reads to it as
+      # a broken import rather than an optional one. The integration tests stay
+      # skipped regardless -- they need a live server, not just the client.
       - name: Install dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --all-extras
 
       - name: Lint, format & type check (prek)
         run: uvx prek run --all-files --show-diff-on-failure
