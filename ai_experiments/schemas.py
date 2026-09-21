@@ -601,6 +601,10 @@ class TrialRecord(BaseModel):
     objective_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     gpu_hours: float | None = None
+    #: How long the trial actually occupied the machine. Recorded whether
+    #: or not there are GPUs, because a CPU campaign that reports only
+    #: `gpu_hours` reports that it cost nothing.
+    wall_hours: float | None = None
     created_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     error: str | None = None

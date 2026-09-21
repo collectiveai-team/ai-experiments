@@ -872,8 +872,11 @@ def campaign_status(
         f"last advanced {summary['last_advanced_at']}"
     )
     cost = summary["estimated_cost"]
+    # Wall time first: on a CPU box the gpu-hours line alone says the campaign
+    # was free, and the next budget decision is made against that number.
     typer.echo(
-        f"  Spend:  {summary['gpu_hours']:g} gpu-hours"
+        f"  Spend:  {summary['wall_hours'] * 3600:.0f}s of machine time, "
+        f"{summary['gpu_hours']:g} gpu-hours"
         + (f" (~${cost})" if cost is not None else "")
         + (
             f" of {goal.budget.max_gpu_hours:g} budgeted"

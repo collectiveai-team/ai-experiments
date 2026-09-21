@@ -487,11 +487,9 @@ class CampaignOrchestrator:
             if mapped in {"completed", "failed", "cancelled"}:
                 trial.completed_at = run_status.completed_at or utc_now()
                 trial.error = run_status.error
-                trial.gpu_hours = _trial_gpu_hours(
-                    goal,
-                    run_status.started_at or run_status.submitted_at,
-                    trial.completed_at,
-                )
+                started = run_status.started_at or run_status.submitted_at
+                trial.gpu_hours = _trial_gpu_hours(goal, started, trial.completed_at)
+                trial.wall_hours = trial_wall_hours(started, trial.completed_at)
                 reading = extract_objective(
                     self.run_store, trial.run_id, goal.objective
                 )
@@ -876,17 +874,31 @@ class CampaignOrchestrator:
         )
 
 
-def _trial_gpu_hours(
-    goal: GoalSpec, started: datetime | None, completed: datetime | None
+def trial_wall_hours(
+    started: datetime | None, completed: datetime | None
 ) -> float | None:
-    if goal.resources.gpus <= 0 or started is None or completed is None:
-        return 0.0 if goal.resources.gpus <= 0 else None
+    """How long a trial occupied the machine, GPUs or not.
+
+    A campaign whose only spend figure is `gpu_hours` reports that eight
+    minutes of saturated CPU cost nothing, and every budget decision
+    downstream is made against that number.
+    """
+    if started is None or completed is None:
+        return None
     if started.tzinfo is None:
         started = started.replace(tzinfo=timezone.utc)
     if completed.tzinfo is None:
         completed = completed.replace(tzinfo=timezone.utc)
-    hours = max((completed - started).total_seconds(), 0.0) / 3600
-    return hours * goal.resources.gpus
+    return max((completed - started).total_seconds(), 0.0) / 3600
+
+
+def _trial_gpu_hours(
+    goal: GoalSpec, started: datetime | None, completed: datetime | None
+) -> float | None:
+    if goal.resources.gpus <= 0:
+        return 0.0
+    hours = trial_wall_hours(started, completed)
+    return None if hours is None else hours * goal.resources.gpus
 
 
 def _default_address_resolver(goal: GoalSpec) -> str | None:

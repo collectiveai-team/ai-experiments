@@ -444,6 +444,7 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     verdict = campaign_verdict(state, goal)
     history = trial_history(state.trials)
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
+    wall_hours = sum(t.wall_hours or 0.0 for t in state.trials)
     cost = (
         gpu_hours * goal.budget.gpu_hour_rate
         if goal.budget.gpu_hour_rate is not None
@@ -458,6 +459,9 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         "created_at": state.created_at.isoformat(),
         "last_advanced_at": state.updated_at.isoformat(),
         "gpu_hours": round(gpu_hours, 4),
+        # What the campaign cost on a machine with no GPUs, which is
+        # every campaign this harness has actually run.
+        "wall_hours": round(wall_hours, 4),
         "estimated_cost": round(cost, 2) if cost is not None else None,
         "budget": {
             "max_trials": goal.budget.max_trials,
