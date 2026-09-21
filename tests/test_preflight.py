@@ -251,9 +251,125 @@ def test_a_runnable_campaign_records_no_warning(tmp_path):
 
     store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
     campaign_store = CampaignStore(store.root)
-    goal = GoalSpec.from_yaml(_goal_file(tmp_path, sys.executable, str(tmp_path)))
+    # A bare interpreter is not a runnable *campaign* workload: the goal's
+    # search space puts `--x` on every trial's command line, and only a
+    # script that declares it can take one.
+    script = tmp_path / "train.py"
+    script.write_text(
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        'p.add_argument("--x", type=float)\n'
+        "p.parse_args()\n"
+    )
+    goal = GoalSpec.from_yaml(
+        _goal_file(tmp_path, f"{sys.executable} {script}", str(tmp_path))
+    )
 
     state = CampaignOrchestrator(store, campaign_store).start(goal)
 
     messages = [e.message for e in campaign_store.read_events(state.campaign_id)]
     assert "workload may not start" not in messages
+
+
+# --- the search space the workload will actually be handed ---------------
+
+_ACCEPTS = """\
+import argparse
+p = argparse.ArgumentParser()
+p.add_argument("--label-source")
+p.add_argument("--window-days", type=int)
+p.parse_args()
+"""
+
+_REJECTS = """\
+import argparse
+p = argparse.ArgumentParser()
+p.add_argument("--label-source")
+p.parse_args()
+"""
+
+
+def _goal_with(tmp_path, script: str, space: dict, **workload):
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+        WorkloadSpec as W,
+    )
+
+    path = tmp_path / "train.py"
+    path.write_text(script)
+    return GoalSpec(
+        goal="probe",
+        name="probe",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space=space,
+        workload=W(
+            entrypoint=f"{sys.executable} {path}",
+            working_dir=str(tmp_path),
+            **workload,
+        ),
+        budget=BudgetSpec(max_trials=1, max_parallel=1),
+    )
+
+
+def test_a_workload_that_declares_every_flag_draws_no_warning(tmp_path):
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {
+            "label_source": {"type": "choice", "values": ["a"]},
+            "window_days": {"type": "choice", "values": [30]},
+        },
+    )
+    assert workload_warnings(goal) == []
+
+
+def test_a_key_the_workload_cannot_parse_is_named_with_its_flag(tmp_path):
+    """The campaign's most expensive failure, caught before the first trial.
+
+    Every trial gets every search space key on its command line, so one key
+    the parser never declared fails all of them identically.
+    """
+    goal = _goal_with(
+        tmp_path,
+        _REJECTS,
+        {
+            "label_source": {"type": "choice", "values": ["a"]},
+            "window_days": {"type": "choice", "values": [30]},
+        },
+    )
+    warnings = workload_warnings(goal)
+
+    assert len(warnings) == 1
+    assert "window_days" in warnings[0]
+    assert "--window-days" in warnings[0]
+    assert "label_source" not in warnings[0]
+
+
+def test_the_probe_respects_the_workload_flag_style(tmp_path):
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {"label_source": {"type": "choice", "values": ["a"]}},
+        flag_style="underscore",
+    )
+    warnings = workload_warnings(goal)
+
+    assert len(warnings) == 1
+    assert "--label_source" in warnings[0]
+
+
+def test_a_workload_with_no_usable_help_is_given_the_benefit_of_the_doubt(tmp_path):
+    """Absence of a `--help` is not evidence the flags are wrong."""
+    goal = _goal_with(
+        tmp_path,
+        "import sys; sys.exit(3)",
+        {"label_source": {"type": "choice", "values": ["a"]}},
+    )
+    assert workload_warnings(goal) == []
+
+
+def test_a_manifest_has_no_search_space_to_check(tmp_path):
+    """`workload_warnings` still answers for a plain manifest."""
+    assert workload_warnings(_manifest(sys.executable, str(tmp_path))) == []
