@@ -20,9 +20,9 @@ summarizes the fields; if it disagrees with the code, the code wins.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `entrypoint` | string | — (required) | e.g. `python`, `python3`. |
+| `entrypoint` | string | — (required) | e.g. `uv run`, `python3`. Split on whitespace, so a runner and its flags belong here. |
 | `args` | list[string] | `[]` | e.g. `["-m", "pkg.cli", "train", "cfg.yaml"]`. |
-| `working_dir` | string | `.` | Resolved by the backend. |
+| `working_dir` | string | `.` | Relative paths are resolved against the directory you submit from, once, at submit time; the run stores both the resolved manifest and the original. Keep it relative to stay portable. |
 | `env` | mapping | `{}` | Extra environment variables. |
 
 ## `resources`
@@ -46,9 +46,12 @@ summarizes the fields; if it disagrees with the code, the code wins.
 |---|---|---|
 | `interval_seconds` | int | `300` |
 | `stuck_after_minutes` | int | `30` |
-| `no_event_after_minutes` | int \| null | `null` |
 | `timeout_seconds` | int \| null | `null` |
-| `checks` | list[string] | `["no_status_update", "no_log_progress", "process_exit"]` |
+| `auto_kill` | bool | `false` |
+| `fatal_on_nan` | bool | `true` |
+
+Every field above is the whole list. An unknown key is rejected by name, so a
+manifest never runs under configuration it did not get.
 
 ## Ray backend address
 

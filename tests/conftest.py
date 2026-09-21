@@ -152,7 +152,7 @@ class FakeMlflowModule:
     """Hands every MlflowClient() the same backing store, like a real server."""
 
     def __init__(self):
-        self.last_client = None
+        self.last_client: FakeMlflowClient | None = None
 
     def MlflowClient(self, tracking_uri=None):
         if self.last_client is None:

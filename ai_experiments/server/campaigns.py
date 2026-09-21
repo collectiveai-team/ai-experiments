@@ -17,17 +17,23 @@ from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import CampaignDetail, CampaignState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ai_experiments.store import FilesystemRunStore
     from ai_experiments.store.campaign import CampaignStore
 
 
 def build_campaigns_router(
-    run_store: FilesystemRunStore, campaign_store: CampaignStore
+    run_store: FilesystemRunStore,
+    campaign_store: CampaignStore,
+    require_mutations: Callable[[], None],
 ) -> APIRouter:
     """Build the `/api/campaigns` router.
 
     Closes over both stores: the campaign store for campaign state, and the
     run store the orchestrator needs to act on a campaign's runs.
+    `require_mutations` raises 403 when the server is bound somewhere a
+    stranger can reach it (#24).
     """
     router = APIRouter()
 
@@ -47,12 +53,14 @@ def build_campaigns_router(
 
     @router.post("/api/campaigns/{campaign_id}/stop")
     def campaign_stop(campaign_id: str) -> CampaignState:
+        require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         return orchestrator.stop(campaign_id)
 
     @router.post("/api/campaigns/{campaign_id}/pause")
     def campaign_pause(campaign_id: str) -> CampaignState:
+        require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:
@@ -62,6 +70,7 @@ def build_campaigns_router(
 
     @router.post("/api/campaigns/{campaign_id}/resume")
     def campaign_resume(campaign_id: str) -> CampaignState:
+        require_mutations()
         _ensure_campaign(campaign_store, campaign_id)
         orchestrator = CampaignOrchestrator(run_store, campaign_store)
         try:

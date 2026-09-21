@@ -13,43 +13,46 @@ import contextlib
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from ai_experiments.agents.runner import AgentRunner, CliAgentRunner
+from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
+from ai_experiments.improve.rounds import RoundLog, RoundRecord
+from ai_experiments.improve.variants import variants_root
 from ai_experiments.planner.analysis import (
     best_trial,
-    extract_objective,
     summarize_campaign,
 )
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
+from ai_experiments.planner.strategies import get_strategy
+from ai_experiments.planner.validation import validate_params
+from ai_experiments.preflight import workload_warnings
+from ai_experiments.recovery import recover_lost_trials
 from ai_experiments.schemas import (
     CampaignState,
     GoalSpec,
     RunEvent,
-    RunState,
     TrialRecord,
-    TrialState,
     utc_now,
 )
+from ai_experiments.stopping import (
+    ACTIVE_TRIAL_STATES,
+    FAILURE_STOP_REASONS,
+    exhausted_reason,
+    gpu_hours_spent,
+    stop_reason,
+)
 from ai_experiments.store.campaign import CampaignStore
+from ai_experiments.trial_sync import refresh_trials, update_best
 
 if TYPE_CHECKING:
     from ai_experiments.daemon import TickReport
     from ai_experiments.store import FilesystemRunStore
 
-ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
-
-_RUN_TO_TRIAL: dict[RunState, TrialState] = {
-    "submitted": "submitted",
-    "running": "running",
-    "completed": "completed",
-    "failed": "failed",
-    "cancelled": "cancelled",
-}
-
 BackendFactory = Callable[[GoalSpec], ExperimentBackend]
+AgentRunnerFactory = Callable[[GoalSpec, str], AgentRunner]
 
 
 class CampaignOrchestrator:
@@ -59,11 +62,34 @@ class CampaignOrchestrator:
         campaign_store: CampaignStore | None = None,
         backend_factory: BackendFactory | None = None,
         address_resolver: Callable[[GoalSpec], str | None] | None = None,
+        agent_runner_factory: AgentRunnerFactory | None = None,
     ) -> None:
         self.run_store = run_store
         self.campaign_store = campaign_store or CampaignStore(run_store.root)
         self._address_resolver = address_resolver or _default_address_resolver
         self._backend_factory = backend_factory or self._default_backend_factory
+        self._agent_runner_factory = agent_runner_factory or self._default_agent_runner
+        #: The agent decision made during the current `advance()`, if any.
+        self.last_decision: AgentDecision | None = None
+        #: Why the backend refused the submits of the current `advance()`. A
+        #: backend that accepts nothing looks exactly like an exhausted search
+        #: space from the campaign's side, and the two need opposite answers.
+        self.last_submit_errors: list[str] = []
+
+    def agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
+        """Build the agent this campaign talks to.
+
+        One place, so every role — planner, reviewer — gets the same command,
+        timeout and transcript directory.
+        """
+        return self._agent_runner_factory(goal, campaign_id)
+
+    def _default_agent_runner(self, goal: GoalSpec, campaign_id: str) -> AgentRunner:
+        return CliAgentRunner(
+            goal.agent.command,
+            transcript_dir=self.campaign_store.campaign_dir(campaign_id) / "agents",
+            timeout_seconds=goal.agent.timeout_seconds,
+        )
 
     def _default_backend_factory(self, goal: GoalSpec) -> ExperimentBackend:
         return get_backend(
@@ -80,6 +106,20 @@ class CampaignOrchestrator:
             state.campaign_id,
             RunEvent(message="campaign created", details={"goal": goal.goal}),
         )
+        # Every trial runs this one workload. A campaign started from the API,
+        # the server or the daemon never passes through the CLI's check, and a
+        # workload that cannot start would otherwise fail max_trials times
+        # with nothing saying why up front (#32).
+        warnings = workload_warnings(goal)
+        if warnings:
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="warning",
+                    message="workload may not start",
+                    details={"warnings": warnings},
+                ),
+            )
         return self.advance(state.campaign_id)
 
     def stop(self, campaign_id: str, reason: str = "user_requested") -> CampaignState:
@@ -150,8 +190,26 @@ class CampaignOrchestrator:
         return new_goal
 
     def suggest(self, campaign_id: str, params: dict[str, Any], note: str = "") -> TrialRecord:
-        """Queue an agent/human-suggested trial; submitted on the next advance."""
+        """Queue an agent/human-suggested trial; submitted on the next advance.
+
+        A suggestion is a proposal, not an override: it is rejected when the
+        campaign can no longer run it, when the params are not in the search
+        space, or when the trial budget is already committed (#13).
+        """
         state = self.campaign_store.read_state(campaign_id)
+        if state.status not in {"running", "paused"}:
+            raise ValueError(
+                f"campaign {campaign_id} is {state.status}; it will never run a "
+                "suggested trial — start a new campaign instead"
+            )
+        goal = self.campaign_store.read_goal(campaign_id)
+        params = validate_params(goal.search_space, params)
+        if len(state.trials) >= goal.budget.max_trials:
+            raise ValueError(
+                f"trial budget is spent ({len(state.trials)}/"
+                f"{goal.budget.max_trials}); raise max_trials with "
+                "`iax campaign edit` to make room"
+            )
         trial = TrialRecord(
             trial_id=f"t{len(state.trials):03d}",
             params=params,
@@ -171,31 +229,62 @@ class CampaignOrchestrator:
     # -- the loop step ---------------------------------------------------------
 
     def advance(self, campaign_id: str) -> CampaignState:
+        self.last_decision = None
+        self.last_submit_errors = []
         state = self.campaign_store.read_state(campaign_id)
         if state.status in {"completed", "stopped", "failed", "paused"}:
             return state
         goal = self.campaign_store.read_goal(campaign_id)
         backend = self._backend_factory(goal)
 
-        finished_now = self._refresh_trials(state, goal, backend)
-        self._update_best(state, goal)
+        recover_lost_trials(state, backend, self.campaign_store, self.run_store)
+        finished_now = refresh_trials(state, goal, backend, self.campaign_store, self.run_store)
+        update_best(state, goal)
 
-        stop_reason = self._stop_reason(state, goal)
-        if stop_reason:
-            self._cancel_active(state, backend)
-            state.status = "completed"
-            state.stop_reason = stop_reason
-            self.campaign_store.write_state(state)
-            self.campaign_store.append_event(
-                campaign_id,
-                RunEvent(message="campaign finished", details={"reason": stop_reason}),
-            )
-            self._write_summary(state, goal)
-            return state
+        reason = stop_reason(state, goal, gpu_hours_spent(state, goal, self.run_store))
+        if reason:
+            return self._finish(state, goal, backend, reason)
+
+        if finished_now:
+            self._record_evaluation(state, goal, finished_now)
 
         submitted = self._fill_capacity(state, goal, backend)
         if submitted:
             state.rounds += 1
+            self._record_proposal(state, goal, submitted)
+
+        # The planner can run dry before `max_trials` — a grid or a small
+        # discrete space has finitely many points. With nothing in flight and
+        # nothing queued, no later tick can change that, so the campaign would
+        # otherwise report `running` forever (#15).
+        if not self._has_work(state):
+            self.campaign_store.append_event(
+                campaign_id,
+                RunEvent(
+                    level="warning",
+                    message=(
+                        "no trial could start"
+                        if self.last_submit_errors
+                        else "planner exhausted the search space"
+                    ),
+                    details={
+                        "trials": len(state.trials),
+                        "max_trials": goal.budget.max_trials,
+                        "strategy": goal.strategy.name,
+                        "agent_stop_reason": (
+                            self.last_decision.stop_reason if self.last_decision is not None else ""
+                        ),
+                        "submit_errors": self.last_submit_errors,
+                    },
+                ),
+            )
+            return self._finish(
+                state,
+                goal,
+                backend,
+                exhausted_reason(submitted, self.last_submit_errors, self.last_decision),
+            )
+
         if finished_now and goal.analysis.agent_review:
             self._request_agent_review(state, goal)
 
@@ -224,99 +313,194 @@ class CampaignOrchestrator:
                 return state
             time.sleep(interval)
 
+    def reconcile(self, campaign_id: str) -> CampaignState:
+        """Collect what already finished, and plan nothing new.
+
+        `iax loop --max-rounds` stops between rounds, while the trials of the
+        round it just paid for may already have finished. `advance` would
+        submit another round; doing nothing leaves those trials `submitted`
+        forever and throws away work that ran. This reads their results, and
+        finishes the campaign when they turn out to have met the target.
+        """
+        self.last_decision = None
+        self.last_submit_errors = []
+        state = self.campaign_store.read_state(campaign_id)
+        if state.status in {"completed", "stopped", "failed", "paused"}:
+            return state
+        goal = self.campaign_store.read_goal(campaign_id)
+        backend = self._backend_factory(goal)
+
+        recover_lost_trials(state, backend, self.campaign_store, self.run_store)
+        finished_now = refresh_trials(state, goal, backend, self.campaign_store, self.run_store)
+        update_best(state, goal)
+
+        reason = stop_reason(state, goal, gpu_hours_spent(state, goal, self.run_store))
+        if reason:
+            return self._finish(state, goal, backend, reason)
+
+        if finished_now:
+            self._record_evaluation(state, goal, finished_now)
+        self.campaign_store.write_state(state)
+        return state
+
+    def _has_work(self, state: CampaignState) -> bool:
+        return any(t.status in ACTIVE_TRIAL_STATES or t.status == "planned" for t in state.trials)
+
+    def _finish(
+        self,
+        state: CampaignState,
+        goal: GoalSpec,
+        backend: ExperimentBackend,
+        reason: str,
+    ) -> CampaignState:
+        self._cancel_active(state, backend)
+        state.status = "failed" if reason in FAILURE_STOP_REASONS else "completed"
+        state.stop_reason = reason
+        self.campaign_store.write_state(state)
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(message="campaign finished", details={"reason": reason}),
+        )
+        self._write_summary(state, goal)
+        return state
+
     # -- internals -------------------------------------------------------------
 
-    def _refresh_trials(
-        self, state: CampaignState, goal: GoalSpec, backend: ExperimentBackend
-    ) -> list[TrialRecord]:
-        finished: list[TrialRecord] = []
-        for trial in state.trials:
-            if trial.status not in ACTIVE_TRIAL_STATES or not trial.run_id:
-                continue
-            try:
-                run_status = backend.inspect(trial.run_id)
-            except Exception as exc:
-                self.campaign_store.append_event(
-                    state.campaign_id,
-                    RunEvent(
-                        level="warning",
-                        message="trial inspect failed",
-                        details={"trial_id": trial.trial_id, "error": str(exc)},
-                    ),
-                )
-                continue
-            mapped = _RUN_TO_TRIAL.get(run_status.status)
-            if mapped is None:
-                continue
-            trial.status = mapped
-            if mapped in {"completed", "failed", "cancelled"}:
-                trial.completed_at = run_status.completed_at or utc_now()
-                trial.error = run_status.error
-                trial.gpu_hours = _trial_gpu_hours(
-                    goal,
-                    run_status.started_at or run_status.submitted_at,
-                    trial.completed_at,
-                )
-                value, final = extract_objective(self.run_store, trial.run_id, goal.objective)
-                trial.objective_value = value
-                trial.final_metrics = final
-                finished.append(trial)
-                self.campaign_store.append_event(
-                    state.campaign_id,
-                    RunEvent(
-                        message="trial finished",
-                        details={
-                            "trial_id": trial.trial_id,
-                            "status": mapped,
-                            "objective_value": value,
-                            "params": trial.params,
-                        },
-                    ),
-                )
-        return finished
+    def _variant_dir(self, campaign_id: str, variant_id: str | None) -> str | None:
+        """Where a trial's workload variant lives, if it has one."""
+        if not variant_id:
+            return None
+        root = variants_root(self.campaign_store.campaign_dir(campaign_id)) / variant_id
+        if not root.is_dir():
+            raise ValueError(f"variant {variant_id} is missing from {root}")
+        return str(root)
 
-    def _update_best(self, state: CampaignState, goal: GoalSpec) -> None:
-        best = best_trial(state, goal.objective.mode)
-        state.best_trial_id = best.trial_id if best else None
+    def _rounds(self, campaign_id: str) -> RoundLog:
+        return RoundLog(self.campaign_store.campaign_dir(campaign_id))
 
-    def _stop_reason(self, state: CampaignState, goal: GoalSpec) -> str | None:
-        """First stop condition that fires, evaluated in priority order.
-
-        `target_reached` outranks the budget/time checks: a campaign that has both
-        hit its target and exhausted its budget reports `target_reached`.
-        """
-        return (
-            _target_reached_reason(state, goal)
-            or _max_hours_reason(state, goal)
-            or self._gpu_hours_reason(state, goal)
-            or _budget_exhausted_reason(state, goal)
+    def _record_proposal(
+        self, state: CampaignState, goal: GoalSpec, submitted: list[TrialRecord]
+    ) -> None:
+        """Why this round exists, written the moment it is submitted."""
+        decision = self.last_decision
+        self._rounds(state.campaign_id).append(
+            RoundRecord(
+                campaign_id=state.campaign_id,
+                round=state.rounds,
+                stage="propose",
+                strategy=goal.strategy.name,
+                hypothesis=decision.hypothesis if decision else "",
+                rationale=decision.rationale if decision else "",
+                trial_ids=[t.trial_id for t in submitted],
+                outcome={t.trial_id: t.params for t in submitted},
+                agent_calls=state.agent_calls,
+                used_fallback=bool(decision and decision.used_fallback),
+                rejected=decision.rejected if decision else [],
+            )
         )
 
-    def _gpu_hours_reason(self, state: CampaignState, goal: GoalSpec) -> str | None:
-        if (
-            goal.budget.max_gpu_hours is not None
-            and self.gpu_hours_spent(state, goal) >= goal.budget.max_gpu_hours
-        ):
-            return "gpu_hours_exhausted"
-        return None
+    def _record_evaluation(
+        self, state: CampaignState, goal: GoalSpec, finished: list[TrialRecord]
+    ) -> None:
+        """Record what the round actually measured, including what broke."""
+        best = best_trial(state, goal.objective.mode)
+        self._rounds(state.campaign_id).append(
+            RoundRecord(
+                campaign_id=state.campaign_id,
+                round=state.rounds,
+                stage="evaluate",
+                strategy=goal.strategy.name,
+                trial_ids=[t.trial_id for t in finished],
+                outcome={
+                    "metric": goal.objective.metric,
+                    "values": {
+                        t.trial_id: {
+                            "status": t.status,
+                            "objective_value": t.objective_value,
+                            "error": t.error,
+                        }
+                        for t in finished
+                    },
+                    "best_so_far": (
+                        {
+                            "trial_id": best.trial_id,
+                            "objective_value": best.objective_value,
+                        }
+                        if best
+                        else None
+                    ),
+                },
+                agent_calls=state.agent_calls,
+            )
+        )
 
-    def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
-        """GPU-hours consumed so far.
+    def _plan_params(
+        self, state: CampaignState, goal: GoalSpec, count: int
+    ) -> list[dict[str, Any]]:
+        """Choose the next parameter assignments, from the agent or a strategy.
 
-        Recorded for finished trials, a live estimate (started -> now) for trials still
-        running.
+        `strategy: agent` is the only path that costs tokens, so it is the only
+        one with a budget. Past `goal.agent.max_calls` the campaign keeps
+        running on the fallback strategy rather than stopping: a spent agent
+        budget is a reason to plan more cheaply, not a reason to give up.
         """
-        total = sum(t.gpu_hours or 0.0 for t in state.trials)
-        for trial in state.trials:
-            if trial.status in ACTIVE_TRIAL_STATES and trial.run_id:
-                status = self.run_store.read_status(trial.run_id)
-                live = _trial_gpu_hours(goal, status.started_at or status.submitted_at, utc_now())
-                total += live or 0.0
-        return total
+        if goal.strategy.name != "agent":
+            return plan_next_params(goal, state.trials, count)
+
+        if state.agent_calls >= goal.agent.max_calls:
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="warning",
+                    message="agent call budget exhausted; planning with the fallback",
+                    details={
+                        "agent_calls": state.agent_calls,
+                        "max_calls": goal.agent.max_calls,
+                        "fallback": goal.strategy.fallback,
+                    },
+                ),
+            )
+            return get_strategy(goal.strategy.fallback).plan(goal, state.trials, count)
+
+        strategy = AgentStrategy(
+            self.agent_runner(goal, state.campaign_id),
+            fallback=goal.strategy.fallback,
+        )
+        params = strategy.plan(goal, state.trials, count)
+        state.agent_calls += 1
+        decision = strategy.last_decision
+        self.last_decision = decision
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="warning" if decision.used_fallback else "info",
+                message="agent planned a round",
+                details={
+                    "hypothesis": decision.hypothesis,
+                    "rationale": decision.rationale,
+                    "accepted": len(decision.accepted),
+                    "rejected": len(decision.rejected),
+                    "used_fallback": decision.used_fallback,
+                    "fallback_reason": decision.fallback_reason,
+                    "agent_error": decision.agent_error,
+                },
+            ),
+        )
+        return params
 
     def _fill_capacity(
         self, state: CampaignState, goal: GoalSpec, backend: ExperimentBackend
     ) -> list[TrialRecord]:
+        return self._submit(state, goal, backend, self._queue(state, goal))
+
+    def _queue(self, state: CampaignState, goal: GoalSpec) -> list[TrialRecord]:
+        """Return the planned trials this tick may submit, newly planned ones included.
+
+        Two separate caps apply. `max_parallel` caps concurrency; it says nothing
+        about the budget, and trials queued by `suggest` are already in
+        `state.trials`, so without the second cap a campaign could submit past
+        `max_trials` (#13).
+        """
         active = sum(1 for t in state.trials if t.status in ACTIVE_TRIAL_STATES)
         capacity = goal.budget.max_parallel - active
         if capacity <= 0:
@@ -327,37 +511,52 @@ class CampaignOrchestrator:
         batch_limit = goal.strategy.batch_size or goal.budget.max_parallel
         want_new = min(capacity - len(queue), remaining_budget, batch_limit)
         if want_new > 0:
-            for params in plan_next_params(goal, state.trials, want_new):
+            for params in self._plan_params(state, goal, want_new):
                 trial = TrialRecord(trial_id=f"t{len(state.trials):03d}", params=params)
                 state.trials.append(trial)
                 queue.append(trial)
 
+        committed = sum(1 for t in state.trials if t.status != "planned")
+        allowance = max(goal.budget.max_trials - committed, 0)
+        return queue[: min(capacity, allowance)]
+
+    def _submit(
+        self,
+        state: CampaignState,
+        goal: GoalSpec,
+        backend: ExperimentBackend,
+        queue: list[TrialRecord],
+    ) -> list[TrialRecord]:
+        """Hand each queued trial to the backend, recording the ones that failed."""
         submitted: list[TrialRecord] = []
-        for trial in queue[:capacity]:
+        for trial in queue:
             try:
                 manifest = build_trial_manifest(
                     goal,
                     trial.trial_id,
                     trial.params,
                     backend_address=self._address_resolver(goal),
+                    working_dir=self._variant_dir(state.campaign_id, trial.variant_id),
+                    variant_id=trial.variant_id,
                 )
+            except Exception as exc:
+                # The goal cannot describe this trial. Nothing about the
+                # backend is implied, so this must not read as one being down.
+                self._fail_to_submit(state, trial, f"invalid trial manifest: {exc}")
+                continue
+            try:
                 handle = backend.submit(manifest)
             except Exception as exc:
-                trial.status = "failed"
-                trial.error = f"submit failed: {exc}"
-                trial.completed_at = utc_now()
-                self.campaign_store.append_event(
-                    state.campaign_id,
-                    RunEvent(
-                        level="error",
-                        message="trial submit failed",
-                        details={"trial_id": trial.trial_id, "error": str(exc)},
-                    ),
-                )
+                self._fail_to_submit(state, trial, f"submit failed: {exc}")
+                self.last_submit_errors.append(str(exc))
                 continue
             trial.run_id = handle.run_id
             trial.status = "submitted"
             submitted.append(trial)
+            # Persist before submitting the next one. A crash here used to
+            # lose every submit of the tick; now it loses at most this one,
+            # and `recover_lost_trials` rebuilds even that from the event
+            # appended below (#5).
             self.campaign_store.append_event(
                 state.campaign_id,
                 RunEvent(
@@ -369,7 +568,21 @@ class CampaignOrchestrator:
                     },
                 ),
             )
+            self.campaign_store.write_state(state)
         return submitted
+
+    def _fail_to_submit(self, state: CampaignState, trial: TrialRecord, error: str) -> None:
+        trial.status = "failed"
+        trial.error = error
+        trial.completed_at = utc_now()
+        self.campaign_store.append_event(
+            state.campaign_id,
+            RunEvent(
+                level="error",
+                message="trial submit failed",
+                details={"trial_id": trial.trial_id, "error": error},
+            ),
+        )
 
     def _cancel_active(self, state: CampaignState, backend: ExperimentBackend) -> None:
         for trial in state.trials:
@@ -392,69 +605,24 @@ class CampaignOrchestrator:
         Analysis beyond the built-in strategy (e.g. reshaping the search space) costs tokens,
         so it is opt-in via ``analysis.agent_review`` and file-based.
         """
+        from ai_experiments.monitoring.escalation import CAMPAIGN_PREFIX, CampaignReview
+
         escalations = self.run_store.root / "_escalations"
         escalations.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "type": "campaign_review",
-            "created_at": utc_now().isoformat(),
-            "campaign_id": state.campaign_id,
-            "summary": summarize_campaign(state, goal).model_dump(mode="json"),
-            "note": (
+        review = CampaignReview(
+            campaign_id=state.campaign_id,
+            # Serialised, not the model: `CampaignReview.summary` is a plain dict so a
+            # review written by an older iax still reads back after a summary field moves.
+            summary=summarize_campaign(state, goal).model_dump(mode="json"),
+            note=(
                 "Review trial history; queue better trials via "
                 "`iax campaign suggest <campaign_id> --params '{...}'` "
                 "or stop via `iax campaign stop <campaign_id>`."
             ),
-        }
-        (escalations / f"campaign_{state.campaign_id}.json").write_text(
-            json.dumps(payload, indent=2)
         )
-
-
-def _target_reached_reason(state: CampaignState, goal: GoalSpec) -> str | None:
-    best = best_trial(state, goal.objective.mode)
-    target = goal.objective.target
-    if best is None or target is None or best.objective_value is None:
-        return None
-    reached = (
-        best.objective_value >= target
-        if goal.objective.mode == "max"
-        else best.objective_value <= target
-    )
-    return "target_reached" if reached else None
-
-
-def _max_hours_reason(state: CampaignState, goal: GoalSpec) -> str | None:
-    if goal.budget.max_hours is None:
-        return None
-    # `created_at` may be persisted without a timezone; normalise before comparing.
-    created = state.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    age_hours = (utc_now() - created).total_seconds() / 3600
-    if age_hours > goal.budget.max_hours:
-        return "max_hours_exceeded"
-    return None
-
-
-def _budget_exhausted_reason(state: CampaignState, goal: GoalSpec) -> str | None:
-    active = [t for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
-    planned = [t for t in state.trials if t.status == "planned"]
-    if len(state.trials) >= goal.budget.max_trials and not active and not planned:
-        return "budget_exhausted"
-    return None
-
-
-def _trial_gpu_hours(
-    goal: GoalSpec, started: datetime | None, completed: datetime | None
-) -> float | None:
-    if goal.resources.gpus <= 0 or started is None or completed is None:
-        return 0.0 if goal.resources.gpus <= 0 else None
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    if completed.tzinfo is None:
-        completed = completed.replace(tzinfo=timezone.utc)
-    hours = max((completed - started).total_seconds(), 0.0) / 3600
-    return hours * goal.resources.gpus
+        (escalations / f"{CAMPAIGN_PREFIX}{state.campaign_id}.json").write_text(
+            json.dumps(review.model_dump(mode="json"), indent=2)
+        )
 
 
 def _default_address_resolver(goal: GoalSpec) -> str | None:

@@ -65,5 +65,19 @@
       "Read(./.env.example)",
       "Read(./**/.env.example)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "_source": "orq-lite:command-filter",
+            "command": "/home/linuxbrew/.linuxbrew/bin/rtk hook claude",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ]
   }
 }

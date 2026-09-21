@@ -1,6 +1,6 @@
 ---
 name: diagnosing-experiments
-description: Use when an iax run is stuck or failed — when a monitor decision is `delegate_diagnosis` or `training_failed`, or when asked why a training run failed or stalled. Does harness-specific triage, then hands off the root-cause loop to systematic-debugging.
+description: Use when an iax run is stuck or failed — when a monitor decision is `delegate_diagnosis` or `training_failed`, or when asked why a training run failed or stalled. Does harness-specific triage, then runs a disciplined root-cause loop.
 ---
 
 # Diagnosing Experiments
@@ -49,8 +49,19 @@ fields instead. Use the same `--runs-dir`/`IAX_RUNS_DIR` as the run.
 ## 3. Hand off to the root-cause loop
 
 You now have symptoms (reasons), logs, and exit state. **Do NOT guess a fix from
-here.** Invoke the **superpowers:systematic-debugging** skill and feed it this
-evidence to reproduce, isolate, and confirm the root cause.
+here.** If your harness ships a systematic-debugging skill, invoke it and feed it
+this evidence. Otherwise run the same loop yourself:
+
+1. **Reproduce.** `iax repro <run_id>` writes the exact command, environment and
+   working tree the run used. Reproduce the failure outside the harness first —
+   a bug you cannot reproduce is a bug you cannot confirm you fixed.
+2. **Isolate.** Shrink the failing case: fewer steps, smaller batch, one GPU,
+   the single param the last passing run did not have. `iax runs` and
+   `iax compare` give you the last passing neighbour to diff against.
+3. **Explain.** State the mechanism, not the correlation: which line, given
+   which value, produced which observed symptom.
+4. **Confirm.** Change one thing, rerun the reproduction, and check the symptom
+   is gone. If it is not, your explanation was wrong — go back to step 2.
 
 ## 4. Conclude
 

@@ -72,5 +72,5 @@ def test_run_command_rejects_invalid_goal(tmp_path):
 
     result = runner.invoke(app, ["run", str(bad), "--no-serve"])
 
-    assert result.exit_code == 1
-    assert "invalid goal" in result.output
+    assert result.exit_code == 2  # invalid input, per the CLI error contract
+    assert "invalid goal" in result.stderr

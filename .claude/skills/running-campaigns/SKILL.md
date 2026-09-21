@@ -9,6 +9,11 @@ A campaign is a goal pursued autonomously: the planner generates trials over a
 search space, the orchestrator submits/collects them, and the monitor daemon
 drives the loop until the target is reached or the budget is spent.
 
+Use **autonomous-experimentation** instead when the user states an outcome and
+wants the harness to reach it — `iax loop` runs the whole loop as one command
+and reports whether the target was met. This skill is for driving the rounds
+yourself.
+
 ## Author the goal manifest
 
 Translate the user's ask into a `GoalSpec` YAML (full reference:
@@ -24,7 +29,7 @@ search_space:
   layers: { type: int, low: 1, high: 4 }
   dropout: { type: uniform, low: 0.0, high: 0.5 }
 workload:
-  entrypoint: "python train.py"
+  entrypoint: "uv run train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
   working_dir: .                # params without placeholders appended as --name value
 budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0,
@@ -96,8 +101,23 @@ iax campaign resume <campaign_id>            # replans from the full trial histo
 ```
 
 A finished campaign writes `summary.json` in
-`<runs>/_campaigns/<campaign_id>/`. `stop_reason` is one of `target_reached`,
-`budget_exhausted`, `max_hours_exceeded`, or `user_requested`.
+`<runs>/_campaigns/<campaign_id>/`. `stop_reason` is one of:
+
+| `stop_reason` | what it means |
+|---|---|
+| `target_reached` | the objective target was met; the best trial is the answer |
+| `budget_exhausted` | `max_trials` were run without reaching the target |
+| `max_hours_exceeded` | `budget.max_hours` elapsed |
+| `gpu_hours_exhausted` | `budget.max_gpu_hours` were spent |
+| `search_space_exhausted` | the planner ran out of points; widen the goal |
+| `backend_unavailable` | no trial could be submitted; start the cluster |
+| `objective_not_reported` | trials ran but never reported the objective metric |
+| `agent_requested_stop` | the reviewing agent judged the campaign hopeless |
+| `user_requested` | `iax campaign stop` |
+
+Only `target_reached` answers the question. Every other reason means the
+campaign stopped for a reason of its own, and the best trial so far is a
+partial result — say which one it was when you report.
 
 ## Inject your own analysis (opt-in tokens)
 

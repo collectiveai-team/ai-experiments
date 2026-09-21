@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ai_experiments.backends.base import ExperimentBackend
+from ai_experiments.failures import failure_message
 from ai_experiments.monitoring.ray_rules import classify_ray_condition
 from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.report import parse_metric_line
 from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
     DiagnosisReport,
     ExperimentManifest,
     MetricPoint,
@@ -134,8 +136,14 @@ class RayBackend(ExperimentBackend):
             else:
                 status = self.store.update_status(run_id, status=mapped, details=details)
             if mapped == "failed" and not status.error:
+                # Ray's message can carry 20,000 characters of job log. It ends
+                # up in the planner's evidence block, so it gets the same tail
+                # treatment as a local workload's output.
                 message = details.get("ray_message") or details.get("ray_error_type")
-                status = self.store.update_status(run_id, error=str(message or "Ray job failed"))
+                status = self.store.update_status(
+                    run_id,
+                    error=failure_message("Ray job failed", str(message or "")),
+                )
             return status
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
@@ -200,7 +208,14 @@ class RayBackend(ExperimentBackend):
         return self.store.read_events(run_id, tail=tail)
 
     def cancel(self, run_id: str) -> None:
-        status = self.store.read_status(run_id)
+        # Refresh from the cluster first. A Ray run has no local supervisor
+        # keeping its record current -- the stored status is only as fresh as
+        # the last inspect -- so deciding from the store alone would happily
+        # stamp "cancelled" onto a job that failed on its own hours ago, which
+        # is the one thing a cancel must never do.
+        status = self.inspect(run_id)
+        if status.status not in ACTIVE_RUN_STATES:
+            return
         if status.external_id:
             self._client().stop_job(status.external_id)
         self.store.update_status(run_id, status="cancelled", completed_at=utc_now())

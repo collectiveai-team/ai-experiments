@@ -17,11 +17,20 @@ from ai_experiments.monitoring.rules import diagnose_run
 from ai_experiments.schemas import CancelAck, DiagnosisReport, MetricPoint, RunEvent, RunStatus
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ai_experiments.store import FilesystemRunStore
 
 
-def build_runs_router(store: FilesystemRunStore) -> APIRouter:
-    """Build the `/api/runs` router, closing over the run store it reads."""
+def build_runs_router(
+    store: FilesystemRunStore, require_mutations: Callable[[], None]
+) -> APIRouter:
+    """Build the `/api/runs` router, closing over the run store it reads.
+
+    `require_mutations` raises 403 when the server is bound somewhere a
+    stranger can reach it (#24). It is passed in rather than re-derived here:
+    the bind address is `create_app`'s to know, not this router's.
+    """
     router = APIRouter()
 
     @router.get("/api/runs")
@@ -50,6 +59,7 @@ def build_runs_router(store: FilesystemRunStore) -> APIRouter:
 
     @router.post("/api/runs/{run_id}/cancel")
     def run_cancel(run_id: str) -> CancelAck:
+        require_mutations()
         ensure_run(store, run_id)
         backend_for_run(store, run_id).cancel(run_id)
         return CancelAck(run_id=run_id, cancelled=True)

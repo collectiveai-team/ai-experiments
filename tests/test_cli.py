@@ -68,7 +68,7 @@ def test_validate_rejects_malformed_backend_address(tmp_path):
 
     result = runner.invoke(app, ["validate", str(path)])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # invalid input, per the CLI error contract
     assert "invalid manifest" in result.stderr
 
 
@@ -207,10 +207,13 @@ def test_cli_command_surface_is_stable():
         "daemon",
         "diagnose",
         "escalations",
+        "handoff",
         "leaderboard",
         "logs",
+        "loop",
         "metrics",
         "monitor",
+        "new",
         "repro",
         "rerun",
         "run",
@@ -228,15 +231,20 @@ def test_cli_command_surface_is_stable():
         "list",
         "pause",
         "resume",
+        "rounds",
         "start",
         "status",
         "stop",
         "suggest",
+        "trials",
         "validate",
     ]
     cluster_group = root.commands["cluster"]
     assert isinstance(cluster_group, typer.core.TyperGroup)
     assert sorted(cluster_group.commands) == ["down", "list", "status", "up"]
+    new_group = root.commands["new"]
+    assert isinstance(new_group, typer.core.TyperGroup)
+    assert sorted(new_group.commands) == ["goal", "manifest", "workload"]
 
 
 def test_module_entry_point_runs():
@@ -251,3 +259,37 @@ def test_module_entry_point_runs():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Detached experiment runtime" in result.stdout
+
+
+def test_campaign_suggest_rejects_bad_params(tmp_path):
+    """A suggestion outside the search space exits 2, not 0 (#13)."""
+    from ai_experiments.orchestrator import CampaignOrchestrator
+    from ai_experiments.schemas import GoalSpec
+    from ai_experiments.store import FilesystemRunStore
+
+    runs = tmp_path / "runs"
+    goal = GoalSpec(
+        goal="minimize loss",
+        name="cli-suggest",
+        objective={"metric": "loss"},
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload={"entrypoint": "python -c pass"},
+        budget={"max_trials": 4, "max_parallel": 1},
+    )
+    store = FilesystemRunStore(runs)
+    state = CampaignOrchestrator(store).start(goal)
+
+    result = runner.invoke(
+        app,
+        [
+            "campaign",
+            "suggest",
+            state.campaign_id,
+            "--params",
+            '{"x": 42.0}',
+            "--runs-dir",
+            str(runs),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "rejected" in result.output

@@ -7,7 +7,7 @@ from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
     MonitorPolicy,
-    RunStatus,
+    RunHandle,
     WorkloadSpec,
     utc_now,
 )
@@ -27,15 +27,20 @@ def _make_run(
         monitoring=monitoring or MonitorPolicy(),
     )
     run_id, run_dir = store.create_run(manifest)
-    status = RunStatus(
-        run_id=run_id,
-        backend="local",
-        status="running",
-        status_uri=str(store.status_path(run_id)),
-        run_dir=str(run_dir),
-        details={"heartbeat_at": utc_now().isoformat()},
+    base: dict[str, object] = {
+        "details": {"heartbeat_at": utc_now().isoformat()},
+    }
+    base.update(status_overrides)
+    store.write_handle(
+        RunHandle(
+            run_id=run_id,
+            backend="local",
+            status="running",
+            status_uri=str(store.status_path(run_id)),
+            run_dir=str(run_dir),
+        )
     )
-    store.write_status(status.model_copy(update=status_overrides))
+    store.update_status(run_id, **base)
     return store, run_id
 
 

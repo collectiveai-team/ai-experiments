@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from ai_experiments.config_loading import (
+    REMOVED_MONITOR_KEYS,
+    ConfigModel,
+    load_config,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def utc_now() -> datetime:
@@ -21,10 +35,15 @@ RunState = Literal[
     "unknown",
 ]
 
+#: States a run can still be acted on in. Cancelling anything else would
+#: rewrite how the run actually ended, so both backends and the daemon gate on
+#: this same set rather than on their own copies of it.
+ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
+
 BackendName = Literal["local", "ray"]
 
 
-class WorkloadSpec(BaseModel):
+class WorkloadSpec(ConfigModel):
     """Executable workload for a training experiment."""
 
     entrypoint: str
@@ -33,18 +52,18 @@ class WorkloadSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
 
-class ResourceSpec(BaseModel):
+class ResourceSpec(ConfigModel):
     cpus: float = 1
     gpus: float = 0
     memory_gb: float | None = None
 
 
-class ArtifactSpec(BaseModel):
+class ArtifactSpec(ConfigModel):
     output_dir: str = "outputs/training"
     status_path: str | None = None
 
 
-class EscalationPolicy(BaseModel):
+class EscalationPolicy(ConfigModel):
     """Controls when a suspicious run is handed to an agent for diagnosis.
 
     Programmatic checks are free; agent checks cost tokens. The ladder only
@@ -59,26 +78,30 @@ class EscalationPolicy(BaseModel):
     agent_timeout_seconds: int = 600
 
 
-class MonitorPolicy(BaseModel):
+class MonitorPolicy(ConfigModel):
     interval_seconds: int = 300
     stuck_after_minutes: int = 30
-    no_event_after_minutes: int | None = None
     timeout_seconds: int | None = None
     auto_kill: bool = False
     fatal_on_nan: bool = True
     objective_metric: str | None = None
     plateau_patience_points: int | None = None
     escalation: EscalationPolicy = Field(default_factory=EscalationPolicy)
-    checks: list[str] = Field(
-        default_factory=lambda: [
-            "no_status_update",
-            "no_log_progress",
-            "process_exit",
-        ]
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            dead = [key for key in REMOVED_MONITOR_KEYS if key in data]
+            if dead:
+                raise ValueError(
+                    f"{', '.join(dead)}: removed; iax never read this key. "
+                    "Delete it. The monitoring rules are not configurable."
+                )
+        return data
 
 
-class TrackingSpec(BaseModel):
+class TrackingSpec(ConfigModel):
     """Optional MLflow experiment tracking.
 
     When enabled, the harness creates the MLflow run at submit time, injects
@@ -94,7 +117,7 @@ class TrackingSpec(BaseModel):
     experiment: str | None = None  # defaults to the iax experiment name
 
 
-class ExperimentManifest(BaseModel):
+class ExperimentManifest(ConfigModel):
     """Generic detached training experiment manifest."""
 
     experiment: str
@@ -128,8 +151,7 @@ class ExperimentManifest(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ExperimentManifest:
-        with Path(path).open() as fh:
-            return cls(**(yaml.safe_load(fh) or {}))
+        return load_config(cls, path)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)
@@ -215,7 +237,7 @@ class DiagnosisReport(BaseModel):
 # --- Goal / campaign layer -------------------------------------------------
 
 
-class ChoiceParam(BaseModel):
+class ChoiceParam(ConfigModel):
     type: Literal["choice"]
     values: list[Any]
 
@@ -227,7 +249,7 @@ class ChoiceParam(BaseModel):
         return value
 
 
-class UniformParam(BaseModel):
+class UniformParam(ConfigModel):
     type: Literal["uniform"]
     low: float
     high: float
@@ -239,7 +261,7 @@ class UniformParam(BaseModel):
         return self
 
 
-class LogUniformParam(BaseModel):
+class LogUniformParam(ConfigModel):
     type: Literal["loguniform"]
     low: float
     high: float
@@ -253,7 +275,7 @@ class LogUniformParam(BaseModel):
         return self
 
 
-class IntParam(BaseModel):
+class IntParam(ConfigModel):
     type: Literal["int"]
     low: int
     high: int
@@ -271,13 +293,13 @@ ParamSpec = Annotated[
 ]
 
 
-class ObjectiveSpec(BaseModel):
+class ObjectiveSpec(ConfigModel):
     metric: str
     mode: Literal["min", "max"] = "min"
     target: float | None = None
 
 
-class BudgetSpec(BaseModel):
+class BudgetSpec(ConfigModel):
     max_trials: int = 10
     max_parallel: int = 1
     max_hours: float | None = None
@@ -293,20 +315,62 @@ class BudgetSpec(BaseModel):
         return self
 
 
-class StrategySpec(BaseModel):
-    name: Literal["grid", "random", "adaptive"] = "adaptive"
+class StrategySpec(ConfigModel):
+    name: Literal["grid", "random", "adaptive", "agent"] = "adaptive"
     seed: int = 0
     batch_size: int | None = None
     grid_resolution: int = 4
     exploration: float = 0.3
     top_k: int = 3
+    #: Used when ``name == "agent"`` and the agent cannot deliver a usable
+    #: round. A campaign must keep making progress without a working agent.
+    fallback: Literal["grid", "random", "adaptive"] = "adaptive"
 
 
-class AnalysisSpec(BaseModel):
+class AgentSpec(ConfigModel):
+    """How the harness reaches the agent that plans and reviews rounds.
+
+    The command is operator-supplied configuration. It receives the brief on
+    stdin, never as an argument (CONVENTIONS.md §9).
+    """
+
+    command: str = "claude"
+    timeout_seconds: int = 600
+    #: Hard ceiling on agent invocations per campaign. An unattended loop that
+    #: keeps asking is an unattended loop that keeps spending.
+    max_calls: int = 20
+
+
+class VariantSpec(ConfigModel):
+    """Whether, and how far, the loop may change the workload's own code.
+
+    Off by default: a loop that edits code without being asked is a surprise.
+    """
+
+    enabled: bool = False
+    #: What gets copied for each variant. Defaults to ``workload.working_dir``.
+    source_dir: str | None = None
+    #: Glob allowlist for the files a variant may write. Empty means any path
+    #: inside the copied workload.
+    editable_paths: list[str] = Field(default_factory=list)
+    #: Run inside the variant before any trial uses it. A non-zero exit means
+    #: the variant is discarded instead of costing a whole round.
+    smoke_command: list[str] = Field(default_factory=list)
+    smoke_timeout_seconds: int = 120
+
+
+class AnalysisSpec(ConfigModel):
     agent_review: bool = False
+    #: Ask the agent for a verdict between rounds during ``iax loop``. The
+    #: agent can end a campaign it judges hopeless instead of burning the
+    #: whole budget on it.
+    review_between_rounds: bool = False
+    #: Let an accepted review widen the search space or the budget on its own.
+    #: Off by default: a loop that rewrites its own goal unasked is a surprise.
+    apply_agent_changes: bool = False
 
 
-class GoalSpec(BaseModel):
+class GoalSpec(ConfigModel):
     """A research goal the harness pursues autonomously.
 
     The planner turns this into a campaign: batches of experiment manifests,
@@ -321,6 +385,8 @@ class GoalSpec(BaseModel):
     workload: WorkloadSpec
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
+    agent: AgentSpec = Field(default_factory=AgentSpec)
+    variants: VariantSpec = Field(default_factory=VariantSpec)
     analysis: AnalysisSpec = Field(default_factory=AnalysisSpec)
     backend: BackendName = "local"
     backend_address: str | None = None
@@ -357,8 +423,7 @@ class GoalSpec(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> GoalSpec:
-        with Path(path).open() as fh:
-            return cls(**(yaml.safe_load(fh) or {}))
+        return load_config(cls, path)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)
@@ -380,6 +445,8 @@ class TrialRecord(BaseModel):
     trial_id: str
     params: dict[str, Any]
     source: Literal["strategy", "agent"] = "strategy"
+    #: The workload variant this trial ran against, if the loop changed code.
+    variant_id: str | None = None
     run_id: str | None = None
     status: TrialState = "planned"
     objective_value: float | None = None
@@ -401,18 +468,26 @@ class CampaignState(BaseModel):
     trials: list[TrialRecord] = Field(default_factory=list)
     best_trial_id: str | None = None
     rounds: int = 0
+    #: Agent invocations spent on this campaign, capped by ``GoalSpec.agent.max_calls``.
+    agent_calls: int = 0
 
 
 # --- Server / CLI response models ------------------------------------------
 
 
 class HealthStatus(BaseModel):
-    """The `/api/health` body."""
+    """The `/api/health` body.
+
+    `mutations` tells a client whether this bind will accept cancel/stop/
+    pause/resume at all, so a dashboard can grey the buttons out instead of
+    discovering the 403 after the operator clicks (#24).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     status: str
     runs_root: str
+    mutations: Literal["allowed", "read-only"]
 
 
 class CancelAck(BaseModel):
@@ -480,13 +555,20 @@ class ReproBundleInfo(ReproContext):
 
 
 class CampaignHistoryEntry(BaseModel):
-    """One row of `CampaignSummary.history`: a completed trial's outcome."""
+    """One row of `CampaignSummary.history`: a trial an agent can learn from.
+
+    A failure teaches as much as a score, so a trial qualifies on either a
+    non-None `objective_value` or a non-None `error`; `status` and `error`
+    are what tell the two apart.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     trial_id: str
+    status: TrialState
     objective_value: float | None
     params: dict[str, Any]
+    error: str | None = None
 
 
 class BestTrialSummary(BaseModel):
@@ -520,11 +602,14 @@ class CampaignSummary(BaseModel):
     goal: str
     status: CampaignStatus
     stop_reason: str | None
+    created_at: str
+    last_advanced_at: str
     gpu_hours: float
     estimated_cost: float | None
     budget: BudgetSummary
     objective: ObjectiveSpec
     rounds: int
+    agent_calls: int
     trials_by_status: dict[str, int]
     trials_total: int
     best: BestTrialSummary | None

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ai_experiments.backends.factory import backend_for_run
+from ai_experiments.heartbeat import Heartbeat, write_heartbeat
 from ai_experiments.monitoring.escalation import (
     EscalationLadder,
     clear_escalation,
@@ -34,7 +35,13 @@ from ai_experiments.monitoring.escalation import (
 )
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
-from ai_experiments.schemas import MonitorPolicy, RunEvent, RunStatus, utc_now
+from ai_experiments.schemas import (
+    ACTIVE_RUN_STATES,
+    MonitorPolicy,
+    RunEvent,
+    RunStatus,
+    utc_now,
+)
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
 
@@ -51,7 +58,16 @@ NOTIFY_ACTIONS = {
     "reaped_dead_process",
 }
 
-ACTIVE_RUN_STATES = {"submitted", "running"}
+#: How each reap outcome reads in a run's ``error``. Outcomes that mean the
+#: workload was already gone say nothing -- there is nothing to report.
+_ORPHAN_SUMMARY = {
+    "terminated": "terminated",
+    "killed": "killed (it ignored SIGTERM)",
+    "identity_unverifiable": "left running: its pid could not be verified",
+    "identity_mismatch": "already gone (its pid has been reused)",
+    "kill_failed": "could not be killed and may still be running",
+    "reap_failed": "could not be reaped",
+}
 
 
 class RunAction(BaseModel):
@@ -59,6 +75,7 @@ class RunAction(BaseModel):
     decision: str
     action: str
     reasons: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class TickReport(BaseModel):
@@ -83,13 +100,29 @@ class MonitorDaemon:
         self.ladder = EscalationLadder(run_store)
         self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
+        self.ticks = 0
 
     # -- one tick --------------------------------------------------------------
 
-    def tick(self) -> TickReport:
+    def tick(self, interval_seconds: int | None = None) -> TickReport:
         report = TickReport(timestamp=utc_now().isoformat())
         self._check_runs(report)
         self._advance_campaigns(report)
+        self.ticks += 1
+        # Stamped even when the tick found nothing to do: the whole point is
+        # that "nothing happened" and "nobody is watching" stop looking alike.
+        try:
+            write_heartbeat(
+                self.run_store.root,
+                Heartbeat(
+                    interval_seconds=interval_seconds,
+                    ticks=self.ticks,
+                    runs_checked=report.runs_checked,
+                    campaigns_advanced=report.campaigns_advanced,
+                ),
+            )
+        except OSError as exc:
+            report.errors.append(f"heartbeat: {exc}")
         return report
 
     def _check_runs(self, report: TickReport) -> None:
@@ -130,7 +163,7 @@ class MonitorDaemon:
                 )
 
     def _sync_finished_run(self, run_id: str, status: RunStatus, report: TickReport) -> None:
-        from ai_experiments.tracking import finalize_tracking
+        from ai_experiments.tracking import TrackingSyncError, finalize_tracking
 
         try:
             if finalize_tracking(self.run_store, status):
@@ -141,6 +174,10 @@ class MonitorDaemon:
                         action="mlflow_synced",
                     )
                 )
+        # TrackingSyncError already says which run and why; anything else needs
+        # the "mlflow finalize" prefix to be attributable in the tick report.
+        except TrackingSyncError as exc:
+            report.errors.append(f"{run_id}: {exc}")
         except Exception as exc:
             report.errors.append(f"{run_id}: mlflow finalize: {exc}")
 
@@ -206,22 +243,39 @@ class MonitorDaemon:
         policy: MonitorPolicy,
     ) -> RunAction:
         if "process_dead" in decision.reasons:
-            # The worker is already gone; reap instead of cancelling.
+            # The worker is already gone; reap instead of cancelling. The
+            # workload it was supervising can easily have outlived it -- it is
+            # a separate process -- so reaping the *run* without also dealing
+            # with the workload reports a clean death over a live GPU job.
+            try:
+                reaped = backend.reap(run_id)
+            except Exception as exc:
+                reaped = {"outcome": "reap_failed", "error": str(exc)}
+            error = "worker process died without reporting a final status"
+            summary = _ORPHAN_SUMMARY.get(str(reaped.get("outcome")))
+            if summary:
+                error = f"{error}; orphaned workload {summary}"
             self.run_store.update_status(
                 run_id,
                 status="failed",
                 completed_at=utc_now(),
-                error="worker process died without reporting a final status",
+                error=error,
+                details={"workload_reap": reaped},
             )
             self.run_store.append_event(
                 run_id,
-                RunEvent(level="error", message="run reaped: worker process dead"),
+                RunEvent(
+                    level="error",
+                    message="run reaped: worker process dead",
+                    details={"workload_reap": reaped},
+                ),
             )
             return RunAction(
                 run_id=run_id,
                 decision="kill",
                 action="reaped_dead_process",
                 reasons=decision.reasons,
+                details={"workload_reap": reaped},
             )
         if policy.auto_kill:
             backend.cancel(run_id)
@@ -286,15 +340,38 @@ class MonitorDaemon:
     def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
         self._stop = True
 
-    def run_forever(self, interval_seconds: int = 30, max_ticks: int | None = None) -> None:
+    def run_forever(
+        self,
+        interval_seconds: int = 30,
+        max_ticks: int | None = None,
+        heartbeat_seconds: int = 300,
+    ) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
         ticks = 0
+        next_heartbeat = 0.0
         while not self._stop:
-            report = self.tick()
+            report = self.tick(interval_seconds=interval_seconds)
             if report.actions or report.errors:
                 # ast-grep-ignore: log-no-print  # run_forever's stdout is the daemon's JSON stream
                 print(json.dumps(report.model_dump(mode="json")), flush=True)
+            elif time.monotonic() >= next_heartbeat:
+                # A quiet daemon that never speaks cannot be told from a dead
+                # one in a log someone reads tomorrow morning.
+                # ast-grep-ignore: log-no-print  # same daemon JSON stream as above
+                print(
+                    json.dumps(
+                        {
+                            "timestamp": report.timestamp,
+                            "heartbeat": True,
+                            "runs_checked": report.runs_checked,
+                            "campaigns_advanced": report.campaigns_advanced,
+                            "next_tick_seconds": interval_seconds,
+                        }
+                    ),
+                    flush=True,
+                )
+                next_heartbeat = time.monotonic() + heartbeat_seconds
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import uuid
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ai_experiments.config_loading import load_stored
 from ai_experiments.core.logger import get_logger
 from ai_experiments.schemas import (
     ArtifactEntry,
@@ -17,10 +21,9 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
-from ai_experiments.settings import get_settings
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
 #: Marks a ``RunStatus`` the store synthesized because the real file was
 #: missing or unreadable. Such a status describes the *store's* inability to
@@ -29,6 +32,42 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 SYNTHETIC_STATUS_KEY = "_synthetic"
+
+#: Where a project keeps its runs, relative to the project root.
+DEFAULT_RUNS_SUBDIR = Path("outputs/experiments/runs")
+
+#: What makes a directory the root of a project. The run store belongs to the
+#: project, not to whatever directory a command happened to run in.
+PROJECT_MARKERS = (".git", "pyproject.toml")
+
+
+def default_runs_root(start: str | Path | None = None) -> Path:
+    """Resolve the run store an `iax` command without `--runs-dir` should use.
+
+    An agent submits from the repo root and asks for status from a
+    subdirectory. Resolving against the cwd made those two different stores,
+    and the second one empty (#21), so the search walks up instead:
+
+    1. ``IAX_RUNS_DIR``, when set — an explicit answer beats any search.
+    2. The nearest directory at or above the start that already holds a store.
+       An existing store is the strongest evidence of where the runs live.
+    3. The nearest directory at or above the start holding a project marker.
+    4. The start directory, for a project that has neither.
+    """
+    # Read raw, not via get_settings(): the setting carries a non-empty default, so a
+    # cached read can never say "unset" -- and "unset" is what selects the walk-up below.
+    override = os.environ.get("IAX_RUNS_DIR")  # ast-grep-ignore: settings-module
+    if override:
+        return Path(override).expanduser().resolve()
+    here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    candidates = (here, *here.parents)
+    for directory in candidates:
+        if (directory / DEFAULT_RUNS_SUBDIR).is_dir():
+            return directory / DEFAULT_RUNS_SUBDIR
+    for directory in candidates:
+        if any((directory / marker).exists() for marker in PROJECT_MARKERS):
+            return directory / DEFAULT_RUNS_SUBDIR
+    return here / DEFAULT_RUNS_SUBDIR
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -39,9 +78,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     ``os.replace``-ing it onto the target is atomic on POSIX and Windows, so
     readers see either the old file or the new one.
 
-    Note this makes writes *indivisible*; it does not make read-modify-write
-    sequences *serializable*. Concurrent updaters still race, losing whole
-    fields to last-writer-wins (see issue #30).
+    Note this makes writes *indivisible*; read-modify-write sequences are made
+    serializable by ``FilesystemRunStore.update_status`` taking the per-run
+    ``status.lock`` sidecar.
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
@@ -52,18 +91,49 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def with_resolved_working_dir(manifest: ExperimentManifest) -> ExperimentManifest:
+    """Copy of ``manifest`` whose ``workload.working_dir`` is absolute."""
+    working_dir = Path(manifest.workload.working_dir)
+    if working_dir.is_absolute():
+        return manifest
+    resolved = manifest.model_copy(deep=True)
+    resolved.workload.working_dir = str(working_dir.resolve())
+    return resolved
+
+
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
     def __init__(self, root: str | Path | None = None, capture_repro: bool = True) -> None:
-        self.root = Path(root or get_settings().runs_dir)
+        self.root = Path(root).expanduser().resolve() if root is not None else default_runs_root()
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
+        """Persist ``manifest`` into a fresh run directory.
+
+        The run directory keeps two manifests when they differ, because they
+        answer two different questions:
+
+        ``manifest.yaml`` -- **what was executed**. ``working_dir`` is resolved
+        here, once, against the submitting process's CWD, the only process
+        that knows what a relative path in the manifest means. Everything
+        downstream (the detached worker, the Ray runtime_env upload, ``iax
+        rerun``) reads it from a different CWD, so a relative path stored
+        verbatim would be resolved a second time against the wrong directory.
+
+        ``manifest.source.yaml`` -- **what was submitted**, byte for byte. A
+        relative ``working_dir`` is what makes a manifest portable: it is the
+        form that can be shared, committed, and submitted on another machine.
+        Resolving is necessary to run the thing; destroying the authored form
+        while doing so would trade one kind of reproducibility for another.
+        """
+        resolved = with_resolved_working_dir(manifest)
         run_id = f"run_{uuid.uuid4().hex[:12]}"
         run_dir = self.root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
-        (run_dir / "manifest.yaml").write_text(manifest.to_yaml())
+        (run_dir / "manifest.yaml").write_text(resolved.to_yaml())
+        if resolved is not manifest:
+            (run_dir / "manifest.source.yaml").write_text(manifest.to_yaml())
         (run_dir / "events.jsonl").touch()
         (run_dir / "artifacts").mkdir()
         if self.capture_repro:
@@ -71,8 +141,9 @@ class FilesystemRunStore:
 
             # Reproducibility capture must never block a submit.
             try:
-                capture_repro(run_dir, manifest.workload.working_dir)
+                capture_repro(run_dir, resolved.workload.working_dir)
             except Exception as exc:
+                # Best effort: repro capture must never block a submit.
                 log.debug("repro_capture_failed", run_id=run_id, error=str(exc))
         return run_id, run_dir
 
@@ -81,6 +152,21 @@ class FilesystemRunStore:
 
     def status_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "status.json"
+
+    def _status_lock_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "status.lock"
+
+    @contextmanager
+    def _status_lock(self, run_id: str) -> Iterator[None]:
+        fd = os.open(self._status_lock_path(run_id), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def write_handle(self, handle: RunHandle) -> None:
         """Establish a run's initial status. Only valid for a fresh run.
@@ -98,7 +184,7 @@ class FilesystemRunStore:
                 "write_handle establishes a run's initial status; "
                 "use update_status to modify an existing one"
             )
-        self.write_status(
+        self._write_status(
             RunStatus(
                 run_id=handle.run_id,
                 backend=handle.backend,
@@ -110,7 +196,7 @@ class FilesystemRunStore:
             )
         )
 
-    def write_status(self, status: RunStatus) -> None:
+    def _write_status(self, status: RunStatus) -> None:
         atomic_write_text(
             self.status_path(status.run_id),
             json.dumps(status.model_dump(mode="json"), indent=2),
@@ -144,23 +230,66 @@ class FilesystemRunStore:
             return self._synthetic_status(run_id, f"status file corrupt: {exc}")
 
     def update_status(self, run_id: str, **updates: object) -> RunStatus:
-        status = self.read_status(run_id)
-        if status.details.get(SYNTHETIC_STATUS_KEY):
-            # The read did not describe the run, so this update has no base to
-            # merge onto. Writing it would fabricate a status and, for a
-            # corrupt file, destroy the evidence of what went wrong.
-            raise RuntimeError(f"cannot update status for {run_id}: {status.error}")
-        data = status.model_dump()
-        if isinstance(updates.get("details"), dict):
-            updates["details"] = {
-                **status.details,
-                **updates["details"],  # type: ignore[index]
-            }
-        data.update(updates)
-        data["updated_at"] = utc_now()
-        updated = RunStatus(**data)
-        self.write_status(updated)
-        return updated
+        """Merge updates into a run's status under a per-run advisory lock.
+
+        The ``status.lock`` sidecar serializes cooperating local processes
+        because ``update_status`` is the intended status mutation path. This
+        does not protect against callers that bypass it, and ``fcntl.flock`` is
+        unreliable over NFS.
+        """
+        try:
+            with self._status_lock(run_id):
+                status = self.read_status(run_id)
+                if status.details.get(SYNTHETIC_STATUS_KEY):
+                    # The read did not describe the run, so this update has no base to
+                    # merge onto. Writing it would fabricate a status and, for a
+                    # corrupt file, destroy the evidence of what went wrong.
+                    raise RuntimeError(f"cannot update status for {run_id}: {status.error}")
+                data = status.model_dump()
+                if isinstance(updates.get("details"), dict):
+                    updates["details"] = {
+                        **status.details,
+                        **updates["details"],  # type: ignore[index]
+                    }
+                data.update(updates)
+                data["updated_at"] = utc_now()
+                updated = RunStatus(**data)
+                self._write_status(updated)
+                return updated
+        except FileNotFoundError as exc:
+            if exc.filename and Path(exc.filename) == self._status_lock_path(run_id):
+                status = self.read_status(run_id)
+                if status.details.get(SYNTHETIC_STATUS_KEY):
+                    raise RuntimeError(
+                        f"cannot update status for {run_id}: {status.error}"
+                    ) from None
+            raise
+
+    def cancel_marker_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "cancel.requested"
+
+    def request_cancel(self, run_id: str) -> None:
+        """Record that *iax* asked this run to stop.
+
+        A separate, create-once file remains the right shape for cancellation:
+        the marker has one writer and one meaning, and its presence is the
+        signal. It survives lost updates by construction because no later
+        status merge can erase an already-created file.
+        """
+        try:
+            fd = os.open(
+                self.cancel_marker_path(run_id),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            return  # already requested; the first request is the one that counts
+        with os.fdopen(fd, "w") as fh:
+            fh.write(utc_now().isoformat() + "\n")
+
+    def cancel_requested(self, run_id: str) -> bool:
+        """Whether a cancellation was requested for this run."""
+        return self.cancel_marker_path(run_id).exists()
 
     def append_event(self, run_id: str, event: RunEvent) -> None:
         events_path = self.run_dir(run_id) / "events.jsonl"
@@ -168,13 +297,8 @@ class FilesystemRunStore:
             fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def read_events(self, run_id: str, tail: int | None = None) -> list[RunEvent]:
-        events_path = self.run_dir(run_id) / "events.jsonl"
-        if not events_path.exists():
-            return []
-        lines = events_path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [RunEvent(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.run_dir(run_id) / "events.jsonl", tail)
+        return [RunEvent(**json.loads(line)) for line in lines]
 
     def metrics_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "metrics.jsonl"
@@ -188,13 +312,8 @@ class FilesystemRunStore:
         atomic_write_text(self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else ""))
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
-        path = self.metrics_path(run_id)
-        if not path.exists():
-            return []
-        lines = path.read_text().splitlines()
-        if tail is not None:
-            lines = lines[-tail:]
-        return [MetricPoint(**json.loads(line)) for line in lines if line.strip()]
+        lines = _read_lines(self.metrics_path(run_id), tail)
+        return [MetricPoint(**json.loads(line)) for line in lines]
 
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
@@ -218,11 +337,27 @@ class FilesystemRunStore:
             )
         return entries
 
-    def read_manifest(self, run_id: str) -> ExperimentManifest | None:
-        path = self.run_dir(run_id) / "manifest.yaml"
+    def manifest_path(self, run_id: str) -> Path:
+        """Return the manifest as executed: absolute ``working_dir``, safe from any CWD."""
+        return self.run_dir(run_id) / "manifest.yaml"
+
+    def source_manifest_path(self, run_id: str) -> Path:
+        """Return the manifest as submitted, verbatim. Absent when the two are identical."""
+        return self.run_dir(run_id) / "manifest.source.yaml"
+
+    def read_manifest(self, run_id: str, source: bool = False) -> ExperimentManifest | None:
+        """Return the run's manifest; ``source=True`` for the portable original.
+
+        ``source`` falls back to the executed manifest when no separate
+        original was kept, so callers that want "the manifest as the author
+        wrote it" always get the closest available answer.
+        """
+        path = self.source_manifest_path(run_id) if source else Path()
+        if not path.is_file():
+            path = self.manifest_path(run_id)
         if not path.exists():
             return None
-        return ExperimentManifest.from_yaml(path)
+        return load_stored(ExperimentManifest, path)
 
     def list_runs(self) -> Iterable[str]:
         if not self.root.exists():
@@ -234,3 +369,18 @@ class FilesystemRunStore:
             for path in self.root.iterdir()
             if path.is_dir() and not path.name.startswith("_")
         )
+
+
+def _read_lines(path: Path, tail: int | None) -> list[str]:
+    """Return the non-empty lines of an append-only file, at most ``tail`` of them.
+
+    Both these files grow without bound while a run does, and every monitoring
+    tick reads the last few. Streaming into a bounded deque keeps that read
+    proportional to what the caller asked for, not to how long the run has
+    been going.
+    """
+    if not path.exists():
+        return []
+    with path.open() as handle:
+        lines = deque(handle, maxlen=tail) if tail is not None else handle.readlines()
+    return [line for line in lines if line.strip()]

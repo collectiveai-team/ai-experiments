@@ -20,7 +20,8 @@ monitor job too.
 ## Run-store housekeeping
 
 Runs live as directories under the store root (`--runs-dir`, else `$IAX_RUNS_DIR`,
-else `outputs/experiments/runs`). To clean up, inspect each run's status first:
+else `outputs/experiments/runs` under the nearest project root above the current
+directory). To clean up, inspect each run's status first:
 
 ```bash
 for d in <runs_dir>/run_*; do

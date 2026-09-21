@@ -27,18 +27,20 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from ai_experiments.config_loading import ConfigModel
+from ai_experiments.schema_errors import describe
 from ai_experiments.settings import get_settings
 
 ClusterProvider = Literal["local", "aws", "gcp", "azure"]
 _RAY = shutil.which("ray") or "ray"
 
 
-class ClusterProfile(BaseModel):
+class ClusterProfile(ConfigModel):
     name: str
     provider: ClusterProvider = "local"
     address: str | None = None
@@ -109,10 +111,17 @@ def load_clusters(  # ast-grep-ignore: no-dict-return-annotation
         raise ClusterConfigError(
             f"{config_path}: expected a `clusters:` mapping of name -> profile"
         )
-    profiles: dict[str, ClusterProfile] = {}
-    for name, body in entries.items():
-        profiles[str(name)] = ClusterProfile(name=str(name), **(body or {}))
-    return profiles
+    return {str(name): _profile(config_path, name, body) for name, body in entries.items()}
+
+
+def _profile(config_path: Path, name: Any, body: Any) -> ClusterProfile:
+    """Parse one `clusters.yaml` entry, naming the cluster it came from on failure."""
+    try:
+        return ClusterProfile(name=str(name), **(body or {}))
+    except ValidationError as exc:
+        raise ClusterConfigError(
+            f"{config_path}: cluster '{name}': {describe(ClusterProfile, exc)}"
+        ) from exc
 
 
 def get_cluster(name: str, path: str | Path | None = None) -> ClusterProfile:

@@ -12,6 +12,21 @@ dependencies = [
   "typer>=0.12.0",
 ]
 keywords = ["experiments", "training", "ray", "mlops", "monitoring"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  # The supervisor uses os.killpg and start_new_session to reap a whole
+  # process group, so the worker lifecycle is POSIX-only (#31).
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 ray = [
@@ -24,6 +39,11 @@ server = [
 mlflow = [
   "mlflow-skinny>=2.10.0",
 ]
+# Off Linux there is no /proc, so the daemon cannot tell which process a pid
+# names and refuses to kill an orphaned workload. psutil restores that (#31).
+psutil = [
+  "psutil>=5.9.0",
+]
 dev = [
   "pytest>=8.0.0",
   "pytest-randomly>=3.15",
@@ -34,6 +54,7 @@ dev = [
   # that blocks a commit must not disagree about what counts as a lint error. A floor is not
   # enough: uv resolved >=0.15.22 straight to 0.16.8, reintroducing the skew.
   "ruff==0.15.22",
+  "psutil>=5.9.0",
 ]
 
 [project.scripts]
@@ -138,6 +159,7 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "INP001"]
 "examples/**" = ["INP001"]   # standalone scripts, deliberately not a package
+"ai_experiments/templates/**" = ["INP001"]   # scaffolded-file source, copied out by `iax new`, never imported
 "ai_experiments/planner/**" = ["S311"]   # search sampling, not security
 
 # Typer/FastAPI declare parameters via call-valued defaults; that is the framework's

@@ -4,12 +4,14 @@ from pathlib import Path  # noqa: TC003  # Typer resolves this annotation at run
 
 import typer
 
-from ai_experiments.cli import _echo_json, cluster_app
+from ai_experiments.cli import (
+    IaxCommand,
+    _echo_json,
+    cluster_app,
+)
 
-# --- cluster commands ---------------------------------------------------------
 
-
-@cluster_app.command("list")
+@cluster_app.command("list", cls=IaxCommand)
 def cluster_list(
     config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
 ) -> None:
@@ -23,7 +25,7 @@ def cluster_list(
         typer.echo(f"{profile.name:<16} {profile.provider:<6} {profile.address or '-'}")
 
 
-@cluster_app.command("status")
+@cluster_app.command("status", cls=IaxCommand)
 def cluster_status_cmd(
     name: str = typer.Argument(...),
     config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
@@ -33,7 +35,7 @@ def cluster_status_cmd(
     _echo_json(cluster_status(get_cluster(name, config)))
 
 
-@cluster_app.command("up")
+@cluster_app.command("up", cls=IaxCommand)
 def cluster_up_cmd(
     name: str = typer.Argument(...),
     config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),
@@ -48,7 +50,7 @@ def cluster_up_cmd(
         raise typer.Exit(code=result.returncode)
 
 
-@cluster_app.command("down")
+@cluster_app.command("down", cls=IaxCommand)
 def cluster_down_cmd(
     name: str = typer.Argument(...),
     config: Path | None = typer.Option(None, "--config", help="clusters.yaml path"),

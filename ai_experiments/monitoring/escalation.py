@@ -19,7 +19,7 @@ import subprocess
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, utc_now
 
@@ -95,6 +95,9 @@ class EscalationLadder:
 
 
 class EscalationRequest(BaseModel):
+    """One suspicious run, waiting for an agent to diagnose it."""
+
+    kind: Literal["run"] = "run"
     run_id: str
     created_at: datetime = Field(default_factory=utc_now)
     decision: MonitorDecision
@@ -104,6 +107,70 @@ class EscalationRequest(BaseModel):
         "Diagnose with the diagnosing-experiments skill; cancel via "
         "`iax cancel <run_id>` if it cannot recover."
     )
+
+
+class CampaignReview(BaseModel):
+    """One campaign asking an agent to reshape its search.
+
+    Written by the orchestrator when ``analysis.agent_review`` is on. It shares
+    the ``_escalations/`` inbox with run escalations but has none of their
+    fields, so both kinds carry a ``kind`` discriminator and the inbox reader
+    dispatches on the filename (#4).
+    """
+
+    kind: Literal["campaign"] = "campaign"
+    type: str = "campaign_review"
+    campaign_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    summary: dict = Field(default_factory=dict)
+    note: str = ""
+
+
+class ChangeRequest(BaseModel):
+    """One campaign that cannot proceed until somebody changes the code.
+
+    A campaign answers a question about parameters. When the evidence says the
+    blocker is a defect instead — every trial failing on the same error, a
+    workload that reports nothing, a harness that returns NaN at the edge of
+    the space — no amount of searching fixes it, and spending the budget only
+    buys more copies of the same failure.
+
+    This is the hand-off that leaves the loop: a ticket a development flow can
+    pick up. It carries evidence, not a diagnosis to trust — `trial_ids` and
+    `run_ids` point at records the reader can check, and `error_tail` is
+    workload output, so it is untrusted text that must never be interpolated
+    into a shell command.
+    """
+
+    kind: Literal["change"] = "change"
+    campaign_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    title: str
+    rationale: str = ""
+    #: Where the reporter thinks the defect lives. A hint for the flow, not a fact.
+    files: list[str] = Field(default_factory=list)
+    trial_ids: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    error_tail: str = ""
+    #: What proves the change worked, in one sentence a test can be written from.
+    acceptance: str = ""
+    #: Stable across repeated escalations of the same defect, so a connector
+    #: can refuse to launch the same development flow twice.
+    source_key: str = ""
+    note: str = (
+        "The campaign stopped with `blocked_on_change`. Land the fix on an "
+        "experimentation branch, then start a new campaign from the same goal: "
+        "trials measured before a code change are not comparable with the ones after."
+    )
+
+
+EscalationItem = EscalationRequest | CampaignReview | ChangeRequest
+
+#: Filename prefix that marks a campaign review inside the escalation inbox.
+CAMPAIGN_PREFIX = "campaign_"
+
+#: Filename prefix that marks a development hand-off inside the inbox.
+CHANGE_PREFIX = "change_"
 
 
 def escalate(
@@ -147,14 +214,64 @@ def clear_escalation(store: FilesystemRunStore, run_id: str) -> None:
     path.unlink(missing_ok=True)
 
 
-def list_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
+def clear_campaign_review(store: FilesystemRunStore, campaign_id: str) -> None:
+    path = store.root / "_escalations" / f"{CAMPAIGN_PREFIX}{campaign_id}.json"
+    path.unlink(missing_ok=True)
+
+
+def list_escalations(store: FilesystemRunStore) -> list[EscalationItem]:
+    """Every open work item for an agent: suspicious runs and campaign reviews.
+
+    This is the agent's inbox, so it must never raise. A file it cannot parse
+    is skipped — one malformed payload used to break every later read.
+    """
     escalations_dir = store.root / "_escalations"
     if not escalations_dir.exists():
         return []
-    return [
-        EscalationRequest(**json.loads(path.read_text()))
-        for path in sorted(escalations_dir.glob("*.json"))
-    ]
+    read = (_read_item(path) for path in sorted(escalations_dir.glob("*.json")))
+    return [item for item in read if item is not None]
+
+
+def _read_item(path: Path) -> EscalationItem | None:
+    """Parse one inbox file, or None when it is unreadable or malformed."""
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        if path.name.startswith(CHANGE_PREFIX):
+            return ChangeRequest(**payload)
+        if path.name.startswith(CAMPAIGN_PREFIX):
+            return CampaignReview(**payload)
+        return EscalationRequest(**payload)
+    except ValidationError:
+        return None
+
+
+def record_change_request(store: FilesystemRunStore, request: ChangeRequest) -> Path:
+    """Put a development hand-off in the inbox and return where it landed."""
+    escalations_dir = store.root / "_escalations"
+    escalations_dir.mkdir(parents=True, exist_ok=True)
+    path = escalations_dir / f"{CHANGE_PREFIX}{request.campaign_id}.json"
+    path.write_text(request.model_dump_json(indent=2))
+    return path
+
+
+def clear_change_request(store: FilesystemRunStore, campaign_id: str) -> None:
+    path = store.root / "_escalations" / f"{CHANGE_PREFIX}{campaign_id}.json"
+    path.unlink(missing_ok=True)
+
+
+def list_change_requests(store: FilesystemRunStore) -> list[ChangeRequest]:
+    return [i for i in list_escalations(store) if isinstance(i, ChangeRequest)]
+
+
+def list_run_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
+    return [i for i in list_escalations(store) if isinstance(i, EscalationRequest)]
+
+
+def list_campaign_reviews(store: FilesystemRunStore) -> list[CampaignReview]:
+    return [i for i in list_escalations(store) if isinstance(i, CampaignReview)]
 
 
 def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: datetime) -> bool:

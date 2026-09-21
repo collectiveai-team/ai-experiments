@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 
-from ai_experiments.monitoring.escalation import EscalationRequest, list_escalations
+from ai_experiments.monitoring.escalation import EscalationRequest, list_run_escalations
 
 if TYPE_CHECKING:
     from ai_experiments.store import FilesystemRunStore
@@ -18,6 +18,11 @@ def build_escalations_router(store: FilesystemRunStore) -> APIRouter:
 
     @router.get("/api/escalations")
     def escalations() -> list[EscalationRequest]:
-        return list_escalations(store)
+        """List the runs the monitoring loop has flagged, campaign reviews excluded.
+
+        `_escalations/` holds both kinds; this route is the run-level one, and a
+        campaign review answers a different question on a different path.
+        """
+        return list_run_escalations(store)
 
     return router

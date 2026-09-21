@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
-    RunStatus,
+    RunHandle,
     WorkloadSpec,
 )
 from ai_experiments.server.app import create_app
@@ -29,8 +29,8 @@ def _seed_run(store: FilesystemRunStore) -> str:
         workload=WorkloadSpec(entrypoint="python train.py"),
     )
     run_id, run_dir = store.create_run(manifest)
-    store.write_status(
-        RunStatus(
+    store.write_handle(
+        RunHandle(
             run_id=run_id,
             backend="local",
             status="running",
@@ -68,7 +68,7 @@ def test_health(client):
 
 def test_health_response_shape_is_stable(client):
     body = client.get("/api/health").json()
-    assert set(body) == {"status", "runs_root"}
+    assert set(body) == {"status", "runs_root", "mutations"}
 
 
 def test_dashboard_served(client):
@@ -397,6 +397,9 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "trials_total",
         "best",
         "history",
+        "created_at",
+        "last_advanced_at",
+        "agent_calls",
     }
     assert body["summary"]["best"] == {
         "trial_id": "t000",
@@ -405,7 +408,13 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "params": {"x": 0.5},
     }
     assert body["summary"]["history"] == [
-        {"trial_id": "t000", "objective_value": 0.5, "params": {"x": 0.5}}
+        {
+            "trial_id": "t000",
+            "status": "completed",
+            "objective_value": 0.5,
+            "params": {"x": 0.5},
+            "error": None,
+        }
     ]
     goal = campaign_store.read_goal(state.campaign_id)
     assert set(body["summary"]["budget"]) == {"max_trials", "max_gpu_hours", "gpu_hour_rate"}
@@ -515,3 +524,74 @@ def test_clusters_endpoint_without_config(client, monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.config/iax/clusters.yaml
 
     assert client.get("/api/clusters").json() == []
+
+
+# -- unauthenticated mutations over the network (#24) ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("host", "loopback"),
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("localhost", True),
+        ("0.0.0.0", False),  # noqa: S104  # exercising the is_loopback() classifier, not a bind
+        ("192.168.1.40", False),
+        ("::", False),
+        ("dashboard.internal", False),
+    ],
+)
+def test_what_counts_as_reachable_only_from_this_machine(host, loopback):
+    from ai_experiments.server.app import is_loopback
+
+    assert is_loopback(host) is loopback
+
+
+def _mutations(store, run_id: str, campaign_id: str) -> list[str]:
+    return [
+        f"/api/runs/{run_id}/cancel",
+        f"/api/campaigns/{campaign_id}/stop",
+        f"/api/campaigns/{campaign_id}/pause",
+        f"/api/campaigns/{campaign_id}/resume",
+    ]
+
+
+def test_a_networked_dashboard_refuses_every_mutation(store):
+    """Anyone who can route to the port could otherwise cancel a week of work."""
+    run_id = _seed_run(store)
+    campaign_id = _seed_campaign(store)[1].campaign_id
+    client = TestClient(create_app(store, host="0.0.0.0"))  # noqa: S104  # test fixture value
+
+    for path in _mutations(store, run_id, campaign_id):
+        response = client.post(path)
+        assert response.status_code == 403, path
+        assert "--allow-remote-mutations" in response.json()["detail"]
+
+    assert store.read_status(run_id).status == "running"
+
+
+def test_a_networked_dashboard_still_serves_every_read(store):
+    run_id = _seed_run(store)
+    client = TestClient(create_app(store, host="0.0.0.0"))  # noqa: S104  # test fixture value
+
+    assert client.get("/api/runs").status_code == 200
+    assert client.get(f"/api/runs/{run_id}").status_code == 200
+    assert client.get(f"/api/runs/{run_id}/metrics").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "read-only"
+
+
+def test_the_operator_can_ask_for_networked_mutations_by_name(store):
+    run_id = _seed_run(store)
+    client = TestClient(
+        create_app(store, host="0.0.0.0", allow_remote_mutations=True)  # noqa: S104  # test fixture value
+    )
+
+    assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "allowed"
+
+
+def test_the_default_loopback_dashboard_is_unchanged(client, store):
+    run_id = _seed_run(store)
+
+    assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
+    assert client.get("/api/health").json()["mutations"] == "allowed"
