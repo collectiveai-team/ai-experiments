@@ -20,3 +20,7 @@ manual_test/
 team.json
 *.pyc
 *.pyo
+
+# El link privado del dataset y el artefacto descargado nunca se versionan.
+examples/maintenance_events/dataset.local.toml
+examples/maintenance_events/.cache/

@@ -1,0 +1,140 @@
+"""El workload: un trial de la campaña maintenance-events.
+
+Contrato con iax: los parámetros llegan como ``--nombre-valor`` (las claves de
+``search_space`` son identificadores de Python y ``build_trial_manifest`` las
+traduce a la grafía con guiones que argparse declara por convención), y las
+observaciones salen por stdout como líneas ``IAX_METRIC {json}``.
+
+Una sutileza que importa: ``extract_objective`` se queda con el **mejor** valor
+observado de la métrica objetivo, no con el último. Por eso las métricas por
+fold viajan bajo ``fold_pr_auc`` y la objetivo, ``pr_auc``, se emite una sola
+vez al final con el promedio. Si ambas compartieran nombre, la campaña
+registraría el fold más afortunado y el planner perseguiría suerte.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+from threadpoolctl import threadpool_limits
+
+from maintenance_events import dataset as ds
+from maintenance_events.evaluation import evaluate, folds_to_frame
+from maintenance_events.features import build_feature_table
+from maintenance_events.models import MODELS, make_model
+from maintenance_events.synthetic import synthetic_dataset
+from maintenance_events.windows import (
+    HORIZON_DAYS,
+    build_windows,
+    label_coverage,
+    select_events,
+)
+
+
+def report_metric(**values: object) -> None:
+    print("IAX_METRIC " + json.dumps(values))
+    sys.stdout.flush()
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--window-days", type=int, default=90)
+    parser.add_argument("--resample-freq", default="1h")
+    parser.add_argument("--label-source", default="union", choices=["mapro", "operator", "union"])
+    parser.add_argument("--model", default="hist_gb", choices=list(MODELS))
+    parser.add_argument("--learning-rate", type=float, default=0.1)
+    parser.add_argument("--max-leaf-nodes", type=int, default=31)
+    parser.add_argument("--min-samples-leaf", type=int, default=10)
+    parser.add_argument("--l2", type=float, default=0.0)
+    parser.add_argument("--max-bins", type=int, default=255)
+    parser.add_argument("--class-weight", default="balanced")
+    parser.add_argument("--n-folds", type=int, default=5)
+    parser.add_argument("--offline-power-threshold", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ignore-label-coverage",
+        action="store_true",
+        help="etiqueta negativas las ventanas fuera del período registrado por la fuente",
+    )
+    parser.add_argument("--self-test", action="store_true", help="corre sobre datos sintéticos")
+    return parser.parse_args(argv)
+
+
+def resolve_thread_limit() -> int | None:
+    """Cuántos hilos puede usar BLAS/OpenMP dentro de un trial.
+
+    iax corre varios trials en paralelo, así que cada uno oversubscribe la
+    máquina. Con 435 ventanas el trabajo por hilo es minúsculo y la
+    sincronización domina: medido, el mismo fit tarda 22.9 s con los 16 hilos
+    del host y 9.9 s con uno solo. El default es 1; ``0`` devuelve los límites
+    de sklearn por si alguien corre un trial aislado.
+    """
+    raw = os.environ.get("MAINTENANCE_EVENTS_THREADS", "1")
+    limit = int(raw)
+    return None if limit <= 0 else limit
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    if args.self_test:
+        signals, events = synthetic_dataset(seed=args.seed)
+    else:
+        signals, events = ds.load()
+
+    resampled = signals.resample(args.resample_freq).mean()
+    event_dates = select_events(events, args.label_source)
+    coverage = None if args.ignore_label_coverage else label_coverage(events, args.label_source)
+    windows = build_windows(
+        resampled, event_dates, window_days=args.window_days, coverage=coverage
+    )
+    X, y, as_of = build_feature_table(windows, offline_power_threshold=args.offline_power_threshold)
+
+    if X.empty:
+        print("sin ventanas válidas para esta configuración", file=sys.stderr)
+        report_metric(step=0, pr_auc=0.0, pr_auc_std=0.0, auroc=0.0,
+                      recall_at_p50=0.0, baseline_pr_auc=0.0, valid_folds=0)
+        return 0
+
+    factory = make_model(
+        args.model,
+        learning_rate=args.learning_rate,
+        max_leaf_nodes=args.max_leaf_nodes,
+        min_samples_leaf=args.min_samples_leaf,
+        l2=args.l2,
+        max_bins=args.max_bins,
+        class_weight=None if args.class_weight in ("", "none", "None") else args.class_weight,
+        seed=args.seed,
+    )
+    with threadpool_limits(limits=resolve_thread_limit()):
+        folds, summary = evaluate(
+            X, y, as_of, factory, n_folds=args.n_folds, horizon_days=HORIZON_DAYS
+        )
+
+    for fold in folds:
+        report_metric(**fold.as_metric())
+    report_metric(step=len(folds), **summary)
+
+    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
+    if artifacts:
+        out = Path(artifacts)
+        folds_to_frame(folds).to_csv(out / "folds.csv", index=False)
+        pd.concat([X, y], axis=1).to_parquet(out / "features.parquet")
+        (out / "summary.json").write_text(
+            json.dumps({**summary, "params": vars(args)}, indent=2, default=str)
+        )
+
+    print(
+        f"pr_auc={summary['pr_auc']:.4f} (baseline {summary['baseline_pr_auc']:.4f}) "
+        f"sobre {summary['valid_folds']} folds válidos, {len(X)} ventanas"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

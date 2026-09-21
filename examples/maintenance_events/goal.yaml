@@ -1,0 +1,54 @@
+# Campaña de referencia sobre datos industriales reales.
+#   iax campaign validate examples/maintenance_events/goal.yaml
+#   iax campaign start    examples/maintenance_events/goal.yaml
+#   iax daemon
+#
+# Necesita el dataset: ver examples/maintenance_events/README.md.
+# Para probar el loop sin dataset, agregá "--self-test" a workload.args.
+
+goal: "Maximizar PR-AUC prediciendo una limpieza de condensador a 15 días"
+name: maintenance-events
+
+objective:
+  metric: pr_auc
+  # El PR-AUC crudo no es comparable entre trials: cada label_source tiene su
+  # propia tasa base, así que "union" arranca arriba por tener más positivas,
+  # no por ser más predecible. El objetivo es la mejora sobre la tasa base que
+  # el propio trial reporta.
+  baseline_metric: baseline_pr_auc
+  mode: max
+
+search_space:
+  window_days:      { type: choice, values: [30, 60, 90, 120, 180] }
+  resample_freq:    { type: choice, values: ["1h", "6h", "1D"] }
+  label_source:     { type: choice, values: ["mapro", "operator", "union"] }
+  model:            { type: choice, values: ["hist_gb", "logreg"] }
+  learning_rate:    { type: loguniform, low: 0.01, high: 0.3 }
+  max_leaf_nodes:   { type: choice, values: [7, 15, 31] }
+  min_samples_leaf: { type: choice, values: [5, 10, 20] }
+  max_bins:         { type: choice, values: [32, 64, 128, 255] }
+
+workload:
+  entrypoint: "uv run --project examples/maintenance_events python -m maintenance_events.train"
+  args: ["--n-folds", "5"]
+  working_dir: "."
+
+budget:
+  max_trials: 24
+  max_parallel: 4
+  max_hours: 1.0
+
+strategy:
+  name: adaptive
+  seed: 7
+  exploration: 0.4
+  top_k: 3
+
+backend: local
+
+monitoring:
+  interval_seconds: 20
+  stuck_after_minutes: 10
+  timeout_seconds: 900
+  auto_kill: true
+  fatal_on_nan: true
