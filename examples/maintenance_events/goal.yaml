@@ -1,5 +1,5 @@
 # Campaña de referencia sobre datos industriales reales.
-#   iax campaign validate examples/maintenance_events/goal.yaml
+#   iax campaign validate examples/maintenance_events/goal.yaml --strict
 #   iax campaign start    examples/maintenance_events/goal.yaml
 #   iax daemon
 #
@@ -14,29 +14,64 @@ objective:
   # El PR-AUC crudo no es comparable entre trials: cada label_source tiene su
   # propia tasa base, así que "union" arranca arriba por tener más positivas,
   # no por ser más predecible. El objetivo es la mejora sobre la tasa base que
-  # el propio trial reporta.
+  # el propio trial reporta, apareada dentro de cada fold.
   baseline_metric: baseline_pr_auc
   mode: max
+  # Los folds son evaluaciones independientes de la misma configuración, no
+  # etapas de un entrenamiento. Quedarse con el mejor sería max-of-k, sesgado
+  # hacia arriba por exactamente el ruido que los folds existen para medir.
+  aggregate: mean
 
 search_space:
-  window_days:      { type: choice, values: [30, 60, 90, 120, 180] }
-  resample_freq:    { type: choice, values: ["1h", "6h", "1D"] }
-  label_source:     { type: choice, values: ["mapro", "operator", "union"] }
-  model:            { type: choice, values: ["hist_gb", "logreg"] }
-  learning_rate:    { type: loguniform, low: 0.01, high: 0.3 }
-  max_leaf_nodes:   { type: choice, values: [7, 15, 31] }
-  min_samples_leaf: { type: choice, values: [5, 10, 20] }
-  max_bins:         { type: choice, values: [32, 64, 128, 255] }
+  # `changes_data` marca las dimensiones que cambian los datos o las etiquetas
+  # sobre las que se evalúa el trial. Sin `baseline_metric` la búsqueda
+  # optimizaría la tajada más fácil en vez del modelo.
+  window_days:   { type: choice, values: [30, 60, 90, 120, 180], changes_data: true }
+  resample_freq: { type: choice, values: ["1h", "6h", "1D"],     changes_data: true }
+  label_source:  { type: choice, values: [mapro, operator, union], changes_data: true }
+  model:         { type: choice, values: [hist_gb, logreg] }
+
+  # Perillas de gradient boosting. Sorteárselas a una regresión logística
+  # produce trials que son duplicados invisibles para el deduplicador, y su
+  # dispersión se lee como evidencia de que las perillas no hacen nada.
+  learning_rate:
+    { type: loguniform, low: 0.01, high: 0.3, when: { model: [hist_gb] } }
+  max_leaf_nodes:
+    { type: choice, values: [7, 15, 31],     when: { model: [hist_gb] } }
+  min_samples_leaf:
+    { type: choice, values: [5, 10, 20],     when: { model: [hist_gb] } }
+  max_bins:
+    { type: choice, values: [32, 64, 128, 255], when: { model: [hist_gb] } }
 
 workload:
   entrypoint: "uv run --project examples/maintenance_events python -m maintenance_events.train"
-  args: ["--n-folds", "5"]
+  # 12 folds sale del cálculo de poder en README.md § "Cuántos folds": con la
+  # sd del lift por fold medida en la campaña anterior (0.113 agrupada sobre
+  # 24 trials x 5 folds), 5 folds sólo detectan un lift de 0.14 — más grande
+  # que el mejor lift que esa campaña observó. Con 12 el mínimo detectable
+  # baja a ~0.09.
+  args: ["--n-folds", "12"]
   working_dir: "."
+
+# Qué tiene que mostrar esta campaña para que se le crea. Escrito antes de
+# correr nada, así después la respuesta es aritmética y no una discusión.
+success_criteria:
+  # 0.05 de lift sobre la tasa base es lo mínimo que cambiaría una decisión de
+  # mantenimiento; por debajo el modelo no paga el costo de operarlo.
+  min_objective: 0.05
+  # Un fold sin positivas no puntúa. Menos de 10 folds válidos deja el
+  # intervalo demasiado ancho para que `min_objective` signifique algo.
+  min_observations: 10
+  # El mejor de 24 trials ruidosos le gana al segundo por construcción.
+  require_separation: true
+  # Y el lift tiene que despejar el cero: sin esto el ganador puede ser un
+  # modelo que no le gana a predecir la tasa base.
+  require_beats_baseline: true
 
 budget:
   max_trials: 24
   max_parallel: 4
-  max_hours: 1.0
+  max_hours: 1.5
 
 strategy:
   name: adaptive

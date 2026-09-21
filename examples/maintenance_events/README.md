@@ -106,7 +106,7 @@ el trial en silencio.
 
 ### Costo por trial
 
-Un trial de 5 folds sobre 435 ventanas tarda ~27 s. Dos cosas lo dominan y
+Un trial de 5 folds sobre 435 ventanas tarda ~27 s; con los 12 folds que usa `goal.yaml`, del orden de un minuto. Dos cosas lo dominan y
 conviene saberlas antes de tocar el espacio de búsqueda:
 
 - **`max_bins`.** Con `class_weight=balanced` sklearn le pasa `sample_weight` al
@@ -120,17 +120,81 @@ conviene saberlas antes de tocar el espacio de búsqueda:
 
 ## Las métricas
 
-Cada fold emite un punto con `fold_pr_auc`, `fold_auroc`, `fold_positives` y
-`fold_n_test`. El punto final trae:
+**Cada fold es una observación del objetivo**, no un paso hacia él. Un fold que
+puntuó emite:
 
 | clave | qué es |
 |---|---|
-| `pr_auc` | **el objetivo**: PR-AUC promedio sobre los folds válidos |
+| `pr_auc` | **el objetivo** en ese fold |
+| `baseline_pr_auc` | la tasa base de *ese* bloque de test. El score del trial es `pr_auc - baseline_pr_auc`, apareado dentro de la observación |
+| `fold_auroc` | AUROC del fold, más estable pero menos informativo con desbalance |
+| `fold_positives` / `fold_n_test` | de qué tamaño fue la evidencia |
+
+Un fold sin positivas **no emite ninguna de las dos claves objetivo**: PR-AUC no
+está definido ahí, y un cero arrastraría el promedio por un fold que no midió
+nada. El arnés saltea la observación incompleta y la cuenta en `valid_folds`.
+
+El punto final resume, con claves distintas a propósito — repetir la clave
+objetivo sería una observación de más, el promedio contado dos veces y un error
+estándar más chico que el real:
+
+| clave | qué es |
+|---|---|
+| `mean_pr_auc` / `mean_baseline` | el promedio que el arnés también calcula, para leer el log a ojo |
 | `pr_auc_std` | dispersión entre folds; alta = el resultado depende del período |
-| `auroc` | AUROC promedio, más estable pero menos informativo con desbalance |
-| `recall_at_p50` | recall al umbral donde la precisión llega a 0,5 — la lectura operativa |
-| `baseline_pr_auc` | la tasa base. **Un `pr_auc` por debajo de esto es peor que adivinar** |
-| `valid_folds` | folds con ambas clases en test; si es 0 el trial no dice nada |
+| `auroc`, `recall_at_p50` | promedios; `recall_at_p50` es la lectura operativa |
+| `valid_folds` | folds que puntuaron; si es 0 el trial no dice nada |
+
+Quien puntúa es `objective.aggregate: mean`: promedia los folds, saca el error
+estándar y con eso decide si el trial se distingue del ruido. Eso lo hace el
+arnés, no este workload y no quien lea el reporte.
+
+## Cuántos folds
+
+`--n-folds 12` no es un número redondo elegido a ojo. Sale de la dispersión que
+la campaña anterior midió: sobre sus 24 trials × 5 folds, la **sd del lift por
+fold dentro de un mismo trial** fue **0,113** (agrupada; mediana por trial
+0,105).
+
+Con esa sd, el lift mínimo detectable a dos colas 95 % y poder 80 % es
+`2,80 × 0,113 / √k`:
+
+| folds válidos | lift mínimo detectable |
+|---|---|
+| 5 | 0,141 |
+| 10 | 0,100 |
+| 12 | 0,091 |
+| 20 | 0,071 |
+| 40 | 0,050 |
+
+El mejor lift promedio que aquella campaña observó fue **0,104**. Con 5 folds no
+podía distinguirlo del ruido ni aunque fuera real: el diseño estaba por debajo
+de su propio resultado antes de empezar. Por eso `min_observations: 10` y
+`--n-folds 12`, con dos de margen para folds que se queden sin positivas.
+
+Dos salvedades que el número no cubre. Más folds parten la serie en bloques de
+test más chicos, con menos positivas cada uno, así que la sd real con 12 folds
+va a ser algo mayor que 0,113 y el mínimo detectable algo peor que 0,091. Y
+`min_objective: 0.05` está por debajo de lo que 12 folds detectan con
+confianza: es el umbral que cambiaría una decisión de mantenimiento, no el que
+el diseño garantiza medir. Por eso el criterio pide *además*
+`require_beats_baseline`, que se evalúa contra el error estándar **realmente
+observado** y no contra este supuesto.
+
+## Qué cuenta como éxito
+
+`goal.yaml` lo declara en `success_criteria`, antes de correr nada:
+
+| criterio | por qué |
+|---|---|
+| `min_objective: 0.05` | por debajo el modelo no paga el costo de operarlo |
+| `min_observations: 10` | menos folds válidos dejan el intervalo demasiado ancho |
+| `require_separation` | el mejor de 24 trials ruidosos le gana al segundo por construcción |
+| `require_beats_baseline` | el intervalo del lift tiene que despejar el cero |
+
+`iax campaign status` y `iax loop` reportan `met: true/false` con los criterios
+que fallaron, y `iax loop` sale con código 4 si no se cumplen. Nadie decide
+después de ver el número.
 
 La validación es walk-forward: train expansivo, el bloque siguiente como test y
 un **gap igual al horizonte** entre el fin del train y el inicio del test, para

@@ -21,30 +21,53 @@ def _metrics(stdout):
     ]
 
 
-def test_self_test_emits_the_objective_exactly_once():
+def test_self_test_scores_every_fold_that_had_positives():
     result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
     assert result.returncode == 0, result.stderr
     points = _metrics(result.stdout)
     objective = [p for p in points if "pr_auc" in p]
-    assert len(objective) == 1
+    assert len(objective) == len([p for p in points if "fold_n_test" in p and p.get("fold_positives")])
 
 
-def test_per_fold_metrics_never_use_the_objective_key():
-    """extract_objective se queda con el MEJOR valor: compartir clave haría que
-    la campaña registrara el fold más afortunado en vez del promedio."""
+def test_the_objective_is_reported_once_per_fold():
+    """Cada fold es una evaluación independiente de la misma configuración, y
+    ``objective.aggregate: mean`` los promedia y saca el error estándar. Para
+    eso tiene que ver cada fold como una observación con la clave objetivo:
+    emitirla una sola vez al final le daría una muestra de tamaño uno y un
+    intervalo que no existe."""
+    result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
+    per_fold = [p for p in _metrics(result.stdout) if "fold_n_test" in p]
+    assert len(per_fold) >= 2
+    assert any("pr_auc" in p for p in per_fold), "ningún fold reportó el objetivo"
+    for point in per_fold:
+        # El par viaja junto: el lift se calcula dentro de una observación.
+        assert ("pr_auc" in point) == ("baseline_pr_auc" in point)
+
+
+def test_a_fold_with_no_positives_reports_no_objective():
+    """PR-AUC no está definido sin positivas. Emitir un cero arrastraría el
+    promedio hacia abajo por un fold que no midió nada."""
+    from maintenance_events.evaluation import FoldResult
+
+    empty = FoldResult(
+        index=0, train_end=None, test_start=None, test_end=None,
+        n_train=10, n_test=5, positives=0,
+        pr_auc=None, auroc=None, recall_at_p50=None, baseline=None,
+    )
+
+    assert "pr_auc" not in empty.as_metric()
+    assert "baseline_pr_auc" not in empty.as_metric()
+
+
+def test_the_summary_point_does_not_repeat_the_objective_key():
+    """Si el resumen final emitiera ``pr_auc`` sería una observación más — el
+    promedio contado dos veces, y un error estándar más chico que el real."""
     result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
     points = _metrics(result.stdout)
-    per_fold = [p for p in points if "fold_pr_auc" in p]
-    assert per_fold
-    assert all("pr_auc" not in p for p in per_fold)
-
-
-def test_final_point_carries_the_baseline_and_valid_folds():
-    result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
-    final = [p for p in _metrics(result.stdout) if "pr_auc" in p][0]
-    assert {
-        "pr_auc", "pr_auc_std", "auroc", "recall_at_p50", "baseline_pr_auc", "valid_folds",
-    } <= set(final)
+    summary = [p for p in points if "valid_folds" in p]
+    assert len(summary) == 1
+    assert "pr_auc" not in summary[0]
+    assert {"mean_pr_auc", "mean_baseline", "pr_auc_std", "valid_folds"} <= set(summary[0])
 
 
 def test_search_space_flag_names_are_accepted():
@@ -149,7 +172,11 @@ def test_the_objective_and_its_baseline_are_both_reported(capsys):
     goal = yaml.safe_load((pathlib.Path(__file__).parents[1] / "goal.yaml").read_text())
     assert main(["--self-test", "--n-folds", "3"]) == 0
 
-    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("IAX_METRIC ")]
-    final = json.loads(lines[-1].removeprefix("IAX_METRIC "))
-    assert goal["objective"]["metric"] in final
-    assert goal["objective"]["baseline_metric"] in final
+    points = [
+        json.loads(l.removeprefix("IAX_METRIC "))
+        for l in capsys.readouterr().out.splitlines()
+        if l.startswith("IAX_METRIC ")
+    ]
+    scored = [p for p in points if goal["objective"]["metric"] in p]
+    assert scored
+    assert all(goal["objective"]["baseline_metric"] in p for p in scored)

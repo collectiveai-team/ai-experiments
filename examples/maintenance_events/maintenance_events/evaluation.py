@@ -37,13 +37,27 @@ class FoldResult:
     baseline: float | None
 
     def as_metric(self) -> dict[str, float]:
-        return {
+        """El fold como observación del objetivo.
+
+        ``objective.aggregate: mean`` promedia las observaciones y calcula el
+        error estándar, así que cada fold tiene que llegar con la clave
+        objetivo y su baseline juntas: el lift se arma dentro de una
+        observación, no entre dos.
+
+        Un fold sin positivas no tiene PR-AUC definido y no emite ninguna de
+        las dos claves. Mandar un cero arrastraría el promedio por un fold que
+        no midió nada; el arnés saltea la observación incompleta.
+        """
+        values: dict[str, float] = {
             "step": self.index,
-            "fold_pr_auc": self.pr_auc,
             "fold_auroc": self.auroc,
             "fold_positives": self.positives,
             "fold_n_test": self.n_test,
         }
+        if self.pr_auc is not None and self.baseline is not None:
+            values["pr_auc"] = self.pr_auc
+            values["baseline_pr_auc"] = self.baseline
+        return values
 
 
 def walk_forward_splits(
@@ -118,12 +132,16 @@ def evaluate(
         folds.append(base)
 
     scored = [f for f in folds if f.pr_auc is not None]
+    # Nada acá se llama `pr_auc` ni `baseline_pr_auc`: el resumen es una línea
+    # más de stdout, y si repitiera las claves objetivo sería una observación
+    # extra — el promedio contado dos veces y un error estándar más chico que
+    # el real. Lo que resume ya lo calcula el arnés.
     summary = {
-        "pr_auc": float(np.mean([f.pr_auc for f in scored])) if scored else 0.0,
-        "pr_auc_std": float(np.std([f.pr_auc for f in scored])) if scored else 0.0,
+        "mean_pr_auc": float(np.mean([f.pr_auc for f in scored])) if scored else 0.0,
+        "pr_auc_std": float(np.std([f.pr_auc for f in scored], ddof=1)) if len(scored) > 1 else 0.0,
         "auroc": float(np.mean([f.auroc for f in scored if f.auroc is not None])) if scored else 0.0,
         "recall_at_p50": float(np.mean([f.recall_at_p50 for f in scored])) if scored else 0.0,
-        "baseline_pr_auc": float(np.mean([f.baseline for f in scored])) if scored else 0.0,
+        "mean_baseline": float(np.mean([f.baseline for f in scored])) if scored else 0.0,
         "valid_folds": len(scored),
     }
     return folds, summary

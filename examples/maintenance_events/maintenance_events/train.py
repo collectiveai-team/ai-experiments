@@ -5,11 +5,12 @@ Contrato con iax: los parámetros llegan como ``--nombre-valor`` (las claves de
 traduce a la grafía con guiones que argparse declara por convención), y las
 observaciones salen por stdout como líneas ``IAX_METRIC {json}``.
 
-Una sutileza que importa: ``extract_objective`` se queda con el **mejor** valor
-observado de la métrica objetivo, no con el último. Por eso las métricas por
-fold viajan bajo ``fold_pr_auc`` y la objetivo, ``pr_auc``, se emite una sola
-vez al final con el promedio. Si ambas compartieran nombre, la campaña
-registraría el fold más afortunado y el planner perseguiría suerte.
+Cada fold es una observación del objetivo, no un paso hacia él: emite
+``pr_auc`` junto a su ``baseline_pr_auc`` en la misma línea. La meta declara
+``objective.aggregate: mean``, así que el arnés promedia los folds, calcula el
+error estándar y decide con eso si el trial se distingue del ruido. El resumen
+final va con otras claves a propósito — repetir la clave objetivo sería una
+observación de más, el promedio contado dos veces.
 """
 
 from __future__ import annotations
@@ -97,8 +98,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if X.empty:
         print("sin ventanas válidas para esta configuración", file=sys.stderr)
-        report_metric(step=0, pr_auc=0.0, pr_auc_std=0.0, auroc=0.0,
-                      recall_at_p50=0.0, baseline_pr_auc=0.0, valid_folds=0)
+        # Sin folds válidos no hay objetivo que reportar, y no hay que
+        # inventar uno: el arnés marca el trial como `not_finite` con el
+        # motivo, que es más útil que un cero indistinguible de un modelo malo.
+        report_metric(step=0, mean_pr_auc=0.0, pr_auc_std=0.0, auroc=0.0,
+                      recall_at_p50=0.0, mean_baseline=0.0, valid_folds=0)
         return 0
 
     factory = make_model(
@@ -129,9 +133,11 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps({**summary, "params": vars(args)}, indent=2, default=str)
         )
 
+    lift = summary["mean_pr_auc"] - summary["mean_baseline"]
     print(
-        f"pr_auc={summary['pr_auc']:.4f} (baseline {summary['baseline_pr_auc']:.4f}) "
-        f"sobre {summary['valid_folds']} folds válidos, {len(X)} ventanas"
+        f"pr_auc={summary['mean_pr_auc']:.4f} (baseline {summary['mean_baseline']:.4f}, "
+        f"lift {lift:+.4f}) sobre {summary['valid_folds']} folds válidos, "
+        f"{len(X)} ventanas"
     )
     return 0
 

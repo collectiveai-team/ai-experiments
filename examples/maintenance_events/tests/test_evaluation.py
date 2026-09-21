@@ -53,5 +53,5 @@ def test_summary_reports_the_baseline_next_to_the_objective():
     y = pd.Series((rng.random(300) < 0.25).astype(int), index=as_of)
     X = pd.DataFrame({"f": y.to_numpy() + rng.normal(0, 0.1, 300)}, index=as_of)
     _, summary = evaluate(X, y, as_of, lambda: DummyClassifier(strategy="prior"), n_folds=3)
-    assert 0.0 <= summary["baseline_pr_auc"] <= 1.0
-    assert 0.0 <= summary["pr_auc"] <= 1.0
+    assert 0.0 <= summary["mean_baseline"] <= 1.0
+    assert 0.0 <= summary["mean_pr_auc"] <= 1.0
