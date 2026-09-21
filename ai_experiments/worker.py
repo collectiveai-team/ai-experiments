@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import argparse
 import io
 import os
@@ -35,6 +37,23 @@ HEARTBEAT_SECONDS = 15
 #: States the supervisor may still write a final status over. Anything else is
 #: already terminal and must not be rewritten by the failure contract.
 NON_TERMINAL_STATES = {"submitted", "running", "unknown"}
+
+
+#: Variables that describe *the harness's* environment, not the workload's.
+#: `uv`, `poetry` and `conda` all read VIRTUAL_ENV, and a workload that
+#: manages its own environment either warns and ignores it or, worse,
+#: resolves against the wrong interpreter. A workload that genuinely wants
+#: one sets it in ``workload.env``.
+_HARNESS_ONLY_VARS = ("VIRTUAL_ENV",)
+
+
+def workload_env(
+    base: Mapping[str, str], manifest: ExperimentManifest
+) -> dict[str, str]:
+    """The environment the workload runs in: ours, minus what is ours alone."""
+    env = {k: v for k, v in base.items() if k not in _HARNESS_ONLY_VARS}
+    env.update(manifest.workload.env)
+    return env
 
 
 class _Supervisor:
@@ -96,8 +115,7 @@ class _Supervisor:
 
         command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
-        env = os.environ.copy()
-        env.update(manifest.workload.env)
+        env = workload_env(os.environ, manifest)
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)
         artifacts_dir = run_dir / "artifacts"

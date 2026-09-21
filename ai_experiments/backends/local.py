@@ -82,7 +82,15 @@ class LocalBackend(ExperimentBackend):
             start_new_session=True,
         )
         self.store.update_status(
-            run_id, pid=process.pid, details={"log_path": str(log_path)}
+            run_id,
+            pid=process.pid,
+            # `log_path` is what a person follows after a failure, so it has
+            # to be the workload's output. `worker.log` holds the supervisor's
+            # own, which is empty unless the supervisor itself crashed.
+            details={
+                "log_path": str(self.store.events_path(run_id)),
+                "supervisor_log": str(log_path),
+            },
         )
         self.store.append_event(
             run_id,

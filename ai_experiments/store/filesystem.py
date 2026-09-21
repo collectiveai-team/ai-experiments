@@ -288,13 +288,20 @@ class FilesystemRunStore:
         """Whether a cancellation was requested for this run."""
         return self.cancel_marker_path(run_id).exists()
 
+    def events_path(self, run_id: str) -> Path:
+        """Where a run's own output lands.
+
+        Named because it is what a person is looking for: `worker.log` is the
+        supervisor's output and is empty unless the supervisor itself crashed.
+        """
+        return self.run_dir(run_id) / "events.jsonl"
+
     def append_event(self, run_id: str, event: RunEvent) -> None:
-        events_path = self.run_dir(run_id) / "events.jsonl"
-        with events_path.open("a") as fh:
+        with self.events_path(run_id).open("a") as fh:
             fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def read_events(self, run_id: str, tail: int | None = None) -> list[RunEvent]:
-        lines = _read_lines(self.run_dir(run_id) / "events.jsonl", tail)
+        lines = _read_lines(self.events_path(run_id), tail)
         return [RunEvent(**json.loads(line)) for line in lines]
 
     def metrics_path(self, run_id: str) -> Path:
