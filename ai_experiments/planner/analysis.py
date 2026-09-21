@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Iterator
 from typing import Any, Literal
 
@@ -29,6 +30,13 @@ class ObjectiveReading(BaseModel):
     """
 
     value: float | None = None
+    #: Standard error of ``value`` across the observations it averages, and
+    #: ``None`` whenever the spread is not measurable — a ``best`` objective,
+    #: or a single observation. Reporting 0.0 there would claim a certainty
+    #: one sample cannot support.
+    stderr: float | None = None
+    #: How many observations carried a usable value.
+    n_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     observed_metrics: list[str] = Field(default_factory=list)
     miss_reason: (
@@ -64,7 +72,7 @@ class ObjectiveReading(BaseModel):
 def extract_objective(
     store: FilesystemRunStore, run_id: str, objective: ObjectiveSpec
 ) -> ObjectiveReading:
-    """Best observed objective value for a run, plus why it is missing."""
+    """The run's objective value, its uncertainty, and why it is missing."""
     metrics = store.read_metrics(run_id)
     if not metrics:
         return ObjectiveReading(miss_reason="no_metrics")
@@ -94,8 +102,31 @@ def extract_objective(
             observed_metrics=observed,
             miss_reason=reason,
         )
-    best = max(values) if objective.mode == "max" else min(values)
-    return ObjectiveReading(value=best, final_metrics=final, observed_metrics=observed)
+    value, stderr = _aggregate(values, objective)
+    return ObjectiveReading(
+        value=value,
+        stderr=stderr,
+        n_observations=len(values),
+        final_metrics=final,
+        observed_metrics=observed,
+    )
+
+
+def _aggregate(
+    values: list[float], objective: ObjectiveSpec
+) -> tuple[float, float | None]:
+    """One score out of many observations, and how sure of it we are.
+
+    The standard error is only defined for ``mean``: under ``best`` the
+    observations are stages of one run, not samples of one quantity, so
+    their spread measures training progress rather than uncertainty.
+    """
+    if objective.aggregate == "best":
+        return (max(values) if objective.mode == "max" else min(values)), None
+    mean = statistics.fmean(values)
+    if len(values) < 2:
+        return mean, None
+    return mean, statistics.stdev(values) / math.sqrt(len(values))
 
 
 def _scored(metrics: list[MetricPoint], objective: ObjectiveSpec) -> Iterator[float]:
@@ -192,6 +223,121 @@ def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any
     }
 
 
+#: Two-sided 95% normal quantile. The intervals below are normal
+#: approximations over a handful of folds, so they are indicative, not exact:
+#: their job is to stop a campaign announcing a lead the data cannot carry,
+#: and for that a slightly narrow interval still beats no interval at all.
+Z95 = 1.959963984540054
+
+
+def confidence_interval(
+    value: float | None, stderr: float | None
+) -> tuple[float, float] | None:
+    """The 95% interval around a score, or ``None`` when nothing measured it."""
+    if value is None or stderr is None:
+        return None
+    return (value - Z95 * stderr, value + Z95 * stderr)
+
+
+def campaign_verdict(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
+    """Whether the campaign actually found anything, decided in code.
+
+    Two questions a report must not leave to the reader. First, is the best
+    trial distinguishable from the second best, or is the ranking noise? The
+    best of many noisy trials beats its runner-up by construction, so a
+    headline that names a winner without this check is reporting the
+    selection, not a result. Second, when the objective is a lift over a
+    baseline the trial reported itself, does that lift clear zero?
+
+    ``None`` on either answer means *not measured* — the objective takes the
+    best observation and so carries no spread — which is a different claim
+    from ``False``, and the report must keep them apart.
+    """
+    mode = goal.objective.mode
+    ranked = sorted(
+        (t for t in state.trials if t.status == "completed" and t.objective_value is not None),
+        key=lambda t: t.objective_value,  # type: ignore[arg-type,return-value]
+        reverse=mode == "max",
+    )
+    best = ranked[0] if ranked else None
+    runner_up = ranked[1] if len(ranked) > 1 else None
+
+    margin: float | None = None
+    separated: bool | None = None
+    if best is not None and runner_up is not None:
+        assert best.objective_value is not None and runner_up.objective_value is not None
+        margin = (
+            best.objective_value - runner_up.objective_value
+            if mode == "max"
+            else runner_up.objective_value - best.objective_value
+        )
+        if best.objective_stderr is not None and runner_up.objective_stderr is not None:
+            spread = math.hypot(best.objective_stderr, runner_up.objective_stderr)
+            separated = margin > Z95 * spread
+
+    beats_baseline: bool | None = None
+    if goal.objective.baseline_metric is not None and best is not None:
+        interval = confidence_interval(best.objective_value, best.objective_stderr)
+        if interval is not None:
+            beats_baseline = interval[0] > 0 if mode == "max" else interval[1] < 0
+
+    return {
+        "best_trial_id": best.trial_id if best else None,
+        "runner_up_trial_id": runner_up.trial_id if runner_up else None,
+        "margin": margin,
+        "separated": separated,
+        "beats_baseline": beats_baseline,
+        "confidence": 0.95,
+    }
+
+
+
+def result_lines(summary: dict[str, Any]) -> list[str]:
+    """The campaign's finding, in the words a report should use.
+
+    One place decides how a verdict is spoken, so the CLI, the loop and the
+    dashboard cannot disagree about whether a campaign found something. The
+    rules it encodes: a score is never printed without its interval when one
+    exists, a lead inside the noise is named as such instead of being
+    announced, and nothing is claimed about a comparison nobody measured.
+    """
+    best = summary.get("best")
+    if not best:
+        return []
+    verdict = summary.get("verdict") or {}
+    metric = summary["objective"]["metric"]
+    baseline = summary["objective"].get("baseline_metric")
+    scale = f"{metric} lift over {baseline}" if baseline else metric
+
+    score = f"{best['objective_value']:.6g}"
+    if best.get("stderr") is not None:
+        score += f" ± {best['stderr']:.3g}"
+        if best.get("n_observations"):
+            score += f" (SE over {best['n_observations']} observations)"
+    lines = [f"{best['trial_id']}: {scale} = {score}"]
+
+    runner_up = verdict.get("runner_up_trial_id")
+    separated = verdict.get("separated")
+    if runner_up and separated is not None:
+        margin = verdict.get("margin")
+        lines.append(
+            f"lead of {margin:.3g} beats {runner_up} at 95% confidence"
+            if separated
+            else f"lead of {margin:.3g} is not distinguishable from {runner_up} "
+            f"at 95% confidence; the ranking is within the noise"
+        )
+
+    beats = verdict.get("beats_baseline")
+    if beats is not None:
+        lines.append(
+            "the interval clears the baseline"
+            if beats
+            else "the interval does not clear the baseline: this campaign has "
+            "not shown the model beats it"
+        )
+    return lines
+
+
 def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     by_status: dict[str, int] = {}
     for trial in state.trials:
@@ -221,6 +367,8 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         },
         "objective": {
             "metric": goal.objective.metric,
+            "baseline_metric": goal.objective.baseline_metric,
+            "aggregate": goal.objective.aggregate,
             "mode": goal.objective.mode,
             "target": goal.objective.target,
         },
@@ -233,10 +381,16 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
                 "trial_id": best.trial_id,
                 "run_id": best.run_id,
                 "objective_value": best.objective_value,
+                "stderr": best.objective_stderr,
+                "n_observations": best.objective_observations,
+                "ci95": confidence_interval(
+                    best.objective_value, best.objective_stderr
+                ),
                 "params": best.params,
             }
             if best
             else None
         ),
+        "verdict": campaign_verdict(state, goal),
         "history": history,
     }

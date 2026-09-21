@@ -826,7 +826,7 @@ def campaign_status(
     runs_dir: Optional[Path] = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    from ai_experiments.planner.analysis import summarize_campaign
+    from ai_experiments.planner.analysis import result_lines, summarize_campaign
     from ai_experiments.store.campaign import CampaignStore
 
     store = FilesystemRunStore(runs_dir)
@@ -861,9 +861,10 @@ def campaign_status(
     )
     if summary["best"]:
         best = summary["best"]
-        typer.echo(
-            f"  Best:   {best['trial_id']} {goal.objective.metric}={best['objective_value']:.6g}"
-        )
+        lines = result_lines(summary)
+        typer.echo(f"  Best:   {lines[0]}")
+        for line in lines[1:]:
+            typer.echo(f"          {line}")
         typer.echo(f"          params={best['params']}")
 
 

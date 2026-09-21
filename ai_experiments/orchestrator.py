@@ -491,6 +491,8 @@ class CampaignOrchestrator:
                     self.run_store, trial.run_id, goal.objective
                 )
                 trial.objective_value = reading.value
+                trial.objective_stderr = reading.stderr
+                trial.objective_observations = reading.n_observations
                 trial.final_metrics = reading.final_metrics
                 miss = reading.miss_message(goal.objective.metric)
                 if miss and mapped == "completed":

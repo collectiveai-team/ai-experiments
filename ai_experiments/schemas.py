@@ -94,6 +94,9 @@ BackendName = Literal["local", "ray"]
 #: convention every argument parser follows spells it ``--label-source``.
 FlagStyle = Literal["hyphen", "underscore"]
 
+#: How a run's observations collapse into one objective value.
+Aggregate = Literal["best", "mean"]
+
 
 class WorkloadSpec(ConfigModel):
     """Executable workload for a training experiment."""
@@ -347,6 +350,13 @@ class ObjectiveSpec(ConfigModel):
     baseline_metric: str | None = None
     mode: Literal["min", "max"] = "min"
     target: float | None = None
+    #: How a run's many observations become one score. Epochs are successive
+    #: states of one model, so ``best`` is the answer. Folds are independent
+    #: evaluations of the *same* configuration, and there ``best`` is
+    #: max-of-k: biased upward by exactly the noise the folds exist to
+    #: measure. ``mean`` averages them and reports the standard error, so the
+    #: campaign can tell a real lead from a lucky fold.
+    aggregate: Aggregate = "best"
 
 
 class BudgetSpec(ConfigModel):
@@ -505,6 +515,12 @@ class TrialRecord(BaseModel):
     run_id: str | None = None
     status: TrialState = "planned"
     objective_value: float | None = None
+    #: Standard error of ``objective_value`` when the objective averages its
+    #: observations, and ``None`` when nothing measured the spread. A score
+    #: without it cannot be compared to another score honestly.
+    objective_stderr: float | None = None
+    #: How many observations the score was computed from.
+    objective_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     gpu_hours: float | None = None
     created_at: datetime = Field(default_factory=utc_now)

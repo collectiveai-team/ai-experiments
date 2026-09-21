@@ -51,6 +51,10 @@ class LoopReport(BaseModel):
     loop_stop: LoopStop = "campaign_finished"
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
+    #: Whether the best trial is actually distinguishable from the runner-up
+    #: and from its baseline. A caller that reads `best` alone reports the
+    #: winner of a raffle; see `campaign_verdict`.
+    verdict: dict[str, Any] = Field(default_factory=dict)
     history: list[dict[str, Any]] = Field(default_factory=list)
     reviews: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -125,6 +129,7 @@ def run_loop(
         loop_stop=loop_stop,
         objective=summary["objective"],
         best=summary["best"],
+        verdict=summary["verdict"],
         history=summary["history"],
         reviews=reviews,
     )
