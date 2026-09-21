@@ -447,9 +447,10 @@ npx skills@latest add git@github.com:collectiveai-team/ai-experiments.git
 ```
 
 This installs the `defining-goals`, `autonomous-experimentation`,
-`running-campaigns`, `submitting-experiments`, `monitoring-experiments`,
-`diagnosing-experiments`, and `cancelling-experiments` skills into the
-project's `.claude/skills/` (add `-g` for `~/.claude/skills/`).
+`running-campaigns`, `proposing-variants`, `submitting-experiments`,
+`monitoring-experiments`, `diagnosing-experiments`, and
+`cancelling-experiments` skills into the project's `.claude/skills/` (add `-g`
+for `~/.claude/skills/`).
 `autonomous-experimentation` is the one that turns "get val_loss under 0.05"
 into a goal file and an `iax loop` run; `defining-goals` is what it reads
 first, to decide what the campaign would have to show for that number to mean

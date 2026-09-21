@@ -15,11 +15,12 @@ from ai_experiments.schemas import (
     GoalSpec,
     ObjectiveSpec,
     SuccessCriteria,
+    VariantSpec,
     WorkloadSpec,
 )
 
 
-def _goal(*, objective=None, space=None, criteria=None) -> GoalSpec:
+def _goal(*, objective=None, space=None, criteria=None, variants=None) -> GoalSpec:
     return GoalSpec(
         goal="find a better window",
         name="probe",
@@ -27,6 +28,7 @@ def _goal(*, objective=None, space=None, criteria=None) -> GoalSpec:
         search_space=space or {"lr": {"type": "loguniform", "low": 1e-4, "high": 1e-1}},
         workload=WorkloadSpec(entrypoint=sys.executable),
         success_criteria=criteria or SuccessCriteria(min_objective=0.1),
+        variants=variants or VariantSpec(),
     )
 
 
@@ -88,9 +90,7 @@ def test_asking_for_separation_without_measuring_spread_can_never_pass():
     """`aggregate: best` produces no interval, so the criterion is unmeetable
     by construction — a campaign that would report failure whatever it found.
     """
-    warnings = goal_warnings(
-        _goal(criteria=SuccessCriteria(require_separation=True))
-    )
+    warnings = goal_warnings(_goal(criteria=SuccessCriteria(require_separation=True)))
 
     assert any("aggregate" in w for w in warnings)
 
@@ -161,7 +161,9 @@ def test_campaign_validate_says_what_is_wrong_with_the_question(tmp_path):
 
     from ai_experiments.cli import app
 
-    result = CliRunner().invoke(app, ["campaign", "validate", str(_goal_file(tmp_path))])
+    result = CliRunner().invoke(
+        app, ["campaign", "validate", str(_goal_file(tmp_path))]
+    )
 
     assert result.exit_code == 0
     assert "baseline_metric" in result.stderr
@@ -180,3 +182,31 @@ def test_a_goal_that_proves_nothing_can_be_refused_outright(tmp_path):
     )
 
     assert result.exit_code == 2
+
+
+def test_variants_without_a_smoke_command_are_flagged():
+    """Nothing else stands between an agent's edit and a whole round of
+    trials: with no smoke command the harness records `smoke_ok: None` and
+    runs it anyway, so a variant that cannot import costs the round and
+    teaches nothing."""
+    warnings = goal_warnings(
+        _goal(variants=VariantSpec(enabled=True, editable_paths=["*.py"]))
+    )
+
+    assert any("smoke_command" in w for w in warnings)
+
+
+def test_variants_that_may_write_anywhere_are_flagged():
+    """`editable_paths` empty means every file in the copied workload is
+    writable, including the evaluation the variant is scored by."""
+    warnings = goal_warnings(
+        _goal(
+            variants=VariantSpec(enabled=True, smoke_command=[sys.executable, "-c", ""])
+        )
+    )
+
+    assert any("editable_paths" in w for w in warnings)
+
+
+def test_a_goal_without_variants_says_nothing_about_them():
+    assert not any("smoke_command" in w for w in goal_warnings(_goal()))

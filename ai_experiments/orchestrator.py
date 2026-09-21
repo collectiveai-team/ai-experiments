@@ -18,7 +18,15 @@ from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
-from ai_experiments.improve.variants import variants_root
+from ai_experiments.improve.variants import (
+    VariantEdit,
+    VariantError,
+    VariantRecord,
+    discard_variant,
+    materialize_variant,
+    smoke_check,
+    variants_root,
+)
 from ai_experiments.planner.analysis import (
     best_trial,
     extract_objective,
@@ -227,14 +235,83 @@ class CampaignOrchestrator:
         )
         return new_goal
 
+    def add_variant(
+        self,
+        campaign_id: str,
+        edits: list[VariantEdit],
+        *,
+        hypothesis: str = "",
+        rationale: str = "",
+        parent: str | None = None,
+    ) -> VariantRecord:
+        """Materialize a code variant of the workload and smoke-check it.
+
+        This is the half of an improvement round the harness owns. Whoever
+        proposes the edits — an agent, a person — does not get to say whether
+        they run: the configured smoke command does, by its exit code, before
+        a single trial is spent on them. A variant that fails is deleted from
+        disk and kept on the record, so the next proposal can read why.
+        """
+        goal = self.campaign_store.read_goal(campaign_id)
+        spec = goal.variants
+        if not spec.enabled:
+            raise ValueError(
+                f"campaign {campaign_id} did not enable code variants; set "
+                "variants.enabled in the goal before proposing edits"
+            )
+        source = spec.source_dir or goal.workload.working_dir or "."
+        try:
+            record = materialize_variant(
+                self.campaign_store.campaign_dir(campaign_id),
+                source,
+                edits,
+                spec,
+                parent=parent,
+                hypothesis=hypothesis,
+                rationale=rationale,
+            )
+        except VariantError as exc:
+            raise ValueError(str(exc)) from exc
+
+        record = smoke_check(record, spec)
+        if record.smoke_ok is False:
+            record = discard_variant(record)
+        self.campaign_store.write_variant(campaign_id, record)
+        self.campaign_store.append_event(
+            campaign_id,
+            RunEvent(
+                message=(
+                    "variant rejected by its smoke check"
+                    if record.smoke_ok is False
+                    else "variant accepted"
+                ),
+                details={
+                    "variant_id": record.variant_id,
+                    "edited_paths": record.edited_paths,
+                    "hypothesis": record.hypothesis,
+                    "smoke_ok": record.smoke_ok,
+                    "discarded": record.discarded,
+                    "discard_error": record.discard_error,
+                },
+            ),
+        )
+        return record
+
     def suggest(
-        self, campaign_id: str, params: dict[str, Any], note: str = ""
+        self,
+        campaign_id: str,
+        params: dict[str, Any],
+        note: str = "",
+        variant_id: str | None = None,
     ) -> TrialRecord:
         """Queue an agent/human-suggested trial; submitted on the next advance.
 
         A suggestion is a proposal, not an override: it is rejected when the
         campaign can no longer run it, when the params are not in the search
-        space, or when the trial budget is already committed (#13).
+        space, or when the trial budget is already committed (#13). Naming a
+        ``variant_id`` runs it against that variant's copy of the workload —
+        and only if the variant cleared its smoke check, since a round spent
+        on code that cannot start teaches nothing.
         """
         state = self.campaign_store.read_state(campaign_id)
         if state.status not in {"running", "paused"}:
@@ -250,10 +327,23 @@ class CampaignOrchestrator:
                 f"{goal.budget.max_trials}); raise max_trials with "
                 "`iax campaign edit` to make room"
             )
+        if variant_id is not None:
+            variant = self.campaign_store.read_variant(campaign_id, variant_id)
+            if variant is None:
+                raise ValueError(
+                    f"unknown variant {variant_id}; `iax campaign variants "
+                    f"{campaign_id}` lists the ones this campaign has"
+                )
+            if variant.smoke_ok is False:
+                raise ValueError(
+                    f"variant {variant_id} failed its smoke check and was "
+                    "discarded; propose a fixed one instead of running it"
+                )
         trial = TrialRecord(
             trial_id=f"t{len(state.trials):03d}",
             params=params,
             source="agent",
+            variant_id=variant_id,
         )
         state.trials.append(trial)
         self.campaign_store.write_state(state)
@@ -261,7 +351,12 @@ class CampaignOrchestrator:
             campaign_id,
             RunEvent(
                 message="trial suggested",
-                details={"trial_id": trial.trial_id, "params": params, "note": note},
+                details={
+                    "trial_id": trial.trial_id,
+                    "params": params,
+                    "note": note,
+                    "variant_id": variant_id,
+                },
             ),
         )
         return trial

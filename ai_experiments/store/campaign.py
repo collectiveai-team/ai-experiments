@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from ai_experiments.schemas import (
     CampaignState,
@@ -14,11 +14,15 @@ from ai_experiments.schemas import (
 )
 from ai_experiments.store.filesystem import atomic_write_text
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle: variants imports schemas
+    from ai_experiments.improve.variants import VariantRecord
+
 
 class CampaignStore:
     """Filesystem store for campaigns, living beside the run store.
 
-    Layout: ``<root>/<campaign_id>/{goal.yaml, state.json, events.jsonl}``.
+    Layout: ``<root>/<campaign_id>/{goal.yaml, state.json, events.jsonl}``,
+    plus ``variants.json`` once the campaign has been offered code variants.
     """
 
     def __init__(self, runs_root: str | Path) -> None:
@@ -71,4 +75,41 @@ class CampaignStore:
             path.name
             for path in self.root.iterdir()
             if path.is_dir() and (path / "state.json").exists()
+        )
+
+    # -- variants --------------------------------------------------------------
+
+    def _variants_path(self, campaign_id: str) -> Path:
+        return self.campaign_dir(campaign_id) / "variants.json"
+
+    def read_variants(self, campaign_id: str) -> list[VariantRecord]:
+        """Every variant proposed to this campaign, accepted or not.
+
+        A rejected variant stays on the list: the next proposal has to be able
+        to read what already failed, or an unattended loop will retry it.
+        """
+        from ai_experiments.improve.variants import VariantRecord
+
+        path = self._variants_path(campaign_id)
+        if not path.exists():
+            return []
+        return [VariantRecord(**item) for item in json.loads(path.read_text())]
+
+    def read_variant(self, campaign_id: str, variant_id: str) -> VariantRecord | None:
+        for record in self.read_variants(campaign_id):
+            if record.variant_id == variant_id:
+                return record
+        return None
+
+    def write_variant(self, campaign_id: str, record: VariantRecord) -> None:
+        """Append the record, or replace the one with the same id."""
+        records = [
+            item
+            for item in self.read_variants(campaign_id)
+            if item.variant_id != record.variant_id
+        ]
+        records.append(record)
+        atomic_write_text(
+            self._variants_path(campaign_id),
+            json.dumps([item.model_dump(mode="json") for item in records], indent=2),
         )

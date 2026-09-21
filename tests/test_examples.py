@@ -173,3 +173,35 @@ def test_a_failed_trial_carries_the_reason_the_workload_gave(tmp_path):
 
     assert state.trials[0].status == "failed"
     assert "out of memory" in (state.trials[0].error or "")
+
+
+MAINTENANCE_GOAL = EXAMPLES / "maintenance_events" / "goal.yaml"
+
+
+def test_the_maintenance_events_goal_draws_no_preflight_warning():
+    """It is the worked example the skills point at, so whatever it does is
+    what the next campaign will copy — including how it declares success and
+    how far a code variant is allowed to reach."""
+    from ai_experiments.preflight import goal_warnings
+
+    assert goal_warnings(GoalSpec.from_yaml(MAINTENANCE_GOAL)) == []
+
+
+def test_the_maintenance_events_variant_sandbox_excludes_the_evaluation():
+    """A variant that may rewrite `evaluation.py` optimizes its own
+    thermometer, and every score after that is its own."""
+    goal = GoalSpec.from_yaml(MAINTENANCE_GOAL)
+
+    assert goal.variants.enabled
+    assert goal.variants.editable_paths
+    assert not any("evaluation" in path for path in goal.variants.editable_paths)
+
+
+def test_the_maintenance_events_entrypoint_works_from_a_variant_copy():
+    """A variant runs the same entrypoint with the copy as working_dir, so an
+    entrypoint that names the example's path only works outside the sandbox."""
+    goal = GoalSpec.from_yaml(MAINTENANCE_GOAL)
+    source = goal.variants.source_dir or goal.workload.working_dir
+
+    assert source not in goal.workload.entrypoint
+    assert (EXAMPLES.parent / source / "pyproject.toml").is_file()

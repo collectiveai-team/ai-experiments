@@ -200,6 +200,38 @@ La validación es walk-forward: train expansivo, el bloque siguiente como test y
 un **gap igual al horizonte** entre el fin del train y el inicio del test, para
 que ninguna ventana de train pueda ver el evento que su test predice.
 
+## Rondas que cambian el código
+
+`goal.yaml` habilita variantes: una ronda puede agregar una feature o un modelo
+en vez de mover perillas. El arnés copia este directorio bajo
+`<campaign_dir>/variants/<variant_id>/`, aplica los archivos enteros que le
+pasan, y corre el smoke check antes de dejarle gastar un solo trial:
+
+```bash
+# escribí el archivo nuevo donde quieras, completo
+iax campaign variant <campaign_id> \
+  --edit maintenance_events/features.py=/tmp/features_con_lag.py \
+  --hypothesis "lag de 7 días del vacío normalizado" --json
+iax campaign variants <campaign_id>
+iax campaign suggest <campaign_id> --params '{"model": "hist_gb", "window_days": 90}' \
+  --variant var_1a2b3c4d
+```
+
+Tres cosas que este ejemplo decide y conviene no aflojar:
+
+- **Sólo `features.py` y `models.py` son editables.** `evaluation.py` queda
+  afuera a propósito: una variante que puede reescribir su propia evaluación
+  optimiza el termómetro, y todo número posterior es suyo.
+- **El smoke check es `--self-test --n-folds 2`**, sobre datos sintéticos: no
+  necesita el dataset ni el link privado, y falla si la variante no importa, no
+  featuriza o deja de reportar `pr_auc`/`baseline_pr_auc`. Tarda ~16 s, la mitad
+  en crear el venv de la copia; por eso `smoke_timeout_seconds: 300`.
+- **Un modelo nuevo necesita además ensanchar el espacio.** `--model` valida
+  contra `MODELS`, pero `search_space.model` es un `choice` fijo: agregar el
+  valor va por `iax campaign edit`, no por la variante.
+
+El procedimiento completo está en la skill `proposing-variants`.
+
 ## Regenerar el artefacto
 
 Los datos crudos no están en el repo. Con acceso a ellos:

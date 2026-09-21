@@ -177,6 +177,15 @@ iax campaign stop <campaign_id>       # when continuing is pointless
 Suggested trials are submitted before strategy-planned ones on the next
 advance and count toward `max_trials`.
 
+## When the params stop being the problem
+
+A search cannot fix a wrong feature set or a missing model. When the values
+barely move across the space and the best trial is still short of the bar, the
+next round changes the code instead: **proposing-variants** covers it — you
+write the file, `iax campaign variant` copies the workload, smoke-checks the
+edit and refuses it if it does not start, and `iax campaign suggest --variant`
+spends trials on what survived.
+
 ## Stuck runs inside a campaign
 
 The daemon already kills fatal runs (`auto_kill: true`) and escalates

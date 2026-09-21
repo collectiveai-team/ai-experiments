@@ -44,14 +44,17 @@ search_space:
     { type: choice, values: [32, 64, 128, 255], when: { model: [hist_gb] } }
 
 workload:
-  entrypoint: "uv run --project examples/maintenance_events python -m maintenance_events.train"
+  # `--project .` y no `--project examples/maintenance_events`: una variante
+  # corre sobre una copia de este directorio, con otro working_dir, y el
+  # entrypoint tiene que ser el mismo en los dos casos.
+  entrypoint: "uv run --project . python -m maintenance_events.train"
   # 12 folds sale del cálculo de poder en README.md § "Cuántos folds": con la
   # sd del lift por fold medida en la campaña anterior (0.113 agrupada sobre
   # 24 trials x 5 folds), 5 folds sólo detectan un lift de 0.14 — más grande
   # que el mejor lift que esa campaña observó. Con 12 el mínimo detectable
   # baja a ~0.09.
   args: ["--n-folds", "12"]
-  working_dir: "."
+  working_dir: "examples/maintenance_events"
 
 # Qué tiene que mostrar esta campaña para que se le crea. Escrito antes de
 # correr nada, así después la respuesta es aritmética y no una discusión.
@@ -80,6 +83,26 @@ strategy:
   top_k: 3
 
 backend: local
+
+# Una ronda de mejora que cambia el código, no sólo los params. El agente
+# escribe el archivo; el arnés lo copia, lo somete al smoke check y recién
+# entonces le deja gastar trials. Ver la skill `proposing-variants`.
+variants:
+  enabled: true
+  source_dir: "examples/maintenance_events"
+  # Los dos puntos de extensión del ejemplo: cómo se resume una ventana y qué
+  # modelo la lee. `evaluation.py` queda afuera a propósito — una variante que
+  # puede reescribir su propia evaluación optimiza el termómetro.
+  editable_paths:
+    - "maintenance_events/features.py"
+    - "maintenance_events/models.py"
+  # Corre sobre datos sintéticos: no necesita el dataset ni el link privado, y
+  # falla si la variante no importa, no featuriza o no reporta la métrica.
+  smoke_command:
+    ["uv", "run", "--project", ".", "python", "-m", "maintenance_events.train",
+     "--self-test", "--n-folds", "2"]
+  # 16 s medidos, de los cuales la mitad es crear el venv de la copia.
+  smoke_timeout_seconds: 300
 
 monitoring:
   interval_seconds: 20

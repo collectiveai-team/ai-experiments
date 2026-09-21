@@ -72,6 +72,25 @@ that resolve these. In both, `false` means measured and not there, `null`
 means never measured. The procedure is in
 `.claude/skills/defining-goals/SKILL.md`.
 
+## Changing the workload's code, not just its params
+
+When a search stalls, the next round changes the code. The goal opts in with
+`variants.enabled`, names the files a variant may write in
+`variants.editable_paths`, and gives a `variants.smoke_command`:
+
+```bash
+iax campaign variant <id> --edit pkg/features.py=/tmp/new_features.py \
+    --hypothesis "..." --json        # exit 2 = the smoke check refused it
+iax campaign variants <id>           # what was proposed, and what ran
+iax campaign suggest <id> --params '{...}' --variant var_1a2b3c4d
+```
+
+The edits go into a copy under the campaign directory; the user's tree is
+never written. The smoke command's exit code, not the proposer, decides
+whether a variant may cost trials. Leave the evaluation code outside
+`editable_paths` — a variant that can rewrite its own scoring is scoring
+itself. The procedure is in `.claude/skills/proposing-variants/SKILL.md`.
+
 ## Working on the code
 
 - Read `CONVENTIONS.md` first. It is the authority on layout, boundaries, and

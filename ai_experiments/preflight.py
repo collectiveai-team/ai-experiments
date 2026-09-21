@@ -183,4 +183,18 @@ def goal_warnings(goal: GoalSpec) -> list[str]:
             "be met"
         )
 
+    if goal.variants.enabled:
+        if not goal.variants.smoke_command:
+            warnings.append(
+                "variants.enabled is on with no variants.smoke_command; a "
+                "variant that cannot start would be handed a whole round of "
+                "trials that all fail the same way"
+            )
+        if not goal.variants.editable_paths:
+            warnings.append(
+                "variants.enabled is on with no variants.editable_paths, so a "
+                "variant may rewrite any file in the workload — including the "
+                "evaluation it is scored by; name the files that may change"
+            )
+
     return warnings

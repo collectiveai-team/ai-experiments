@@ -76,6 +76,8 @@ class VariantRecord(BaseModel):
     rationale: str = ""
     smoke_ok: bool | None = None
     smoke_output: str = ""
+    discarded: bool | None = None
+    discard_error: str = ""
 
 
 def variants_root(campaign_dir: str | Path) -> Path:
@@ -179,9 +181,29 @@ def smoke_check(record: VariantRecord, spec: VariantSpec) -> VariantRecord:
     return record
 
 
-def discard_variant(record: VariantRecord) -> None:
-    """Delete a variant's directory. Used for one that failed its smoke check."""
-    shutil.rmtree(record.root, ignore_errors=True)
+def discard_variant(record: VariantRecord) -> VariantRecord:
+    """Delete a variant's directory, and say whether the directory is gone.
+
+    Used for a variant that failed its smoke check. The smoke command runs
+    inside the copy and can leave a subprocess still writing there (``uv``
+    populating ``.venv``), so the first delete can fail on a directory that
+    is empty a moment later; it is retried once. Whatever is left is recorded
+    on the returned record instead of being swallowed: a leftover directory
+    is a variant the campaign believes it discarded and did not.
+    """
+    root = Path(record.root)
+    error = ""
+    for _ in range(2):
+        if not root.exists():
+            break
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            error = str(exc)
+    gone = not root.exists()
+    return record.model_copy(
+        update={"discarded": gone, "discard_error": "" if gone else error}
+    )
 
 
 def _ignore(directory: str, names: list[str]) -> set[str]:
