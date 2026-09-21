@@ -89,6 +89,12 @@ ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
 BackendName = Literal["local", "ray"]
 
 
+#: How a search space key becomes a command-line flag. Keys are Python
+#: identifiers, so a two-word parameter is ``label_source``; the CLI
+#: convention every argument parser follows spells it ``--label-source``.
+FlagStyle = Literal["hyphen", "underscore"]
+
+
 class WorkloadSpec(ConfigModel):
     """Executable workload for a training experiment."""
 
@@ -96,6 +102,9 @@ class WorkloadSpec(ConfigModel):
     args: list[str] = Field(default_factory=list)
     working_dir: str = "."
     env: dict[str, str] = Field(default_factory=dict)
+    #: Exactly one spelling is sent. Emitting both "to be safe" is what
+    #: breaks argparse, which rejects any long option it did not declare.
+    flag_style: FlagStyle = "hyphen"
 
 
 class ResourceSpec(ConfigModel):

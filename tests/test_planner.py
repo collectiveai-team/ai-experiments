@@ -116,3 +116,70 @@ def test_adaptive_strategy_exploits_best_region():
     # perturbations live in log-space, so they stay well below the bad region.
     for params in planned:
         assert params["lr"] < 0.05
+
+
+def test_underscore_params_reach_the_workload_as_hyphen_flags():
+    """`argparse` declares `--label-source`; a search space key cannot.
+
+    Search space keys are Python identifiers, so a two-word parameter is
+    `label_source`. Every CLI convention spells the flag `--label-source`,
+    and argparse rejects long options it did not declare, so emitting the
+    key verbatim fails every trial of an otherwise correct workload.
+    """
+    goal = _goal(
+        search_space={"label_source": {"type": "choice", "values": ["a", "b"]}},
+        workload=WorkloadSpec(entrypoint="python train.py"),
+    )
+    manifest = build_trial_manifest(goal, "t000", {"label_source": "a"})
+
+    assert manifest.workload.args == ["--label-source", "a"]
+
+
+def test_only_one_spelling_of_a_flag_is_ever_sent():
+    """Sending both spellings to be safe is the bug, not the fix.
+
+    argparse rejects any long option it did not declare, so a workload that
+    accepts `--label-source` dies on the `--label_source` sent beside it.
+    """
+    goal = _goal(
+        search_space={"label_source": {"type": "choice", "values": ["a"]}},
+        workload=WorkloadSpec(entrypoint="python train.py"),
+    )
+    args = build_trial_manifest(goal, "t000", {"label_source": "a"}).workload.args
+
+    assert args.count("a") == 1
+    assert "--label_source" not in args
+
+
+def test_a_workload_can_ask_for_the_underscore_spelling():
+    goal = _goal(
+        search_space={"label_source": {"type": "choice", "values": ["a"]}},
+        workload=WorkloadSpec(entrypoint="python train.py", flag_style="underscore"),
+    )
+    args = build_trial_manifest(goal, "t000", {"label_source": "a"}).workload.args
+
+    assert args == ["--label_source", "a"]
+
+
+def test_placeholders_keep_the_python_name():
+    """The flag style is about flags; `{name}` refers to the search space key."""
+    goal = _goal(
+        search_space={"label_source": {"type": "choice", "values": ["a"]}},
+        workload=WorkloadSpec(
+            entrypoint="python train.py", args=["--src", "{label_source}"]
+        ),
+    )
+    args = build_trial_manifest(goal, "t000", {"label_source": "a"}).workload.args
+
+    assert args == ["--src", "a"]
+
+
+def test_iax_params_keeps_the_search_space_spelling():
+    """The env carries the assignment, so it uses the goal's own names."""
+    goal = _goal(
+        search_space={"label_source": {"type": "choice", "values": ["a"]}},
+        workload=WorkloadSpec(entrypoint="python train.py"),
+    )
+    env = build_trial_manifest(goal, "t000", {"label_source": "a"}).workload.env
+
+    assert json.loads(env["IAX_PARAMS"]) == {"label_source": "a"}
