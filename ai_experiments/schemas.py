@@ -283,7 +283,19 @@ class DiagnosisReport(BaseModel):
 # --- Goal / campaign layer -------------------------------------------------
 
 
-class ChoiceParam(ConfigModel):
+class ParamBase(ConfigModel):
+    """What every search space dimension can say about itself."""
+
+    #: This dimension changes the data or the labels a trial is evaluated
+    #: on, not just how the model is fit. Trials that differ on it are
+    #: scored on different problems, so their raw metrics are not
+    #: comparable and the objective needs a ``baseline_metric`` to become
+    #: a lift. ``window_days``, ``resample_freq`` and a choice of label
+    #: source are all of this kind; a learning rate is not.
+    changes_data: bool = False
+
+
+class ChoiceParam(ParamBase):
     type: Literal["choice"]
     values: list[Any]
 
@@ -295,7 +307,7 @@ class ChoiceParam(ConfigModel):
         return value
 
 
-class UniformParam(ConfigModel):
+class UniformParam(ParamBase):
     type: Literal["uniform"]
     low: float
     high: float
@@ -307,7 +319,7 @@ class UniformParam(ConfigModel):
         return self
 
 
-class LogUniformParam(ConfigModel):
+class LogUniformParam(ParamBase):
     type: Literal["loguniform"]
     low: float
     high: float
@@ -321,7 +333,7 @@ class LogUniformParam(ConfigModel):
         return self
 
 
-class IntParam(ConfigModel):
+class IntParam(ParamBase):
     type: Literal["int"]
     low: int
     high: int
@@ -357,6 +369,37 @@ class ObjectiveSpec(ConfigModel):
     #: measure. ``mean`` averages them and reports the standard error, so the
     #: campaign can tell a real lead from a lucky fold.
     aggregate: Aggregate = "best"
+
+
+class SuccessCriteria(ConfigModel):
+    """What this campaign has to show before its result counts.
+
+    ``objective.target`` is the value the campaign *stops* at; this is the bar
+    the result has to clear to be believed, and it is written before anything
+    runs so that afterwards the answer is arithmetic instead of an argument.
+    A goal that declares none gets ``met: null`` — not a pass.
+    """
+
+    #: The objective value the best trial has to reach, read in the
+    #: objective's own direction.
+    min_objective: float | None = None
+    #: How many observations that value has to be averaged over. A winner
+    #: resting on one evaluation has measured the evaluation, not the model.
+    min_observations: int | None = None
+    #: The best trial must be distinguishable from the runner-up at 95%.
+    #: Unmeasurable counts as unmet: the criterion asks for evidence.
+    require_separation: bool = False
+    #: The best trial's interval must clear its declared baseline.
+    require_beats_baseline: bool = False
+
+    @property
+    def declared(self) -> bool:
+        return (
+            self.min_objective is not None
+            or self.min_observations is not None
+            or self.require_separation
+            or self.require_beats_baseline
+        )
 
 
 class BudgetSpec(ConfigModel):
@@ -449,6 +492,9 @@ class GoalSpec(ConfigModel):
     objective: ObjectiveSpec
     search_space: dict[str, ParamSpec]
     workload: WorkloadSpec
+    #: The bar the result has to clear to count. Declaring none is
+    #: allowed and is reported as such; it is not a pass.
+    success_criteria: SuccessCriteria = Field(default_factory=SuccessCriteria)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     agent: AgentSpec = Field(default_factory=AgentSpec)

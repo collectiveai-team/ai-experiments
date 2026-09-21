@@ -136,3 +136,51 @@ def _declared_options(argv: list[str], working_dir: Path) -> set[str]:
     if completed.returncode != 0:
         return set()
     return set(_LONG_OPTION.findall(completed.stdout + completed.stderr))
+
+
+def goal_warnings(goal: GoalSpec) -> list[str]:
+    """Ways a goal can be valid, run to completion, and still prove nothing.
+
+    Separate from :func:`workload_warnings` because these are about the
+    question, not the machinery: nothing here will make a trial crash. They
+    are the failures that only show up at the end, when the campaign has a
+    best trial and no rule that says whether that number was the point.
+    """
+    warnings: list[str] = []
+    objective = goal.objective
+    criteria = goal.success_criteria
+
+    if not criteria.declared:
+        warnings.append(
+            "this goal declares no success_criteria, so the campaign will "
+            "report a best trial without saying whether it is good enough; "
+            "decide the bar now, not after seeing the number"
+        )
+
+    if objective.baseline_metric is None:
+        moving = sorted(
+            name for name, spec in goal.search_space.items() if spec.changes_data
+        )
+        if moving:
+            warnings.append(
+                f"{', '.join(moving)} change the data a trial is scored on, but "
+                f"objective '{objective.metric}' has no baseline_metric; trials "
+                "on different slices are not comparable and the search will "
+                "reward the easiest slice"
+            )
+
+    if criteria.require_separation and objective.aggregate != "mean":
+        warnings.append(
+            "success_criteria.require_separation needs an interval, which "
+            "only objective.aggregate='mean' produces; as written the "
+            "criterion can never be met"
+        )
+
+    if criteria.require_beats_baseline and objective.baseline_metric is None:
+        warnings.append(
+            "success_criteria.require_beats_baseline has no baseline to beat: "
+            "objective.baseline_metric is not set, so the criterion can never "
+            "be met"
+        )
+
+    return warnings

@@ -55,6 +55,9 @@ class LoopReport(BaseModel):
     #: and from its baseline. A caller that reads `best` alone reports the
     #: winner of a raffle; see `campaign_verdict`.
     verdict: dict[str, Any] = Field(default_factory=dict)
+    #: Whether the campaign cleared the bar its goal declared. ``met`` is
+    #: ``None`` when the goal declared none, which is not a pass.
+    success: dict[str, Any] = Field(default_factory=dict)
     history: list[dict[str, Any]] = Field(default_factory=list)
     reviews: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -130,6 +133,7 @@ def run_loop(
         objective=summary["objective"],
         best=summary["best"],
         verdict=summary["verdict"],
+        success=summary["success"],
         history=summary["history"],
         reviews=reviews,
     )

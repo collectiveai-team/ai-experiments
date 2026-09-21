@@ -142,9 +142,17 @@ def _preflight(
     warnings by default: a Ray workload resolves its entrypoint on the
     cluster, so a binary missing here can still be right (#32).
     """
-    from ai_experiments.preflight import WARNING_PREFIX, workload_warnings
+    from ai_experiments.preflight import (
+        WARNING_PREFIX,
+        goal_warnings,
+        workload_warnings,
+    )
 
     warnings = workload_warnings(source)
+    if isinstance(source, GoalSpec):
+        # A goal carries a second kind of defect the manifest cannot have:
+        # one that makes the campaign run fine and prove nothing.
+        warnings = warnings + goal_warnings(source)
     for warning in warnings:
         typer.echo(f"{WARNING_PREFIX}{warning}", err=True)
     if warnings and strict:
@@ -739,20 +747,34 @@ def _orchestrator(runs_dir: Optional[Path]):
 @campaign_app.command("validate", cls=IaxCommand)
 def campaign_validate(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero when the goal draws any warning"
+    ),
 ) -> None:
     try:
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
         invalid_input(f"invalid goal {config}: {exc}")
+    _preflight(goal, strict, "goal has warnings and --strict is set")
     typer.echo(f"Goal valid: {config}")
     typer.echo(f"  Goal:      {goal.goal}")
     typer.echo(
         f"  Objective: {goal.objective.mode} {goal.objective.metric}"
         + (
+            f" minus {goal.objective.baseline_metric}"
+            if goal.objective.baseline_metric
+            else ""
+        )
+        + f", {goal.objective.aggregate} of the observations"
+        + (
             f" (target {goal.objective.target})"
             if goal.objective.target is not None
             else ""
         )
+    )
+    criteria = goal.success_criteria
+    typer.echo(
+        f"  Success:   {criteria.model_dump(exclude_defaults=True) or 'not declared'}"
     )
     typer.echo(
         f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel"
@@ -1255,11 +1277,20 @@ def loop_goal(
         # report already names the submit errors; the code says start the
         # cluster, not widen the goal.
         raise typer.Exit(code=EXIT_BACKEND_UNAVAILABLE)
+    if report.success.get("declared"):
+        # A goal that wrote down what success means is the authority on
+        # whether it happened. `target_reached` only says the loop stopped
+        # early, which a lucky single observation can also do.
+        if not report.success["met"]:
+            raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
+        return
     if not report.target_reached:
         raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
 
 
 def _print_loop_report(report) -> None:
+    from ai_experiments.planner.analysis import result_lines
+
     typer.echo(f"{report.campaign_id}: {report.status} ({report.stop_reason})")
     typer.echo(
         f"  Loop:    {report.rounds} rounds, {report.trials} trials, "
@@ -1267,9 +1298,17 @@ def _print_loop_report(report) -> None:
     )
     metric = report.objective.get("metric", "objective")
     if report.best:
-        typer.echo(
-            f"  Best:    {report.best['trial_id']} {metric}={report.best['objective_value']:.6g}"
+        lines = result_lines(
+            {
+                "best": report.best,
+                "verdict": report.verdict,
+                "success": report.success,
+                "objective": report.objective,
+            }
         )
+        typer.echo(f"  Best:    {lines[0]}")
+        for line in lines[1:]:
+            typer.echo(f"           {line}")
         typer.echo(f"           params={report.best['params']}")
     else:
         typer.echo("  Best:    no trial produced a usable objective value")

@@ -14,6 +14,7 @@ from ai_experiments.schemas import (
     GoalSpec,
     MetricPoint,
     ObjectiveSpec,
+    SuccessCriteria,
     TrialRecord,
 )
 from ai_experiments.store import FilesystemRunStore
@@ -292,6 +293,79 @@ def campaign_verdict(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
 
 
 
+
+def evaluate_success(
+    best: dict[str, Any] | None,
+    verdict: dict[str, Any],
+    criteria: SuccessCriteria,
+    mode: str,
+) -> dict[str, Any]:
+    """Whether the campaign cleared the bar it set itself, and what it missed.
+
+    Every check reports the evidence it wanted, so a failure reads as an
+    instruction: raise the folds, set a baseline, run more trials. The one
+    rule that is easy to get wrong is that *unmeasured* fails a criterion
+    that asks for measurement — a campaign cannot satisfy "show me the lead
+    is real" by never looking.
+    """
+    if not criteria.declared:
+        return {"declared": False, "met": None, "unmet": []}
+    if best is None or best.get("objective_value") is None:
+        return {
+            "declared": True,
+            "met": False,
+            "unmet": ["no trial produced a usable objective value"],
+        }
+
+    unmet: list[str] = []
+    value = best["objective_value"]
+    if criteria.min_objective is not None:
+        cleared = (
+            value >= criteria.min_objective
+            if mode == "max"
+            else value <= criteria.min_objective
+        )
+        if not cleared:
+            direction = "at least" if mode == "max" else "at most"
+            unmet.append(
+                f"objective {value:.6g} does not reach the required "
+                f"{direction} {criteria.min_objective:.6g}"
+            )
+
+    if criteria.min_observations is not None:
+        n = best.get("n_observations") or 0
+        if n < criteria.min_observations:
+            unmet.append(
+                f"the score rests on {n} observation{'' if n == 1 else 's'}, "
+                f"fewer than the required {criteria.min_observations}"
+            )
+
+    if criteria.require_separation:
+        separated = verdict.get("separated")
+        if separated is None:
+            unmet.append(
+                "separation from the runner-up was never measured; the "
+                "objective needs `aggregate: mean` and a second scored trial"
+            )
+        elif not separated:
+            unmet.append(
+                f"the lead over {verdict.get('runner_up_trial_id')} is within "
+                "the noise at 95% confidence"
+            )
+
+    if criteria.require_beats_baseline:
+        beats = verdict.get("beats_baseline")
+        if beats is None:
+            unmet.append(
+                "the comparison against the baseline was never measured; the "
+                "objective needs `baseline_metric` and `aggregate: mean`"
+            )
+        elif not beats:
+            unmet.append("the interval does not clear the baseline")
+
+    return {"declared": True, "met": not unmet, "unmet": unmet}
+
+
 def result_lines(summary: dict[str, Any]) -> list[str]:
     """The campaign's finding, in the words a report should use.
 
@@ -335,6 +409,17 @@ def result_lines(summary: dict[str, Any]) -> list[str]:
             else "the interval does not clear the baseline: this campaign has "
             "not shown the model beats it"
         )
+
+    success = summary.get("success") or {}
+    if not success.get("declared"):
+        lines.append(
+            "no success criteria were declared, so this result cannot be "
+            "called a success or a failure"
+        )
+    elif success["met"]:
+        lines.append("success criteria met")
+    else:
+        lines.append("success criteria NOT met: " + "; ".join(success["unmet"]))
     return lines
 
 
@@ -343,6 +428,20 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     for trial in state.trials:
         by_status[trial.status] = by_status.get(trial.status, 0) + 1
     best = best_trial(state, goal.objective.mode)
+    best_block = (
+        {
+            "trial_id": best.trial_id,
+            "run_id": best.run_id,
+            "objective_value": best.objective_value,
+            "stderr": best.objective_stderr,
+            "n_observations": best.objective_observations,
+            "ci95": confidence_interval(best.objective_value, best.objective_stderr),
+            "params": best.params,
+        }
+        if best
+        else None
+    )
+    verdict = campaign_verdict(state, goal)
     history = trial_history(state.trials)
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
     cost = (
@@ -376,21 +475,10 @@ def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         "agent_calls": state.agent_calls,
         "trials_by_status": by_status,
         "trials_total": len(state.trials),
-        "best": (
-            {
-                "trial_id": best.trial_id,
-                "run_id": best.run_id,
-                "objective_value": best.objective_value,
-                "stderr": best.objective_stderr,
-                "n_observations": best.objective_observations,
-                "ci95": confidence_interval(
-                    best.objective_value, best.objective_stderr
-                ),
-                "params": best.params,
-            }
-            if best
-            else None
+        "best": best_block,
+        "verdict": verdict,
+        "success": evaluate_success(
+            best_block, verdict, goal.success_criteria, goal.objective.mode
         ),
-        "verdict": campaign_verdict(state, goal),
         "history": history,
     }

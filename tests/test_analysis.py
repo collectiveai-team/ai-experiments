@@ -13,6 +13,7 @@ from ai_experiments.schemas import (
     GoalSpec,
     MetricPoint,
     ObjectiveSpec,
+    SuccessCriteria,
     TrialRecord,
     WorkloadSpec,
 )
@@ -367,3 +368,119 @@ def test_there_is_nothing_to_report_without_a_scored_trial():
     state, goal = _campaign([])
 
     assert result_lines(summarize_campaign(state, goal)) == []
+
+
+# --- what counts as success, written down beforehand ----------------------
+
+
+def _with_criteria(scored, criteria, **objective_kwargs):
+    state, goal = _campaign(scored, **objective_kwargs)
+    goal = goal.model_copy(update={"success_criteria": SuccessCriteria(**criteria)})
+    return summarize_campaign(state, goal)
+
+
+def test_a_campaign_that_declares_nothing_cannot_be_said_to_have_succeeded():
+    """The honest answer to "did it work?" for a goal that never said what
+    working means is not "yes" and not "no" — it is that nobody wrote it
+    down. Silence here is how a max-of-24 becomes a headline.
+    """
+    summary = _with_criteria([("t1", 0.9, 0.01)], {}, aggregate="mean")
+
+    assert summary["success"]["declared"] is False
+    assert summary["success"]["met"] is None
+
+
+def test_the_score_has_to_clear_the_bar_that_was_set():
+    summary = _with_criteria(
+        [("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean"
+    )
+
+    assert summary["success"]["met"] is False
+    assert any("0.05" in reason for reason in summary["success"]["unmet"])
+
+
+def test_a_score_over_the_bar_meets_the_criteria():
+    summary = _with_criteria(
+        [("t1", 0.30, 0.001)], {"min_objective": 0.05}, aggregate="mean"
+    )
+
+    assert summary["success"]["met"] is True
+    assert summary["success"]["unmet"] == []
+
+
+def test_a_bar_read_the_other_way_round_when_lower_is_better():
+    state, goal = _campaign([("t1", 0.04, 0.001)], aggregate="mean")
+    goal = goal.model_copy(
+        update={
+            "objective": goal.objective.model_copy(update={"mode": "min"}),
+            "success_criteria": SuccessCriteria(min_objective=0.05),
+        }
+    )
+
+    assert summarize_campaign(state, goal)["success"]["met"] is True
+
+
+def test_proof_that_was_never_collected_does_not_count_as_proof():
+    """Demanding separation from a campaign that measured no spread fails —
+    the criterion asks for evidence, and "not measured" is not evidence.
+    """
+    summary = _with_criteria(
+        [("t1", 0.9, None), ("t2", 0.1, None)], {"require_separation": True}
+    )
+
+    assert summary["success"]["met"] is False
+    assert any("never measured" in reason for reason in summary["success"]["unmet"])
+
+
+def test_a_winner_inside_the_noise_fails_the_separation_criterion():
+    summary = _with_criteria(
+        [("t1", 0.12, 0.07), ("t2", 0.10, 0.07)],
+        {"require_separation": True},
+        aggregate="mean",
+    )
+
+    assert summary["success"]["met"] is False
+
+
+def test_a_lift_that_does_not_clear_the_baseline_fails_that_criterion():
+    summary = _with_criteria(
+        [("t1", 0.1189, 0.0737)],
+        {"require_beats_baseline": True},
+        baseline_metric="baseline_pr_auc",
+        aggregate="mean",
+    )
+
+    assert summary["success"]["met"] is False
+    assert any("baseline" in reason for reason in summary["success"]["unmet"])
+
+
+def test_one_lucky_fold_is_not_enough_observations():
+    """A 24-trial campaign whose winner rests on a single evaluation has
+    measured the evaluation, not the model."""
+    state, goal = _campaign([("t1", 0.9, None)], aggregate="mean")
+    state.trials[0].objective_observations = 1
+    goal = goal.model_copy(
+        update={"success_criteria": SuccessCriteria(min_observations=5)}
+    )
+
+    summary = summarize_campaign(state, goal)
+
+    assert summary["success"]["met"] is False
+    assert any("1 observation" in reason for reason in summary["success"]["unmet"])
+
+
+def test_criteria_cannot_be_met_by_a_campaign_with_no_scored_trial():
+    summary = _with_criteria([], {"min_objective": 0.05})
+
+    assert summary["success"]["met"] is False
+    assert any("no trial" in reason for reason in summary["success"]["unmet"])
+
+
+def test_the_result_lines_state_the_verdict_on_the_criteria():
+    summary = _with_criteria(
+        [("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean"
+    )
+
+    lines = result_lines(summary)
+
+    assert any("success criteria NOT met" in line for line in lines)
