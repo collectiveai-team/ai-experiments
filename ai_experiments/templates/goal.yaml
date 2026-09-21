@@ -15,11 +15,44 @@ objective:
   metric: loss            # must match a key your workload reports
   mode: min               # min | max
   target: 0.01            # optional: stop as soon as this is reached
+  aggregate: best         # best | mean.  `best` treats the reported lines as
+                          # stages of one training run.  Use `mean` when each
+                          # line is an independent evaluation of the same
+                          # config - a fold, a seed, a held-out window - so the
+                          # score comes with a standard error instead of being
+                          # the luckiest of k.
+  # baseline_metric: baseline_loss
+                          # Score the lift over a baseline the workload reports
+                          # in the same line.  Needed whenever the search can
+                          # change the data a trial is scored on, since raw
+                          # values across different slices are not comparable.
 
 search_space:
   lr: { type: loguniform, low: 0.0001, high: 0.1 }
   # batch_size: { type: choice, values: [16, 32, 64] }
   # layers: { type: int, low: 2, high: 8 }
+  # model: { type: choice, values: [resnet, vit] }
+  # window_days: { type: choice, values: [30, 90], changes_data: true }
+  #                         # changes_data: this knob moves the data or the
+  #                         # labels, not just the fit.  Pair it with
+  #                         # objective.baseline_metric.
+  # patch_size: { type: choice, values: [8, 16], when: { model: [vit] } }
+  #                         # when: draw this only for the trials that read it,
+  #                         # instead of sampling a knob the model ignores.
+
+# What this campaign has to show before its result counts.  Write it before
+# running anything: afterwards the bar is chosen to fit the number that came
+# out.  A goal that declares nothing here reports a best trial and no verdict.
+success_criteria:
+  min_objective: 0.01     # the bar the objective must clear (`mode: min` reads
+                          # it as "at most")
+  # min_observations: 10  # refuse a score that rests on too few observations
+  # require_separation: true
+                          # the winner must beat the runner-up by more than the
+                          # noise, at 95%.  Needs aggregate: mean.
+  # require_beats_baseline: true
+                          # the interval must clear the baseline.  Needs
+                          # objective.baseline_metric.
 
 workload:
   entrypoint: python

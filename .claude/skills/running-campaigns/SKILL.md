@@ -14,6 +14,12 @@ wants the harness to reach it — `iax loop` runs the whole loop as one command
 and reports whether the target was met. This skill is for driving the rounds
 yourself.
 
+Use **defining-goals** first, either way. The decisions it covers —
+`objective.aggregate`, `objective.baseline_metric`, `changes_data`, `when`, how
+many observations a trial needs, and the `success_criteria` the campaign will
+be judged against — are made before the first trial and cannot be made
+honestly after. The manifest below shows where they go, not how to choose them.
+
 ## Author the goal manifest
 
 Translate the user's ask into a `GoalSpec` YAML (full reference:
@@ -22,12 +28,24 @@ Translate the user's ask into a `GoalSpec` YAML (full reference:
 ```yaml
 goal: "<the user's objective, in one sentence>"
 name: short-slug
-objective: { metric: val_loss, mode: min, target: 0.05 }   # target optional
+objective:
+  metric: val_loss
+  mode: min
+  target: 0.05              # optional
+  aggregate: best           # `mean` when the workload reports folds/seeds
+  # baseline_metric: val_loss_baseline   # score the lift, paired per observation
 search_space:
   lr: { type: loguniform, low: 1e-5, high: 1e-2 }
   batch_size: { type: choice, values: [16, 32, 64] }
   layers: { type: int, low: 1, high: 4 }
   dropout: { type: uniform, low: 0.0, high: 0.5 }
+  # window_days: { type: choice, values: [30, 90], changes_data: true }
+  # patch_size:  { type: choice, values: [8, 16], when: { model: [vit] } }
+success_criteria:           # what this campaign has to show; declare it now
+  min_objective: 0.05
+  # min_observations: 10
+  # require_separation: true        # needs aggregate: mean
+  # require_beats_baseline: true    # needs baseline_metric
 workload:
   entrypoint: "python train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
@@ -40,6 +58,10 @@ monitoring:
   timeout_seconds: 14400
   auto_kill: true
 ```
+
+Run `iax campaign validate goal.yaml --strict` and get it to zero warnings
+before starting. The warnings are the ways a goal can be valid, run to
+completion and still settle nothing.
 
 Constraints that matter:
 - The workload **must** print `IAX_METRIC {"step": N, "<metric>": value}`
@@ -72,11 +94,27 @@ Without `iax run` or a running daemon the campaign does not advance.
 
 ```bash
 iax campaign list
-iax campaign status <campaign_id> --json   # best trial, history, gpu-hours, cost
+iax campaign status <campaign_id> --json   # best trial, verdict, success, spend
 iax leaderboard                             # rank all campaigns by best objective
 iax artifacts <run_id>                      # checkpoints the workload saved
 iax serve                                   # dashboard at http://127.0.0.1:8585
 ```
+
+`status` carries two blocks that decide what the campaign is allowed to claim,
+both computed in `ai_experiments/planner/analysis.py` rather than by whoever is
+reading:
+
+- `verdict` — `margin` and `separated` (is the winner's lead bigger than the
+  noise, at 95%?) and `beats_baseline` (does its interval clear zero?).
+- `success` — `declared`, `met`, and `unmet`, the list of criteria that failed
+  and why.
+
+In both, `false` means the campaign looked and the evidence was not there;
+`null` means nothing measured it — an objective with `aggregate: best` has no
+interval, so it can never answer either question. Keep them apart when you
+report. The plain-text lines the CLI prints come from `result_lines`, the one
+place that decides how a verdict is spoken: quote those instead of writing your
+own sentence around the number.
 
 Workloads should save checkpoints/plots into `$IAX_ARTIFACTS_DIR`. Every run
 also gets a repro bundle (git SHA, dirty diff, environment) — `iax repro
