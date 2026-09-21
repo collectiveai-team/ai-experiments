@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,19 @@ from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip the colour Rich paints a usage error with.
+
+    Typer highlights an offending flag, which splits `--bogus-flag` into three
+    escape-wrapped pieces. Locally that never happens -- pytest captures a pipe
+    and Rich gives up on colour -- but CI forces it on, so the assertion has to
+    read the message rather than its decoration.
+    """
+    return _ANSI.sub("", text)
 
 
 def _submit(tmp_path: Path, entrypoint: str) -> tuple[FilesystemRunStore, str]:
@@ -119,7 +133,7 @@ def test_worker_cli_rejects_an_unknown_flag(tmp_path):
     )
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "No such option: --bogus-flag" in result.stderr
+    assert "No such option: --bogus-flag" in _plain(result.stderr)
 
 
 def test_worker_cli_rejects_an_empty_runs_dir(tmp_path):
@@ -147,7 +161,10 @@ def test_worker_cli_rejects_an_empty_runs_dir(tmp_path):
         text=True,
         timeout=30,
         check=False,
+        # Same reason as above: pin the width so Rich cannot wrap the flag name
+        # out of the panel and out of this assertion.
+        env={**os.environ, "COLUMNS": "200"},
     )
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "--runs-dir" in result.stderr
+    assert "--runs-dir" in _plain(result.stderr)
