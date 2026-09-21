@@ -112,12 +112,17 @@ A finished campaign writes `summary.json` in
 | `search_space_exhausted` | the planner ran out of points; widen the goal |
 | `backend_unavailable` | no trial could be submitted; start the cluster |
 | `objective_not_reported` | trials ran but never reported the objective metric |
+| `all_trials_failing` | every trial died without scoring; read the error and fix the workload |
 | `agent_requested_stop` | the reviewing agent judged the campaign hopeless |
 | `user_requested` | `iax campaign stop` |
 
 Only `target_reached` answers the question. Every other reason means the
 campaign stopped for a reason of its own, and the best trial so far is a
 partial result — say which one it was when you report.
+
+`all_trials_failing` and `objective_not_reported` are not results at all:
+they mean the harness could never talk to the workload. The campaign event
+log carries the workload's own error — report that, not the stop reason.
 
 ## Inject your own analysis (opt-in tokens)
 

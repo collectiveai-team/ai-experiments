@@ -348,6 +348,10 @@ class BudgetSpec(ConfigModel):
     max_hours: float | None = None
     max_gpu_hours: float | None = None
     gpu_hour_rate: float | None = None  # currency per GPU-hour, for cost display
+    #: Consecutive failed trials, with nothing ever scored, before the
+    #: campaign gives up. A workload the harness cannot talk to fails
+    #: identically every time, so the rest of the budget buys nothing.
+    halt_after_failures: int = 8
 
     @model_validator(mode="after")
     def positive_budget(self) -> BudgetSpec:
@@ -355,6 +359,8 @@ class BudgetSpec(ConfigModel):
             raise ValueError("max_trials must be >= 1")
         if self.max_parallel < 1:
             raise ValueError("max_parallel must be >= 1")
+        if self.halt_after_failures < 1:
+            raise ValueError("halt_after_failures must be >= 1")
         return self
 
 

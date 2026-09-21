@@ -43,7 +43,11 @@ from ai_experiments.store.campaign import CampaignStore
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
 
 #: Stop reasons that mean the campaign broke rather than finished.
-FAILURE_STOP_REASONS = {"objective_not_reported", "backend_unavailable"}
+FAILURE_STOP_REASONS = {
+    "objective_not_reported",
+    "backend_unavailable",
+    "all_trials_failing",
+}
 
 #: How many trials may complete without a usable objective before the
 #: campaign is declared broken instead of merely unlucky.
@@ -74,6 +78,9 @@ STOP_REASONS: dict[str, str] = {
     "search_space_exhausted": "the planner ran out of points; widen the goal",
     "backend_unavailable": "no trial could be submitted; start the cluster",
     "objective_not_reported": "trials ran but never reported the objective metric",
+    "all_trials_failing": (
+        "every trial died without scoring; read the error and fix the workload"
+    ),
     AGENT_STOP_REASON: "the reviewing agent judged the campaign hopeless",
     "user_requested": "`iax campaign stop`",
 }
@@ -428,6 +435,22 @@ class CampaignOrchestrator:
             state.campaign_id,
             RunEvent(message="campaign finished", details={"reason": stop_reason}),
         )
+        if stop_reason == "all_trials_failing":
+            # The reason alone sends the reader to the runs directory. The
+            # error is the only thing that tells them what to fix.
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="error",
+                    message="campaign gave up: every trial failed",
+                    details={
+                        "failed_trials": len(
+                            [t for t in state.trials if t.status == "failed"]
+                        ),
+                        "workload_error": self._last_trial_error(state),
+                    },
+                ),
+            )
         self._write_summary(state, goal)
         return state
 
@@ -513,6 +536,10 @@ class CampaignOrchestrator:
         if contract_broken:
             return contract_broken
 
+        all_failing = self._all_trials_failing(state, goal)
+        if all_failing:
+            return all_failing
+
         best = best_trial(state, goal.objective.mode)
         target = goal.objective.target
         if best is not None and target is not None and best.objective_value is not None:
@@ -555,6 +582,33 @@ class CampaignOrchestrator:
         if any(t.objective_value is not None for t in completed):
             return None
         return "objective_not_reported"
+
+    def _all_trials_failing(self, state: CampaignState, goal: GoalSpec) -> str | None:
+        """Stop when the workload has never once run to a score.
+
+        `_objective_contract_broken` covers trials that *complete* without
+        reporting; this covers the louder case, where they do not complete at
+        all. A workload the harness cannot talk to -- a flag its parser
+        rejects, a missing dataset, an import error -- fails identically on
+        every trial, so the rest of the budget buys nothing but a longer wait
+        for the same message.
+
+        Deliberately not a streak: one trial that scored means the workload
+        does work, and the failures are the interesting kind.
+        """
+        if any(t.objective_value is not None for t in state.trials):
+            return None
+        failed = [t for t in state.trials if t.status == "failed"]
+        if len(failed) < goal.budget.halt_after_failures:
+            return None
+        return "all_trials_failing"
+
+    def _last_trial_error(self, state: CampaignState) -> str | None:
+        """What the workload said on its way out, for the giving-up event."""
+        for trial in reversed(state.trials):
+            if trial.status == "failed" and trial.error:
+                return trial.error
+        return None
 
     def gpu_hours_spent(self, state: CampaignState, goal: GoalSpec) -> float:
         """GPU-hours consumed so far: recorded for finished trials, a live

@@ -18,7 +18,12 @@ from ai_experiments.orchestrator import STOP_REASONS
 
 SOURCE = Path(orchestrator.__file__)
 #: The functions that decide how a campaign ends.
-DECIDERS = ("_stop_reason", "_exhausted_reason", "_objective_contract_broken")
+DECIDERS = (
+    "_stop_reason",
+    "_exhausted_reason",
+    "_objective_contract_broken",
+    "_all_trials_failing",
+)
 SKILL = (
     Path(__file__).resolve().parents[1] / ".claude/skills/running-campaigns/SKILL.md"
 )
