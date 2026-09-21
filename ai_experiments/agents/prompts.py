@@ -80,11 +80,27 @@ def _objective_block(goal: GoalSpec) -> str:
         if goal.objective.target is not None
         else ", no explicit target"
     )
-    return (
-        f"Objective: {goal.objective.mode}imize `{goal.objective.metric}`{target}. "
+    objective = goal.objective
+    lines = [
+        f"Objective: {objective.mode}imize `{objective.metric}`{target}. "
         'The workload reports it on stdout as `IAX_METRIC {"step": n, '
-        f'"{goal.objective.metric}": value}}`.'
-    )
+        f'"{objective.metric}": value}}`.'
+    ]
+    if objective.baseline_metric:
+        # Scores are lifts, not levels. An agent that does not know this
+        # proposes whatever raises the base rate.
+        lines.append(
+            f"Scores are the lift `{objective.metric} - "
+            f"{objective.baseline_metric}`, paired within one observation, so "
+            "a change that raises both is worth nothing."
+        )
+    if objective.aggregate == "mean":
+        lines.append(
+            "A trial's score is averaged over all its observations, not taken "
+            "from the best one, and carries a standard error; a difference "
+            "smaller than that error is not evidence."
+        )
+    return " ".join(lines)
 
 
 def _search_space_block(goal: GoalSpec) -> str:
@@ -92,7 +108,18 @@ def _search_space_block(goal: GoalSpec) -> str:
         name: spec.model_dump(mode="json", exclude_none=True)
         for name, spec in goal.search_space.items()
     }
-    return "Search space:\n" + json.dumps(space, indent=2)
+    block = "Search space:\n" + json.dumps(space, indent=2)
+    conditional = sorted(
+        name for name, spec in goal.search_space.items() if spec.when
+    )
+    if conditional:
+        block += (
+            f"\n{', '.join(conditional)} carry a `when` condition: include each "
+            "one only in the trials whose other parameters satisfy it, and omit "
+            "it everywhere else. An assignment that sets a key whose condition "
+            "does not hold is rejected."
+        )
+    return block
 
 
 def _budget_block(goal: GoalSpec, summary: dict[str, Any]) -> str:

@@ -293,6 +293,13 @@ class ParamBase(ConfigModel):
     #: a lift. ``window_days``, ``resample_freq`` and a choice of label
     #: source are all of this kind; a learning rate is not.
     changes_data: bool = False
+    #: Draw this dimension only for trials where the named parameters take
+    #: one of the listed values, as in ``{"model": ["hist_gb"]}``. A space
+    #: without it hands every model every other model's knobs: those trials
+    #: are duplicates the deduplicator cannot see, and their spread reads as
+    #: evidence that the knobs do nothing. Conditions may only name
+    #: unconditional keys — see :meth:`GoalSpec.conditions_resolve`.
+    when: dict[str, list[Any]] = Field(default_factory=dict)
 
 
 class ChoiceParam(ParamBase):
@@ -528,6 +535,31 @@ class GoalSpec(ConfigModel):
     def objective_metric_monitored(self) -> GoalSpec:
         if self.monitoring.objective_metric is None:
             self.monitoring.objective_metric = self.objective.metric
+        return self
+
+    @model_validator(mode="after")
+    def conditions_resolve(self) -> GoalSpec:
+        """A ``when`` has to name a key that exists and is drawn first.
+
+        Restricting conditions to one level keeps the sampling order obvious
+        — unconditional keys, then everything that depends on them — and
+        costs nothing anyone has asked for. A typo'd condition would
+        otherwise silently never hold, quietly deleting a dimension from the
+        search.
+        """
+        for name, spec in self.search_space.items():
+            for other in spec.when:
+                if other not in self.search_space:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which the space does not define — typo?"
+                    )
+                if self.search_space[other].when:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which is itself conditional; conditions "
+                        "may only name unconditional keys"
+                    )
         return self
 
     @classmethod

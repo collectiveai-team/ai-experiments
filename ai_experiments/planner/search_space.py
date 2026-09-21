@@ -16,9 +16,48 @@ from ai_experiments.schemas import (
 )
 
 
+def applies(spec: ParamSpec, params: dict[str, Any]) -> bool:
+    """Whether this dimension exists for a trial with these parameters."""
+    return all(params.get(name) in values for name, values in spec.when.items())
+
+
+def active_space(
+    space: dict[str, ParamSpec], params: dict[str, Any]
+) -> dict[str, ParamSpec]:
+    """The dimensions a trial with these parameters actually has.
+
+    A gradient-boosting knob is not a dimension of a logistic regression
+    trial; it is a value the run will never read. Everything downstream —
+    sampling, the grid, validation, the command line — asks this first.
+    """
+    return {name: spec for name, spec in space.items() if applies(spec, params)}
+
+
+def _partition(
+    space: dict[str, ParamSpec],
+) -> tuple[dict[str, ParamSpec], dict[str, ParamSpec]]:
+    """Unconditional dimensions, then the ones that depend on them.
+
+    Conditions are one level deep by construction (``GoalSpec`` refuses a
+    condition on a conditional key), so this ordering is all the dependency
+    resolution anyone needs.
+    """
+    free = {name: spec for name, spec in space.items() if not spec.when}
+    return free, {name: spec for name, spec in space.items() if spec.when}
+
+
 def sample(space: dict[str, ParamSpec], rng: random.Random) -> dict[str, Any]:
     """Draw one random parameter assignment."""
-    return {name: _sample_param(spec, rng) for name, spec in space.items()}
+    free, conditional = _partition(space)
+    params = {name: _sample_param(spec, rng) for name, spec in free.items()}
+    params.update(
+        {
+            name: _sample_param(spec, rng)
+            for name, spec in conditional.items()
+            if applies(spec, params)
+        }
+    )
+    return params
 
 
 def _sample_param(spec: ParamSpec, rng: random.Random) -> Any:
@@ -36,7 +75,23 @@ def _sample_param(spec: ParamSpec, rng: random.Random) -> Any:
 def grid_points(
     space: dict[str, ParamSpec], resolution: int = 4
 ) -> list[dict[str, Any]]:
-    """Expand the space into a full grid (continuous params get `resolution` steps)."""
+    """Expand the space into a full grid (continuous params get `resolution` steps).
+
+    Conditional dimensions multiply out only over the points that have them,
+    so a two-model grid does not spend half its points on combinations one of
+    the models cannot read.
+    """
+    free, conditional = _partition(space)
+    points: list[dict[str, Any]] = []
+    for base in _product(free, resolution):
+        extra = {
+            name: spec for name, spec in conditional.items() if applies(spec, base)
+        }
+        points.extend({**base, **combo} for combo in _product(extra, resolution))
+    return points
+
+
+def _product(space: dict[str, ParamSpec], resolution: int) -> list[dict[str, Any]]:
     names = sorted(space)
     axes = [_grid_axis(space[name], resolution) for name in names]
     return [dict(zip(names, combo)) for combo in itertools.product(*axes)]
@@ -70,13 +125,27 @@ def perturb(
 ) -> dict[str, Any]:
     """Sample a neighbor of `base`: gaussian moves for numeric params (log-space
     for loguniform), a re-draw with probability `scale` for choices."""
+    free, conditional = _partition(space)
     result: dict[str, Any] = {}
-    for name, spec in space.items():
+    for name, spec in free.items():
         value = base.get(name)
-        if value is None:
-            result[name] = _sample_param(spec, rng)
-        else:
-            result[name] = _perturb_param(spec, value, rng, scale)
+        result[name] = (
+            _sample_param(spec, rng)
+            if value is None
+            else _perturb_param(spec, value, rng, scale)
+        )
+    for name, spec in conditional.items():
+        if not applies(spec, result):
+            # The neighbour flipped across the condition: this knob is not a
+            # dimension here, and carrying the old value over would put a
+            # parameter in the trial record that the run never reads.
+            continue
+        value = base.get(name)
+        result[name] = (
+            _sample_param(spec, rng)
+            if value is None
+            else _perturb_param(spec, value, rng, scale)
+        )
     return result
 
 
