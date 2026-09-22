@@ -24,7 +24,10 @@ def test_sensitive_columns_are_dropped():
 
 def test_merge_marks_the_overlap_as_both():
     mapro = pd.DataFrame(
-        {"date": [pd.Timestamp("2023-11-01"), pd.Timestamp("2022-08-17")], "duration_hours": [1.0, 3.0]}
+        {
+            "date": [pd.Timestamp("2023-11-01"), pd.Timestamp("2022-08-17")],
+            "duration_hours": [1.0, 3.0],
+        }
     )
     operator = pd.DataFrame(
         {
@@ -44,7 +47,9 @@ def test_merge_marks_the_overlap_as_both():
 
 
 def test_merge_keeps_one_row_per_date():
-    mapro = pd.DataFrame({"date": [pd.Timestamp("2024-01-05")], "duration_hours": [2.0]})
+    mapro = pd.DataFrame(
+        {"date": [pd.Timestamp("2024-01-05")], "duration_hours": [2.0]}
+    )
     operator = pd.DataFrame(
         {
             "date": [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-05")],
@@ -65,10 +70,26 @@ def _write_operator_log(path):
 
     book = openpyxl.Workbook()
     sheet = book.active
-    sheet.append(["Limpió", "Fecha", "Cantidad de baldes", None, None, "Observaciones", None, "Mapro", "No programada"])
+    sheet.append(
+        [
+            "Limpió",
+            "Fecha",
+            "Cantidad de baldes",
+            None,
+            None,
+            "Observaciones",
+            None,
+            "Mapro",
+            "No programada",
+        ]
+    )
     sheet.append([None, None, "Izquierdo", None, "Derecho", None, None, "X", None])
-    sheet.append(["Sarmiento/Liberal", "2023-11-01", 5, 3.0, None, None, None, "X", None])
-    sheet.append(["Carmona/Viola", "2023-12-25", 4, 2.0, None, "Urfalino", None, None, "x"])
+    sheet.append(
+        ["Sarmiento/Liberal", "2023-11-01", 5, 3.0, None, None, None, "X", None]
+    )
+    sheet.append(
+        ["Carmona/Viola", "2023-12-25", 4, 2.0, None, "Urfalino", None, None, "x"]
+    )
     sheet.append(["Stroscio", "2024-01-08", 2, 1.0, None, None, None, "x", None])
     book.save(path)
     return path
@@ -98,7 +119,9 @@ def test_operator_log_never_returns_names(tmp_path):
 
 
 def test_merge_leaves_scheduled_unknown_when_only_mapro_saw_the_event():
-    mapro = pd.DataFrame({"date": [pd.Timestamp("2022-08-17")], "duration_hours": [3.0]})
+    mapro = pd.DataFrame(
+        {"date": [pd.Timestamp("2022-08-17")], "duration_hours": [3.0]}
+    )
     operator = pd.DataFrame(
         {
             "date": [pd.Timestamp("2024-06-02")],
@@ -110,4 +133,7 @@ def test_merge_leaves_scheduled_unknown_when_only_mapro_saw_the_event():
     merged = merge_events(mapro, operator).set_index("date")
     assert merged["scheduled"].dtype == "boolean"
     assert pd.isna(merged.loc[pd.Timestamp("2022-08-17"), "scheduled"])
-    assert merged.loc[pd.Timestamp("2024-06-02"), "scheduled"] is False or not merged.loc[pd.Timestamp("2024-06-02"), "scheduled"]
+    assert (
+        merged.loc[pd.Timestamp("2024-06-02"), "scheduled"] is False
+        or not merged.loc[pd.Timestamp("2024-06-02"), "scheduled"]
+    )

@@ -49,7 +49,11 @@ def select_events(events: pd.DataFrame, label_source: str) -> pd.Series:
         raise ValueError(
             f"label_source inválido: {label_source!r}; opciones: {sorted(_SOURCES)}"
         ) from None
-    return events.loc[events["source"].isin(keep), "date"].sort_values().reset_index(drop=True)
+    return (
+        events.loc[events["source"].isin(keep), "date"]
+        .sort_values()
+        .reset_index(drop=True)
+    )
 
 
 def label_coverage(
@@ -85,7 +89,10 @@ def build_windows(
     if coverage is not None:
         # el horizonte entero tiene que caer dentro del período registrado
         first = max(first, pd.Timestamp(coverage[0]).normalize())
-        last = min(last, pd.Timestamp(coverage[1]).normalize() - pd.Timedelta(days=horizon_days))
+        last = min(
+            last,
+            pd.Timestamp(coverage[1]).normalize() - pd.Timedelta(days=horizon_days),
+        )
     if last < first:
         return []
 
@@ -97,7 +104,8 @@ def build_windows(
         if history.empty:
             continue
         upcoming = events[
-            (events > as_of.to_datetime64()) & (events <= (as_of + horizon).to_datetime64())
+            (events > as_of.to_datetime64())
+            & (events <= (as_of + horizon).to_datetime64())
         ]
         past = events[events < as_of.to_datetime64()]
         elapsed = (as_of - pd.Timestamp(past[-1])).days if past.size else np.nan

@@ -65,7 +65,9 @@ _STAT_NAMES = ("mean", "std", "min", "max", "p10", "p90", "slope")
 
 def _summarize(frame: pd.DataFrame, suffix: str = "") -> dict[str, float]:
     if frame.empty:
-        return {f"{c}_{s}{suffix}": float("nan") for c in frame.columns for s in _STAT_NAMES}
+        return {
+            f"{c}_{s}{suffix}": float("nan") for c in frame.columns for s in _STAT_NAMES
+        }
     stats = _column_stats(frame)
     return {
         f"{column}_{name}{suffix}": float(values[i])
@@ -77,9 +79,13 @@ def _summarize(frame: pd.DataFrame, suffix: str = "") -> dict[str, float]:
 def _with_derivatives(history: pd.DataFrame) -> pd.DataFrame:
     enriched = history.copy()
     if {"cw_outlet_east_temp", "cw_inlet_temp"} <= set(history.columns):
-        enriched["delta_t_east"] = history["cw_outlet_east_temp"] - history["cw_inlet_temp"]
+        enriched["delta_t_east"] = (
+            history["cw_outlet_east_temp"] - history["cw_inlet_temp"]
+        )
     if {"cw_outlet_west_temp", "cw_inlet_temp"} <= set(history.columns):
-        enriched["delta_t_west"] = history["cw_outlet_west_temp"] - history["cw_inlet_temp"]
+        enriched["delta_t_west"] = (
+            history["cw_outlet_west_temp"] - history["cw_inlet_temp"]
+        )
     if {"condenser_vacuum_east", "ambient_temp"} <= set(history.columns):
         ambient = history["ambient_temp"].replace(0.0, np.nan)
         enriched["vacuum_per_ambient"] = history["condenser_vacuum_east"] / ambient
@@ -103,13 +109,18 @@ def build_feature_table(
 
     for window in windows:
         online = _online(window.history, offline_power_threshold)
-        if len(window.history) == 0 or len(online) / len(window.history) < min_valid_fraction:
+        if (
+            len(window.history) == 0
+            or len(online) / len(window.history) < min_valid_fraction
+        ):
             continue
         enriched = _with_derivatives(online)
 
         features = _summarize(enriched)
         for days in SUB_WINDOWS:
-            recent = enriched.loc[enriched.index >= window.as_of - pd.Timedelta(days=days)]
+            recent = enriched.loc[
+                enriched.index >= window.as_of - pd.Timedelta(days=days)
+            ]
             if recent.empty:
                 recent = enriched
             features.update(_summarize(recent, suffix=f"_{days}d"))
@@ -122,7 +133,11 @@ def build_feature_table(
 
     index = pd.DatetimeIndex(stamps, name="as_of")
     if not rows:
-        return pd.DataFrame(index=index), pd.Series(dtype=int, index=index, name="label"), index
+        return (
+            pd.DataFrame(index=index),
+            pd.Series(dtype=int, index=index, name="label"),
+            index,
+        )
     X = pd.DataFrame(rows, index=index).replace([np.inf, -np.inf], np.nan)
     y = pd.Series(labels, index=index, name="label")
     return X, y, index

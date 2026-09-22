@@ -30,13 +30,21 @@ COLUMNS = [
 ]
 
 
-def synthetic_dataset(seed: int = 0, days: int = 540) -> tuple[pd.DataFrame, pd.DataFrame]:
+def synthetic_dataset(
+    seed: int = 0, days: int = 540
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(seed)
-    index = pd.date_range("2022-01-01", periods=days * 96, freq="15min", name="timestamp")
+    index = pd.date_range(
+        "2022-01-01", periods=days * 96, freq="15min", name="timestamp"
+    )
     hours = np.arange(len(index)) / 4.0
 
-    event_days = np.sort(rng.choice(np.arange(60, days - 20), size=days // 18, replace=False))
-    event_dates = pd.to_datetime(index[0].normalize() + pd.to_timedelta(event_days, unit="D"))
+    event_days = np.sort(
+        rng.choice(np.arange(60, days - 20), size=days // 18, replace=False)
+    )
+    event_dates = pd.to_datetime(
+        index[0].normalize() + pd.to_timedelta(event_days, unit="D")
+    )
 
     fouling = np.zeros(len(index))
     last = 0
@@ -46,7 +54,9 @@ def synthetic_dataset(seed: int = 0, days: int = 540) -> tuple[pd.DataFrame, pd.
         last = end
     fouling[last:] = np.linspace(0, 1, len(index) - last)
 
-    season = 10 * np.sin(2 * np.pi * hours / (24 * 365)) + 3 * np.sin(2 * np.pi * hours / 24)
+    season = 10 * np.sin(2 * np.pi * hours / (24 * 365)) + 3 * np.sin(
+        2 * np.pi * hours / 24
+    )
     ambient = 18 + season + rng.normal(0, 1.0, len(index))
     inlet = ambient - 4 + rng.normal(0, 0.4, len(index))
     delta_t = 12 + 6 * fouling + rng.normal(0, 0.6, len(index))
@@ -56,11 +66,19 @@ def synthetic_dataset(seed: int = 0, days: int = 540) -> tuple[pd.DataFrame, pd.
     frame["cw_inlet_temp"] = inlet
     frame["cw_outlet_east_temp"] = inlet + delta_t
     frame["cw_outlet_west_temp"] = inlet + delta_t + rng.normal(0, 0.3, len(index))
-    frame["condenser_vacuum_east"] = -0.88 + 0.05 * fouling + rng.normal(0, 0.004, len(index))
-    frame["condenser_vacuum_west"] = frame["condenser_vacuum_east"] + rng.normal(0, 0.002, len(index))
-    frame["lp_steam_vacuum"] = frame["condenser_vacuum_east"] + rng.normal(0, 0.003, len(index))
+    frame["condenser_vacuum_east"] = (
+        -0.88 + 0.05 * fouling + rng.normal(0, 0.004, len(index))
+    )
+    frame["condenser_vacuum_west"] = frame["condenser_vacuum_east"] + rng.normal(
+        0, 0.002, len(index)
+    )
+    frame["lp_steam_vacuum"] = frame["condenser_vacuum_east"] + rng.normal(
+        0, 0.003, len(index)
+    )
     frame["condenser_inlet_temp"] = 40 + 2 * fouling + rng.normal(0, 0.5, len(index))
-    frame["active_power"] = np.where(rng.random(len(index)) < 0.02, 0.0, 80 - 4 * fouling)
+    frame["active_power"] = np.where(
+        rng.random(len(index)) < 0.02, 0.0, 80 - 4 * fouling
+    )
     frame["gen_active_power"] = frame["active_power"] * 0.98
     frame["hotwell_level"] = 450 + rng.normal(0, 5, len(index))
     frame["makeup_pct"] = 1.5 + 0.5 * fouling + rng.normal(0, 0.1, len(index))

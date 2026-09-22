@@ -41,7 +41,9 @@ def make_model(
         return lambda: make_pipeline(
             SimpleImputer(strategy="median"),
             StandardScaler(),
-            LogisticRegression(max_iter=2000, class_weight=class_weight, random_state=seed),
+            LogisticRegression(
+                max_iter=2000, class_weight=class_weight, random_state=seed
+            ),
         )
     if name == "dummy":
         return lambda: DummyClassifier(strategy="prior")

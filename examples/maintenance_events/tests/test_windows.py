@@ -9,13 +9,17 @@ FREQ = "1h"
 
 def _signals(days=120):
     index = pd.date_range("2024-01-01", periods=days * 24, freq=FREQ, name="timestamp")
-    return pd.DataFrame({"ambient_temp": np.arange(len(index), dtype=float)}, index=index)
+    return pd.DataFrame(
+        {"ambient_temp": np.arange(len(index), dtype=float)}, index=index
+    )
 
 
 def test_label_is_one_when_an_event_falls_on_the_horizon_edge():
     signals = _signals()
     as_of = pd.Timestamp("2024-02-15")
-    windows = build_windows(signals, pd.Series([as_of + pd.Timedelta(days=15)]), window_days=30)
+    windows = build_windows(
+        signals, pd.Series([as_of + pd.Timedelta(days=15)]), window_days=30
+    )
     hit = [w for w in windows if w.as_of == as_of]
     assert hit and hit[0].label == 1
 
@@ -23,7 +27,9 @@ def test_label_is_one_when_an_event_falls_on_the_horizon_edge():
 def test_label_is_zero_one_day_past_the_horizon():
     signals = _signals()
     as_of = pd.Timestamp("2024-02-15")
-    windows = build_windows(signals, pd.Series([as_of + pd.Timedelta(days=16)]), window_days=30)
+    windows = build_windows(
+        signals, pd.Series([as_of + pd.Timedelta(days=16)]), window_days=30
+    )
     hit = [w for w in windows if w.as_of == as_of]
     assert hit and hit[0].label == 0
 
@@ -38,7 +44,9 @@ def test_an_event_exactly_at_as_of_does_not_label_its_own_window():
 
 def test_history_never_reaches_as_of():
     signals = _signals()
-    windows = build_windows(signals, pd.Series([], dtype="datetime64[ns]"), window_days=30)
+    windows = build_windows(
+        signals, pd.Series([], dtype="datetime64[ns]"), window_days=30
+    )
     for window in windows:
         assert window.history.index.max() < window.as_of
         assert window.history.index.min() >= window.as_of - pd.Timedelta(days=30)
@@ -54,13 +62,17 @@ def test_days_since_last_event_ignores_the_future():
 
 def test_days_since_last_event_is_nan_before_any_event():
     signals = _signals()
-    windows = build_windows(signals, pd.Series([pd.Timestamp("2024-04-01")]), window_days=30)
+    windows = build_windows(
+        signals, pd.Series([pd.Timestamp("2024-04-01")]), window_days=30
+    )
     assert np.isnan(windows[0].days_since_last_event)
 
 
 def test_windows_start_after_a_full_history_and_stop_before_the_horizon():
     signals = _signals(days=120)
-    windows = build_windows(signals, pd.Series([], dtype="datetime64[ns]"), window_days=30)
+    windows = build_windows(
+        signals, pd.Series([], dtype="datetime64[ns]"), window_days=30
+    )
     assert windows[0].as_of == pd.Timestamp("2024-01-31")
     assert windows[-1].as_of <= signals.index.max().normalize() - pd.Timedelta(days=15)
     assert (windows[1].as_of - windows[0].as_of) == pd.Timedelta(days=1)
