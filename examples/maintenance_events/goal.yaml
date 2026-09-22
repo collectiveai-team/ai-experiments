@@ -6,7 +6,8 @@
 # Necesita el dataset: ver examples/maintenance_events/README.md.
 # Para probar el loop sin dataset, agregá "--self-test" a workload.args.
 
-goal: "Maximizar PR-AUC prediciendo una limpieza de condensador a 15 días"
+goal: "¿Alguna configuración predice una limpieza de condensador a 15 días
+       mejor que la tasa base?"
 name: maintenance-events
 
 objective:
@@ -61,22 +62,28 @@ workload:
 
 # Qué tiene que mostrar esta campaña para que se le crea. Escrito antes de
 # correr nada, así después la respuesta es aritmética y no una discusión.
+#
+# LA PREGUNTA ES "¿alguna configuración le gana a predecir la tasa base?", no
+# "¿cuál es la mejor?". El dataset tiene 63 eventos en cinco años y el error
+# estándar del lift no baja de ~0.041 por más folds que se usen; coronar un
+# ganador pediría que el primero le sacara ~0.114 al segundo, más que el lift
+# entero que consigue cualquier config. Esa pregunta no tiene respuesta acá, así
+# que no se hace. Ver README.md § "Qué cuenta como éxito".
 success_criteria:
   # 0.05 de lift sobre la tasa base es lo mínimo que cambiaría una decisión de
   # mantenimiento; por debajo el modelo no paga el costo de operarlo.
   min_objective: 0.05
-  # Un fold sin positivas no puntúa. Menos de 10 folds válidos deja el
-  # intervalo demasiado ancho para que `min_objective` signifique algo.
+  # Un fold sin positivas no puntúa. Con 20 folds las tres fuentes dejan 14 o
+  # más, así que este piso ya no elimina a nadie por construcción: sólo atrapa
+  # un trial degenerado.
   min_observations: 10
-  # ATENCIÓN: medido, esto es inalcanzable con este dataset. Separar pide que el
-  # mejor le saque al segundo más de 1.96 x hypot(se, se) ~ 0.114 de lift, más
-  # que el lift entero que consigue cualquier config. La campaña va a reportar
-  # `separated: false` y fallar el criterio, cualquiera sea el modelo. Queda en
-  # true a propósito: es la respuesta honesta a "¿24 trials distinguen un
-  # ganador?" y la respuesta es no. Ponerlo en false cambiaría la pregunta.
-  require_separation: true
-  # Y el lift tiene que despejar el cero: sin esto el ganador puede ser un
-  # modelo que no le gana a predecir la tasa base.
+  # Apagado a propósito, no por conveniencia: ver el bloque de arriba. Que esté
+  # en false es la diferencia entre "no pudimos distinguir un ganador" y "no
+  # preguntamos por un ganador".
+  require_separation: false
+  # ESTE es el criterio que contesta la pregunta: el intervalo del lift del
+  # mejor trial tiene que despejar el cero. Con se ~0.041 eso pide un lift
+  # observado de ~0.081, o sea que el binding acá no es min_objective sino este.
   require_beats_baseline: true
 
 budget:

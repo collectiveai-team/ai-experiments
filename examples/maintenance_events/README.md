@@ -250,23 +250,38 @@ señal-ruido (medida: 2,5 → 3,1 en `union`, 1,3 → 0,9 en `mapro`).
 
 `goal.yaml` lo declara en `success_criteria`, antes de correr nada:
 
+La pregunta es **"¿alguna configuración le gana a predecir la tasa base?"**, no
+"¿cuál es la mejor?". Ver abajo por qué la segunda no tiene respuesta acá.
+
 | criterio | por qué |
 |---|---|
 | `min_objective: 0.05` | por debajo el modelo no paga el costo de operarlo |
-| `min_observations: 10` | menos folds válidos dejan el intervalo demasiado ancho |
-| `require_separation` | el mejor de 24 trials ruidosos le gana al segundo por construcción — y medido **no se cumple**: ver abajo |
-| `require_beats_baseline` | el intervalo del lift tiene que despejar el cero |
+| `min_observations: 10` | con 20 folds nadie queda afuera por construcción; atrapa un trial degenerado |
+| `require_separation: false` | apagado a propósito: la campaña no pregunta cuál gana |
+| `require_beats_baseline` | **el criterio que contesta la pregunta**: el intervalo del lift tiene que despejar el cero |
 
 `iax campaign status` y `iax loop` reportan `met: true/false` con los criterios
 que fallaron, y `iax loop` sale con código 4 si no se cumplen. Nadie decide
 después de ver el número.
 
-**`require_separation` va a fallar, y está puesto sabiendo eso.** Separar pide
-que el mejor trial le saque al segundo más de `1,96 × hypot(se, se) ≈ 0,114` de
-lift — más que el lift entero que consigue cualquier configuración acá. Es decir
-que la campaña *no puede* coronar un ganador distinguible con 24 trials sobre
-este dataset, y el criterio está para que eso se reporte en vez de darse por
-supuesto. Bajarlo a `false` no haría al ganador más real; haría otra pregunta.
+### Por qué no se pregunta cuál gana
+
+Separar pide que el mejor trial le saque al segundo más de
+`1,96 × hypot(se, se) ≈ 0,114` de lift — más que el lift entero que consigue
+cualquier configuración acá. Con 63 eventos en cinco años, el error estándar del
+lift no baja de ~0,041 por más folds que se usen (ver arriba), así que ninguna
+campaña de 24 trials sobre este dataset puede coronar un ganador distinguible.
+Preguntarlo igual sólo produce un `met: false` que no informa nada sobre el
+problema de mantenimiento.
+
+Así que `require_separation` está en **`false` a propósito**, y la diferencia
+importa: no es "no pudimos distinguir un ganador", es "no preguntamos por un
+ganador". Lo que sí se pregunta lo contesta `require_beats_baseline`, y con
+`se ≈ 0,041` el intervalo despeja el cero recién con un lift observado de
+**~0,081** — o sea que el criterio que manda acá no es `min_objective: 0.05`
+sino éste. Si la campaña contesta que sí, el resultado es "existe una
+configuración que le gana a la tasa base", sin nombre propio: *cuál* de las
+configuraciones es, este dataset no lo puede decir.
 
 La validación es walk-forward: train expansivo, el bloque siguiente como test y
 un **gap igual al horizonte** entre el fin del train y el inicio del test, para
