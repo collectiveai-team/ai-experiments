@@ -118,16 +118,26 @@ def _aggregate(
 ) -> tuple[float, float | None]:
     """One score out of many observations, and how sure of it we are.
 
-    The standard error is only defined for ``mean``: under ``best`` the
-    observations are stages of one run, not samples of one quantity, so
-    their spread measures training progress rather than uncertainty.
+    Three kinds of observation need three answers. Under ``best`` they are
+    stages of one run, so their spread measures training progress rather than
+    uncertainty and no standard error is defined. Under ``mean`` they are
+    independent evaluations of one configuration, so the error of their
+    average shrinks with their count. Under ``bootstrap`` they are resamples
+    of a *single* evaluation: their spread already is the standard error of
+    the statistic, and dividing it again would shrink the interval by exactly
+    the factor the resampling exists to expose — while the count is a
+    computational knob, so confidence would become something a workload could
+    buy by resampling longer.
     """
     if objective.aggregate == "best":
         return (max(values) if objective.mode == "max" else min(values)), None
     mean = statistics.fmean(values)
     if len(values) < 2:
         return mean, None
-    return mean, statistics.stdev(values) / math.sqrt(len(values))
+    spread = statistics.stdev(values)
+    if objective.aggregate == "bootstrap":
+        return mean, spread
+    return mean, spread / math.sqrt(len(values))
 
 
 def _scored(metrics: list[MetricPoint], objective: ObjectiveSpec) -> Iterator[float]:
@@ -256,7 +266,11 @@ def campaign_verdict(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     """
     mode = goal.objective.mode
     ranked = sorted(
-        (t for t in state.trials if t.status == "completed" and t.objective_value is not None),
+        (
+            t
+            for t in state.trials
+            if t.status == "completed" and t.objective_value is not None
+        ),
         key=lambda t: t.objective_value,  # type: ignore[arg-type,return-value]
         reverse=mode == "max",
     )
@@ -266,7 +280,9 @@ def campaign_verdict(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
     margin: float | None = None
     separated: bool | None = None
     if best is not None and runner_up is not None:
-        assert best.objective_value is not None and runner_up.objective_value is not None
+        assert (
+            best.objective_value is not None and runner_up.objective_value is not None
+        )
         margin = (
             best.objective_value - runner_up.objective_value
             if mode == "max"
@@ -290,8 +306,6 @@ def campaign_verdict(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
         "beats_baseline": beats_baseline,
         "confidence": 0.95,
     }
-
-
 
 
 def evaluate_success(
@@ -345,7 +359,8 @@ def evaluate_success(
         if separated is None:
             unmet.append(
                 "separation from the runner-up was never measured; the "
-                "objective needs `aggregate: mean` and a second scored trial"
+                "objective needs `aggregate: mean` or `bootstrap`, and a second "
+                "scored trial"
             )
         elif not separated:
             unmet.append(
@@ -358,7 +373,8 @@ def evaluate_success(
         if beats is None:
             unmet.append(
                 "the comparison against the baseline was never measured; the "
-                "objective needs `baseline_metric` and `aggregate: mean`"
+                "objective needs `baseline_metric`, and `aggregate: mean` or "
+                "`bootstrap`"
             )
         elif not beats:
             unmet.append("the interval does not clear the baseline")

@@ -12,7 +12,7 @@ objective:
   metric: val_loss
   mode: min
   target: 0.05
-  aggregate: best          # best | mean
+  aggregate: best          # best | mean | bootstrap
   # baseline_metric: val_loss_baseline
 ```
 
@@ -28,7 +28,9 @@ objective:
   the reported lines as stages of one training run and takes the extreme.
   `mean` treats them as independent evaluations of the same configuration —
   folds, seeds, held-out windows — and reports the average with its standard
-  error. Only `mean` produces the interval that `require_separation` and
+  error. `bootstrap` treats them as resamples of one evaluation and reports
+  that spread *as* the standard error, without dividing by √k. Only `mean` and
+  `bootstrap` produce the interval that `require_separation` and
   `require_beats_baseline` are checked against; under `best` both come back
   *not measured*.
 - `baseline_metric` turns the objective into a lift: the harness scores
@@ -46,7 +48,7 @@ fields do.
 success_criteria:
   min_objective: 0.05          # `mode: min` reads this as "at most"
   min_observations: 10
-  require_separation: true     # needs aggregate: mean
+  require_separation: true     # needs aggregate: mean or bootstrap
   require_beats_baseline: true # needs baseline_metric
 ```
 
@@ -57,7 +59,7 @@ declares none reports `met: null` — not a pass — and falls back to the bare
 target check.
 
 A criterion whose evidence was never measured fails: `require_separation`
-without `aggregate: mean` has no interval to test, and the campaign cannot
+under `aggregate: best` has no interval to test, and the campaign cannot
 satisfy it by not looking. `iax campaign validate --strict` refuses a goal
 that asks for evidence its objective cannot produce.
 

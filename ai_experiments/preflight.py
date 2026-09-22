@@ -169,11 +169,21 @@ def goal_warnings(goal: GoalSpec) -> list[str]:
                 "reward the easiest slice"
             )
 
-    if criteria.require_separation and objective.aggregate != "mean":
+    if criteria.require_separation and objective.aggregate not in ("mean", "bootstrap"):
         warnings.append(
             "success_criteria.require_separation needs an interval, which "
-            "only objective.aggregate='mean' produces; as written the "
-            "criterion can never be met"
+            "only objective.aggregate='mean' or 'bootstrap' produces; as "
+            "written the criterion can never be met"
+        )
+
+    if criteria.min_observations is not None and objective.aggregate == "bootstrap":
+        warnings.append(
+            "success_criteria.min_observations counts observations, and under "
+            "objective.aggregate='bootstrap' those are resamples of one "
+            "evaluation: their number is how long the workload chose to "
+            "resample, not how much evidence it had. A criterion any workload "
+            "can satisfy by looping more is not a criterion — let the workload "
+            "report no objective when its evidence is too thin instead"
         )
 
     if criteria.require_beats_baseline and objective.baseline_metric is None:

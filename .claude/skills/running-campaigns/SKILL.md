@@ -32,7 +32,7 @@ objective:
   metric: val_loss
   mode: min
   target: 0.05              # optional
-  aggregate: best           # `mean` when the workload reports folds/seeds
+  aggregate: best           # `mean` for folds/seeds; `bootstrap` for resamples
   # baseline_metric: val_loss_baseline   # score the lift, paired per observation
 search_space:
   lr: { type: loguniform, low: 1e-5, high: 1e-2 }
@@ -44,7 +44,7 @@ search_space:
 success_criteria:           # what this campaign has to show; declare it now
   min_objective: 0.05
   # min_observations: 10
-  # require_separation: true        # needs aggregate: mean
+  # require_separation: true        # needs aggregate: mean or bootstrap
   # require_beats_baseline: true    # needs baseline_metric
 workload:
   entrypoint: "python train.py"

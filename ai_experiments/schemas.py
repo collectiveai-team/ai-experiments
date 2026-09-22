@@ -95,7 +95,7 @@ BackendName = Literal["local", "ray"]
 FlagStyle = Literal["hyphen", "underscore"]
 
 #: How a run's observations collapse into one objective value.
-Aggregate = Literal["best", "mean"]
+Aggregate = Literal["best", "mean", "bootstrap"]
 
 
 class WorkloadSpec(ConfigModel):
@@ -374,7 +374,11 @@ class ObjectiveSpec(ConfigModel):
     #: evaluations of the *same* configuration, and there ``best`` is
     #: max-of-k: biased upward by exactly the noise the folds exist to
     #: measure. ``mean`` averages them and reports the standard error, so the
-    #: campaign can tell a real lead from a lucky fold.
+    #: campaign can tell a real lead from a lucky fold. ``bootstrap`` is for
+    #: observations that are resamples of *one* evaluation: their spread is
+    #: already the standard error of the statistic, so dividing it by the
+    #: square root of their count would shrink the interval by exactly the
+    #: factor the resampling exists to expose.
     aggregate: Aggregate = "best"
 
 

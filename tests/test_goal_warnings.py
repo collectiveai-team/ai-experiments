@@ -210,3 +210,40 @@ def test_variants_that_may_write_anywhere_are_flagged():
 
 def test_a_goal_without_variants_says_nothing_about_them():
     assert not any("smoke_command" in w for w in goal_warnings(_goal()))
+
+
+def test_counting_bootstrap_replicates_as_evidence_is_flagged():
+    """`min_observations` asks how much evidence the score rests on. Under
+    `bootstrap` the observations are resamples of one evaluation, so their
+    count is how long the workload chose to resample — a criterion that any
+    workload can satisfy by looping more is not a criterion.
+    """
+    warnings = goal_warnings(
+        _goal(
+            objective=ObjectiveSpec(metric="pr_auc", mode="max", aggregate="bootstrap"),
+            criteria=SuccessCriteria(min_observations=10),
+        )
+    )
+
+    assert any("min_observations" in w and "resamples" in w for w in warnings)
+
+
+def test_bootstrap_satisfies_the_criteria_that_need_an_interval():
+    """`require_separation` needs a standard error, and `bootstrap` produces
+    one. Flagging it would push a goal back to the estimator with less
+    information."""
+    warnings = goal_warnings(
+        _goal(
+            objective=ObjectiveSpec(
+                metric="pr_auc",
+                mode="max",
+                aggregate="bootstrap",
+                baseline_metric="baseline_pr_auc",
+            ),
+            criteria=SuccessCriteria(
+                min_objective=0.05, require_separation=True, require_beats_baseline=True
+            ),
+        )
+    )
+
+    assert warnings == []

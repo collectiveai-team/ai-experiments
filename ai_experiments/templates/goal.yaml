@@ -15,12 +15,14 @@ objective:
   metric: loss            # must match a key your workload reports
   mode: min               # min | max
   target: 0.01            # optional: stop as soon as this is reached
-  aggregate: best         # best | mean.  `best` treats the reported lines as
+  aggregate: best         # best | mean | bootstrap.  `best` treats the lines as
                           # stages of one training run.  Use `mean` when each
                           # line is an independent evaluation of the same
                           # config - a fold, a seed, a held-out window - so the
                           # score comes with a standard error instead of being
-                          # the luckiest of k.
+                          # the luckiest of k.  Use `bootstrap` when the lines
+                          # are resamples of ONE evaluation: the spread is the
+                          # standard error as is, not divided by root k.
   # baseline_metric: baseline_loss
                           # Score the lift over a baseline the workload reports
                           # in the same line.  Needed whenever the search can
@@ -49,7 +51,7 @@ success_criteria:
   # min_observations: 10  # refuse a score that rests on too few observations
   # require_separation: true
                           # the winner must beat the runner-up by more than the
-                          # noise, at 95%.  Needs aggregate: mean.
+                          # noise, at 95%.  Needs aggregate: mean or bootstrap.
   # require_beats_baseline: true
                           # the interval must clear the baseline.  Needs
                           # objective.baseline_metric.

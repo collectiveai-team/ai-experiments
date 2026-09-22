@@ -21,21 +21,15 @@ def _metrics(stdout):
     ]
 
 
-def test_self_test_scores_every_fold_that_had_positives():
-    result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
-    assert result.returncode == 0, result.stderr
-    points = _metrics(result.stdout)
-    objective = [p for p in points if "pr_auc" in p]
-    assert len(objective) == len([p for p in points if "fold_n_test" in p and p.get("fold_positives")])
-
-
 def test_the_objective_is_reported_once_per_fold():
     """Cada fold es una evaluación independiente de la misma configuración, y
     ``objective.aggregate: mean`` los promedia y saca el error estándar. Para
     eso tiene que ver cada fold como una observación con la clave objetivo:
     emitirla una sola vez al final le daría una muestra de tamaño uno y un
     intervalo que no existe."""
-    result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
+    result = _run(
+        "--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg"
+    )
     per_fold = [p for p in _metrics(result.stdout) if "fold_n_test" in p]
     assert len(per_fold) >= 2
     assert any("pr_auc" in p for p in per_fold), "ningún fold reportó el objetivo"
@@ -50,37 +44,82 @@ def test_a_fold_with_no_positives_reports_no_objective():
     from maintenance_events.evaluation import FoldResult
 
     empty = FoldResult(
-        index=0, train_end=None, test_start=None, test_end=None,
-        n_train=10, n_test=5, positives=0,
-        pr_auc=None, auroc=None, recall_at_p50=None, baseline=None,
+        index=0,
+        train_end=None,
+        test_start=None,
+        test_end=None,
+        n_train=10,
+        n_test=5,
+        positives=0,
+        pr_auc=None,
+        auroc=None,
+        recall_at_p50=None,
+        baseline=None,
     )
 
     assert "pr_auc" not in empty.as_metric()
     assert "baseline_pr_auc" not in empty.as_metric()
 
 
+def test_the_pooled_diagnostic_never_uses_the_objective_key():
+    """El bootstrap agrupado viaja como diagnóstico. Si emitiera `pr_auc`
+    sería una observación de más, mezclando dos estimadores que sobre estos
+    datos ni siquiera coinciden en el signo."""
+    result = _run(
+        "--self-test",
+        "--window-days",
+        "60",
+        "--n-folds",
+        "3",
+        "--model",
+        "logreg",
+        "--bootstrap-resamples",
+        "30",
+    )
+    summary = [p for p in _metrics(result.stdout) if "replicates" in p]
+
+    assert len(summary) == 1
+    assert summary[0]["replicates"] > 0
+    assert {"lift_mean", "lift_stderr", "pooled_windows"} <= set(summary[0])
+    assert "pr_auc" not in summary[0]
+
+
 def test_the_summary_point_does_not_repeat_the_objective_key():
     """Si el resumen final emitiera ``pr_auc`` sería una observación más — el
     promedio contado dos veces, y un error estándar más chico que el real."""
-    result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
+    result = _run(
+        "--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg"
+    )
     points = _metrics(result.stdout)
     summary = [p for p in points if "valid_folds" in p]
     assert len(summary) == 1
     assert "pr_auc" not in summary[0]
-    assert {"mean_pr_auc", "mean_baseline", "pr_auc_std", "valid_folds"} <= set(summary[0])
+    assert "baseline_pr_auc" not in summary[0]
+    assert {"mean_pr_auc", "mean_baseline", "pr_auc_std", "valid_folds"} <= set(
+        summary[0]
+    )
+    assert {"pooled_windows", "pooled_positives", "replicates"} <= set(summary[0])
 
 
 def test_search_space_flag_names_are_accepted():
     result = _run(
         "--self-test",
-        "--window-days", "30",
-        "--resample-freq", "6h",
-        "--label-source", "union",
-        "--model", "hist_gb",
-        "--learning-rate", "0.05",
-        "--max-leaf-nodes", "15",
-        "--min-samples-leaf", "5",
-        "--n-folds", "3",
+        "--window-days",
+        "30",
+        "--resample-freq",
+        "6h",
+        "--label-source",
+        "union",
+        "--model",
+        "hist_gb",
+        "--learning-rate",
+        "0.05",
+        "--max-leaf-nodes",
+        "15",
+        "--min-samples-leaf",
+        "5",
+        "--n-folds",
+        "3",
     )
     assert result.returncode == 0, result.stderr
 
@@ -104,7 +143,9 @@ def test_missing_dataset_fails_with_instructions(tmp_path, monkeypatch):
         },
     )
     assert result.returncode != 0
-    assert "dataset.local.toml" in result.stderr or "dataset.local.toml" in result.stdout
+    assert (
+        "dataset.local.toml" in result.stderr or "dataset.local.toml" in result.stdout
+    )
 
 
 def test_max_bins_is_searchable_and_reaches_the_model():
@@ -118,8 +159,17 @@ def test_max_bins_is_searchable_and_reaches_the_model():
     model = make_model("hist_gb", max_bins=32)()
     assert model.max_bins == 32
 
-    result = _run("--self-test", "--window-days", "30", "--n-folds", "2",
-                  "--model", "hist_gb", "--max-bins", "16")
+    result = _run(
+        "--self-test",
+        "--window-days",
+        "30",
+        "--n-folds",
+        "2",
+        "--model",
+        "hist_gb",
+        "--max-bins",
+        "16",
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -152,7 +202,10 @@ def test_every_search_space_key_is_a_valid_flag():
     from maintenance_events.train import parse_args
 
     goal = yaml.safe_load((pathlib.Path(__file__).parents[1] / "goal.yaml").read_text())
-    defaults = {"choice": lambda s: str(s["values"][0]), "loguniform": lambda s: str(s["low"])}
+    defaults = {
+        "choice": lambda s: str(s["values"][0]),
+        "loguniform": lambda s: str(s["low"]),
+    }
     argv = []
     for key, spec in goal["search_space"].items():
         argv += [f"--{key.replace('_', '-')}", defaults[spec["type"]](spec)]

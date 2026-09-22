@@ -48,12 +48,15 @@ workload:
   # corre sobre una copia de este directorio, con otro working_dir, y el
   # entrypoint tiene que ser el mismo en los dos casos.
   entrypoint: "uv run --project . python -m maintenance_events.train"
-  # 12 folds sale del cálculo de poder en README.md § "Cuántos folds": con la
-  # sd del lift por fold medida en la campaña anterior (0.113 agrupada sobre
-  # 24 trials x 5 folds), 5 folds sólo detectan un lift de 0.14 — más grande
-  # que el mejor lift que esa campaña observó. Con 12 el mínimo detectable
-  # baja a ~0.09.
-  args: ["--n-folds", "12"]
+  # 20 folds NO es un cálculo de poder: subir folds no compra poder acá. La sd
+  # del lift crece casi como raíz de k (0.129 con 12, 0.170 con 20), así que el
+  # mínimo detectable queda clavado en ~0.115 de 12 a 20. Ver README.md §
+  # "Cuántos folds" → "Lo que pasó cuando se midió".
+  # Lo que sí cambia es el conteo de folds válidos, y de eso depende un
+  # criterio: con 12, `operator` deja 9 folds con positivas y no puede cumplir
+  # `min_observations: 10` haga lo que haga el modelo. Con 20 las tres fuentes
+  # quedan en 14 o más.
+  args: ["--n-folds", "20"]
   working_dir: "examples/maintenance_events"
 
 # Qué tiene que mostrar esta campaña para que se le crea. Escrito antes de
@@ -65,7 +68,12 @@ success_criteria:
   # Un fold sin positivas no puntúa. Menos de 10 folds válidos deja el
   # intervalo demasiado ancho para que `min_objective` signifique algo.
   min_observations: 10
-  # El mejor de 24 trials ruidosos le gana al segundo por construcción.
+  # ATENCIÓN: medido, esto es inalcanzable con este dataset. Separar pide que el
+  # mejor le saque al segundo más de 1.96 x hypot(se, se) ~ 0.114 de lift, más
+  # que el lift entero que consigue cualquier config. La campaña va a reportar
+  # `separated: false` y fallar el criterio, cualquiera sea el modelo. Queda en
+  # true a propósito: es la respuesta honesta a "¿24 trials distinguen un
+  # ganador?" y la respuesta es no. Ponerlo en false cambiaría la pregunta.
   require_separation: true
   # Y el lift tiene que despejar el cero: sin esto el ganador puede ser un
   # modelo que no le gana a predecir la tasa base.

@@ -35,7 +35,9 @@ def _run(tmp_path, points: list[dict[str, float]]):
 def test_the_best_observation_is_the_score(tmp_path):
     store, run_id = _run(tmp_path, [{"pr_auc": 0.4}, {"pr_auc": 0.7}, {"pr_auc": 0.5}])
 
-    reading = extract_objective(store, run_id, ObjectiveSpec(metric="pr_auc", mode="max"))
+    reading = extract_objective(
+        store, run_id, ObjectiveSpec(metric="pr_auc", mode="max")
+    )
 
     assert reading.value == 0.7
 
@@ -162,6 +164,44 @@ def test_one_observation_has_no_measurable_spread(tmp_path):
     assert reading.stderr is None
 
 
+def test_bootstrap_replicates_keep_their_spread_undivided(tmp_path):
+    """Resamples of one evaluation are not independent evaluations.
+
+    The spread of the replicates already *is* the standard error of the
+    statistic. Dividing it by the square root of their count would shrink the
+    interval by exactly the factor the resampling exists to expose — and the
+    count is a computational knob, so the interval would get narrower the
+    longer the workload was willing to run.
+    """
+    store, run_id = _run(
+        tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}]
+    )
+
+    reading = extract_objective(
+        store, run_id, ObjectiveSpec(metric="pr_auc", mode="max", aggregate="bootstrap")
+    )
+
+    assert reading.value is not None
+    assert abs(reading.value - 0.60) < 1e-9
+    assert reading.stderr is not None
+    assert abs(reading.stderr - 0.3) < 1e-9
+
+
+def test_more_replicates_do_not_narrow_the_interval(tmp_path):
+    """The guarantee that makes `bootstrap` safe to declare: a workload
+    cannot buy confidence by resampling more."""
+    few, few_id = _run(tmp_path / "few", [{"m": 0.4}, {"m": 0.6}] * 5)
+    many, many_id = _run(tmp_path / "many", [{"m": 0.4}, {"m": 0.6}] * 50)
+    spec = ObjectiveSpec(metric="m", mode="max", aggregate="bootstrap")
+
+    thin = extract_objective(few, few_id, spec)
+    thick = extract_objective(many, many_id, spec)
+
+    assert thin.stderr is not None and thick.stderr is not None
+    assert abs(thin.stderr - thick.stderr) < 0.01
+    assert thick.n_observations == 100
+
+
 def test_averaging_and_a_baseline_compose(tmp_path):
     """The mean of the per-fold lifts, which is what walk-forward measures."""
     store, run_id = _run(
@@ -234,9 +274,7 @@ def test_a_lead_inside_the_noise_is_not_a_winner():
     a fold's worth of variation roughly always. Whether that gap is real is
     arithmetic, not judgement, so the harness does it.
     """
-    state, goal = _campaign(
-        [("t1", 0.12, 0.07), ("t2", 0.10, 0.07)], aggregate="mean"
-    )
+    state, goal = _campaign([("t1", 0.12, 0.07), ("t2", 0.10, 0.07)], aggregate="mean")
 
     summary = summarize_campaign(state, goal)
 
@@ -246,9 +284,7 @@ def test_a_lead_inside_the_noise_is_not_a_winner():
 
 
 def test_a_lead_outside_the_noise_is_a_winner():
-    state, goal = _campaign(
-        [("t1", 0.90, 0.01), ("t2", 0.10, 0.01)], aggregate="mean"
-    )
+    state, goal = _campaign([("t1", 0.90, 0.01), ("t2", 0.10, 0.01)], aggregate="mean")
 
     summary = summarize_campaign(state, goal)
 

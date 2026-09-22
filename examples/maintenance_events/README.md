@@ -106,7 +106,7 @@ el trial en silencio.
 
 ### Costo por trial
 
-Un trial de 5 folds sobre 435 ventanas tarda ~27 s; con los 12 folds que usa `goal.yaml`, del orden de un minuto. Dos cosas lo dominan y
+Un trial de 5 folds sobre 435 ventanas tarda ~27 s; con los 20 folds que usa `goal.yaml`, del orden de dos minutos. Dos cosas lo dominan y
 conviene saberlas antes de tocar el espacio de búsqueda:
 
 - **`max_bins`.** Con `class_weight=balanced` sklearn le pasa `sample_weight` al
@@ -156,8 +156,8 @@ la campaña anterior midió: sobre sus 24 trials × 5 folds, la **sd del lift po
 fold dentro de un mismo trial** fue **0,113** (agrupada; mediana por trial
 0,105).
 
-Con esa sd, el lift mínimo detectable a dos colas 95 % y poder 80 % es
-`2,80 × 0,113 / √k`:
+Con esa sd, el lift mínimo detectable a dos colas 95 % y poder 80 % **se
+suponía** `2,80 × 0,113 / √k`:
 
 | folds válidos | lift mínimo detectable |
 |---|---|
@@ -169,17 +169,82 @@ Con esa sd, el lift mínimo detectable a dos colas 95 % y poder 80 % es
 
 El mejor lift promedio que aquella campaña observó fue **0,104**. Con 5 folds no
 podía distinguirlo del ruido ni aunque fuera real: el diseño estaba por debajo
-de su propio resultado antes de empezar. Por eso `min_observations: 10` y
-`--n-folds 12`, con dos de margen para folds que se queden sin positivas.
+de su propio resultado antes de empezar. De ahí salieron `min_observations: 10`
+y `--n-folds 12`, con dos de margen para folds que se queden sin positivas.
 
-Dos salvedades que el número no cubre. Más folds parten la serie en bloques de
-test más chicos, con menos positivas cada uno, así que la sd real con 12 folds
-va a ser algo mayor que 0,113 y el mínimo detectable algo peor que 0,091. Y
-`min_objective: 0.05` está por debajo de lo que 12 folds detectan con
-confianza: es el umbral que cambiaría una decisión de mantenimiento, no el que
-el diseño garantiza medir. Por eso el criterio pide *además*
-`require_beats_baseline`, que se evalúa contra el error estándar **realmente
-observado** y no contra este supuesto.
+Después se midió, y esa cuenta resultó estar mal.
+
+### Lo que pasó cuando se midió
+
+Esa tabla supone que la sd se queda en 0,113 cuando cambia `k`. **No se queda.**
+Más folds parten la serie en bloques de test más chicos, con menos positivas
+cada uno, y la sd crece casi exactamente a la misma velocidad que √k. Medido
+sobre el dataset real, con la configuración por defecto:
+
+| fuente | k | folds válidos | sd del lift | mínimo detectable |
+|---|---|---|---|---|
+| `union` | 12 | 10 | 0,129 | 0,115 |
+| `union` | 20 | 17 | 0,170 | 0,116 |
+| `operator` | 12 | **9** | 0,163 | 0,152 |
+| `operator` | 20 | 15 | 0,173 | 0,125 |
+
+**Subir folds no compra poder.** El mínimo detectable queda clavado en ~0,115 de
+12 a 20 folds: el dataset tiene 63 eventos en cinco años y cortarlo más fino no
+multiplica la información. Lo único que sí mejora es el conteo de folds válidos,
+y ahí hay un problema concreto: con `--n-folds 12`, `operator` deja **9** folds
+con positivas y no puede cumplir `min_observations: 10` haga lo que haga el
+modelo. Con 20 las tres fuentes quedan en 14 o más.
+
+Como referencia de cuánto ruido hay: el *mismo* config sobre los *mismos* datos
+da lift +0,108 con 12 folds y +0,055 con 20.
+
+`min_objective: 0.05` está por debajo de lo que el diseño detecta con confianza:
+es el umbral que cambiaría una decisión de mantenimiento, no el que se garantiza
+medir. Por eso el criterio pide *además* `require_beats_baseline`, que se evalúa
+contra el error estándar **realmente observado**.
+
+## Por qué el objetivo sigue siendo el promedio de folds
+
+El promedio de folds tira información: resume ~800 ventanas en 10 números, cada
+uno un PR-AUC de muestra chica. La alternativa obvia es puntuar una sola vez
+sobre todas las predicciones out-of-fold juntas y sacar el intervalo
+remuestreando esas ventanas. `evaluation.py` implementa eso —`block_bootstrap`,
+con remuestreo **por bloques** porque las ventanas van día a día y su etiqueta
+mira 15 días adelante, así que dos vecinas son casi la misma observación—.
+
+Se probó y **no sirve como objetivo acá**:
+
+| fuente | promedio de folds | agrupado (bootstrap, bloque 15) | agrupado, rango por fold |
+|---|---|---|---|
+| `union` | **+0,108** | −0,021 ± 0,048 | +0,084 |
+| `mapro` | **+0,074** | −0,028 ± 0,047 | −0,012 |
+| `operator` | **+0,057** | −0,024 ± 0,061 | +0,010 |
+
+Los dos estimadores no coinciden ni en el signo. La tercera columna dice por
+qué: normalizar los scores a rango **dentro de cada fold** antes de agrupar
+mueve las tres fuentes hacia arriba y devuelve `union` a +0,084. Es decir,
+**agrupar mezcla scores de modelos distintos**, entrenados con distinta cantidad
+de historia, sobre períodos con distinta tasa base; el ranking conjunto mide
+deriva de calibración entre períodos, no discriminación dentro de uno.
+Walk-forward y pooling no se llevan. (La normalización tampoco recupera el
+promedio de folds — no es un arreglo, es el diagnóstico.)
+
+El bootstrap se reporta igual, con claves que **no** son la del objetivo
+(`lift_mean`, `lift_stderr`, `pooled_windows`), porque es la medición que
+sostiene esta decisión y porque su error estándar es el único número honesto
+sobre cuánta suerte hay en qué ventanas tocaron. Vale mirar cuánto importa la
+corrección por bloques: en `union`, el error estándar pasa de 0,015 remuestreando
+ventanas sueltas a 0,048 remuestreando bloques de 15. Tres veces más ancho — todo
+lo demás sería confianza inventada ignorando que las ventanas se solapan.
+
+Y hay un problema de fondo que ninguno de los dos estimadores arregla: el lift
+`pr_auc − tasa_base` **no es comparable entre folds con distinta tasa base**. Con
+tasa base 0,92 el lift máximo posible es 0,08; con 0,023 es 0,977. Las tasas base
+por fold acá van de 0,023 a 1,0, así que el promedio está dominado por a qué fold
+le tocó una tasa base extrema: el 72 % del lift promedio de `mapro` sale de un
+solo fold con tasa base 0,023, que aporta +0,477 él solo. Normalizar por el margen disponible —
+`(pr_auc − base) / (1 − base)` — lo hace comparable, pero no mejora la relación
+señal-ruido (medida: 2,5 → 3,1 en `union`, 1,3 → 0,9 en `mapro`).
 
 ## Qué cuenta como éxito
 
@@ -189,12 +254,19 @@ observado** y no contra este supuesto.
 |---|---|
 | `min_objective: 0.05` | por debajo el modelo no paga el costo de operarlo |
 | `min_observations: 10` | menos folds válidos dejan el intervalo demasiado ancho |
-| `require_separation` | el mejor de 24 trials ruidosos le gana al segundo por construcción |
+| `require_separation` | el mejor de 24 trials ruidosos le gana al segundo por construcción — y medido **no se cumple**: ver abajo |
 | `require_beats_baseline` | el intervalo del lift tiene que despejar el cero |
 
 `iax campaign status` y `iax loop` reportan `met: true/false` con los criterios
 que fallaron, y `iax loop` sale con código 4 si no se cumplen. Nadie decide
 después de ver el número.
+
+**`require_separation` va a fallar, y está puesto sabiendo eso.** Separar pide
+que el mejor trial le saque al segundo más de `1,96 × hypot(se, se) ≈ 0,114` de
+lift — más que el lift entero que consigue cualquier configuración acá. Es decir
+que la campaña *no puede* coronar un ganador distinguible con 24 trials sobre
+este dataset, y el criterio está para que eso se reporte en vez de darse por
+supuesto. Bajarlo a `false` no haría al ganador más real; haría otra pregunta.
 
 La validación es walk-forward: train expansivo, el bloque siguiente como test y
 un **gap igual al horizonte** entre el fin del train y el inicio del test, para

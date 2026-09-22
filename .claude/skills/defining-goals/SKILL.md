@@ -33,6 +33,15 @@ getting it wrong:
 |---|---|---|
 | epoch, step | successive states of one model — the last one is the model you keep | `best` |
 | fold, seed, split, held-out window | independent evaluations of one configuration | `mean` |
+| bootstrap replicate | resamples of **one** evaluation, not new evidence | `bootstrap` |
+
+`bootstrap` averages like `mean` but reports the spread itself as the standard
+error, without dividing by √k: the replicates *are* the sampling distribution,
+so dividing again would shrink the interval by exactly the factor the
+resampling exists to expose. It also means the replicate count is a
+computational knob, not evidence — `min_observations` counts how long the
+workload chose to resample, so gate thin evidence by having the workload report
+no objective instead.
 
 `best` over independent evaluations is max-of-k: biased upward by exactly the
 noise the evaluations exist to measure, and it carries no standard error. With
@@ -104,6 +113,16 @@ Run this *before* the campaign, not after. The worked example — where the
 previous design could not have detected its own best result — is
 `examples/maintenance_events/README.md`, section "Cuántos folds".
 
+**The formula assumes `sd` holds still when `k` changes. Check that it does.**
+When the observations come from splitting one fixed dataset, more of them means
+less data in each, `sd` grows with `k`, and the √k in the denominator buys
+nothing. In that same worked example the measured MDE is flat at ~0.115 from 12
+folds to 20 while the formula promised 0.091 → 0.071. Raising `k` only helps
+when each new observation brings new data. When it does not, the honest moves
+are a lower-variance metric, a bigger effect, or accepting that the campaign
+answers a coarser question — and `k` is then set by whatever else depends on it,
+like `min_observations`.
+
 ## 5. Write down what would count as success
 
 ```yaml
@@ -125,7 +144,8 @@ even if `target_reached` fired, because a lucky single observation can trip a
 target.
 
 Every criterion has a prerequisite the preflight checks:
-`require_separation` needs `aggregate: mean`, `require_beats_baseline` needs
+`require_separation` needs `aggregate: mean` or `bootstrap`,
+`require_beats_baseline` needs
 `baseline_metric`. A criterion whose evidence was never measured **fails** —
 a campaign cannot satisfy "show me the lead is real" by not looking.
 
@@ -156,6 +176,9 @@ looked and the evidence was not there, `null` means it never looked.
 
 - Never choose the bar after seeing the number.
 - Never use `aggregate: best` for folds, seeds or splits.
+- Never use `aggregate: bootstrap` for lines that are independent evaluations:
+  its standard error assumes the lines resample one evaluation, and using it on
+  folds inflates the interval by √k.
 - Never compare trials whose data differs without a `baseline_metric`.
 - Never quote a mean without its interval, or a winner without whether it is
   separated from the runner-up.

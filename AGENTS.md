@@ -57,8 +57,9 @@ in `ai_experiments/planner/analysis.py`, so the answer is the same for the
 CLI, the loop and the dashboard. What it cannot decide for you is the question:
 
 - `objective.aggregate` — `best` when the workload's lines are epochs of one
-  run, `mean` when they are folds, seeds or splits. Only `mean` yields a
-  standard error, and without one every check below reports *not measured*.
+  run, `mean` when they are folds, seeds or splits, `bootstrap` when they are
+  resamples of one evaluation. Only the last two yield a standard error, and
+  without one every check below reports *not measured*.
 - `objective.baseline_metric` — score the lift over a baseline the workload
   prints on the same line, whenever the search can change the data a trial is
   evaluated on.
