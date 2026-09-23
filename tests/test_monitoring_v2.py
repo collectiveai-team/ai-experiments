@@ -27,7 +27,7 @@ def _make_run(
         monitoring=monitoring or MonitorPolicy(),
     )
     run_id, run_dir = store.create_run(manifest)
-    base = {
+    base: dict[str, object] = {
         "details": {"heartbeat_at": utc_now().isoformat()},
     }
     base.update(status_overrides)

@@ -17,22 +17,38 @@ The loop always terminates. It stops on a terminal campaign status, on
 
 from __future__ import annotations
 
+import hashlib
 import time
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
-from ai_experiments.agents.runner import AgentRunner
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
-from ai_experiments.monitoring.supervision import RunAction, supervise_once
+from ai_experiments.monitoring.escalation import ChangeRequest, record_change_request
+from ai_experiments.monitoring.supervision import RunAction, SupervisionReport, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent
-from ai_experiments.store import FilesystemRunStore
+from ai_experiments.responses import (  # noqa: TC001  # LoopReport field types, resolved at class creation
+    BestTrialSummary,
+    CampaignHistoryEntry,
+    CampaignVerdict,
+    SuccessReport,
+)
+from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, RunEvent
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ai_experiments.agents.contracts import AgentResult
+    from ai_experiments.agents.runner import AgentRunner
+    from ai_experiments.store import FilesystemRunStore
 
 TERMINAL_STATUSES = {"completed", "stopped", "failed"}
+
+#: The campaign stopped because the code, not the search, is what blocks it.
+BLOCKED_ON_CHANGE = "blocked_on_change"
 
 #: Why the loop returned. Only ``target_reached`` means the goal was met.
 LoopStop = str
@@ -63,10 +79,81 @@ class LoopReport(BaseModel):
     #: supervised nothing all night and returned an empty list would be
     #: indistinguishable from a healthy one.
     supervision_errors: list[str] = Field(default_factory=list)
-    objective: dict[str, Any] = Field(default_factory=dict)
-    best: dict[str, Any] | None = None
-    history: list[dict[str, Any]] = Field(default_factory=list)
+    #: Set when the loop stopped because the blocker is a defect, not the search.
+    change_request: dict[str, Any] | None = None
+    #: Always set by `_report`; optional only so a report can be constructed
+    #: in a test without restating the whole objective.
+    objective: ObjectiveSpec | None = None
+    best: BestTrialSummary | None = None
+    #: Whether the best trial is actually distinguishable from the runner-up
+    #: and from its baseline. A caller that reads `best` alone reports the
+    #: winner of a raffle; see `campaign_verdict`.
+    verdict: CampaignVerdict | None = None
+    #: Whether the campaign cleared the bar its goal declared. ``met`` is
+    #: ``None`` when the goal declared none, which is not a pass.
+    success: SuccessReport | None = None
+    history: list[CampaignHistoryEntry] = Field(default_factory=list)
     reviews: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@dataclass
+class _LoopControls:
+    """One `run_loop` call's limits, clock, and progress callback.
+
+    All of them are the caller's, not the campaign's, which is what lets a test
+    drive the same loop on a fake clock that never sleeps.
+    """
+
+    max_rounds: int | None
+    max_seconds: float | None
+    interval_seconds: float
+    sleep: Callable[[float], None]
+    now: Callable[[], float]
+    started: float
+    on_state: Callable[[CampaignState], None] | None
+
+    def notify(self, state: CampaignState) -> None:
+        """Show the caller the state the loop is about to act on, if it asked."""
+        if self.on_state is not None:
+            self.on_state(state)
+
+    def pause(self, iterations: int) -> None:
+        """Wait out the poll interval before every iteration except the first."""
+        if self.interval_seconds > 0 and iterations > 1:
+            self.sleep(self.interval_seconds)
+
+    def limit_reached(self, state: CampaignState) -> str | None:
+        """Name the caller-supplied limit the loop has just hit, or None."""
+        if self.max_rounds is not None and state.rounds >= self.max_rounds:
+            return "max_rounds"
+        if self.max_seconds is not None and self.now() - self.started >= self.max_seconds:
+            return "max_seconds"
+        return None
+
+
+@dataclass
+class _SupervisionLog:
+    """What supervision did and could not do across the loop's iterations."""
+
+    actions: list[RunAction] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    def record(self, report: SupervisionReport) -> None:
+        self.actions.extend(report.actions)
+        self.errors.extend(report.errors)
+
+
+@dataclass
+class _LoopOutcome:
+    """Where a step of the loop left the campaign, and why it would stop.
+
+    ``loop_stop`` is None while the campaign is still worth advancing; anything
+    else is the answer `run_loop` reports as its own.
+    """
+
+    state: CampaignState
+    loop_stop: str | None = None
+    change_request: ChangeRequest | None = None
 
 
 def run_loop(
@@ -89,72 +176,123 @@ def run_loop(
     """
     orchestrator = orchestrator or CampaignOrchestrator(store)
     started = now()
+    state = orchestrator.start(goal) if campaign_id is None else orchestrator.advance(campaign_id)
 
-    if campaign_id is None:
-        state = orchestrator.start(goal)
-    else:
-        state = orchestrator.advance(campaign_id)
-
+    controls = _LoopControls(
+        max_rounds=max_rounds,
+        max_seconds=max_seconds,
+        interval_seconds=interval_seconds,
+        sleep=sleep,
+        now=now,
+        started=started,
+        on_state=on_state,
+    )
     reviews: list[dict[str, Any]] = []
-    supervision: list[RunAction] = []
-    supervision_errors: list[str] = []
-    loop_stop = "campaign_finished"
-    iterations = 0
+    supervision = _SupervisionLog()
+    outcome = _advance_until_done(orchestrator, store, state, controls, reviews, supervision)
+    state = outcome.state
 
+    if outcome.loop_stop in {"max_rounds", "max_seconds"}:
+        # The last round was submitted and paid for. Leaving without reading it
+        # loses a finished trial and leaves the campaign claiming work in
+        # flight that nothing will ever collect.
+        state = orchestrator.reconcile(state.campaign_id)
+
+    controls.notify(state)
+    return _report(
+        orchestrator, state, outcome, reviews, supervision, elapsed=round(now() - started, 3)
+    )
+
+
+def _advance_until_done(
+    orchestrator: CampaignOrchestrator,
+    store: FilesystemRunStore,
+    state: CampaignState,
+    controls: _LoopControls,
+    reviews: list[dict[str, Any]],
+    supervision: _SupervisionLog,
+) -> _LoopOutcome:
+    """Advance the campaign until it ends, a limit is hit, or a review stops it.
+
+    This is the loop and nothing else: a round's decisions live in
+    `_act_on_review`, the caller's limits in `_LoopControls`. Every iteration
+    also supervises the runs the campaign is driving, through the same pass
+    the daemon uses, so a loop with no daemon behind it still kills a stuck run.
+    """
+    iterations = 0
+    reviewed_through = 0
     while state.status not in TERMINAL_STATUSES:
-        if on_state is not None:
-            on_state(state)
-        if max_rounds is not None and state.rounds >= max_rounds:
-            loop_stop = "max_rounds"
-            break
-        if max_seconds is not None and now() - started >= max_seconds:
-            loop_stop = "max_seconds"
-            break
+        controls.notify(state)
+        reached = controls.limit_reached(state)
+        if reached is not None:
+            return _LoopOutcome(state, reached)
 
         iterations += 1
-        if interval_seconds > 0 and iterations > 1:
-            sleep(interval_seconds)
-
+        controls.pause(iterations)
         # Close the cohort -- score what finished, evaluate the stop
         # condition -- without admitting a new one. A review that runs after
         # the next cohort is already submitted is reviewing something already
         # running and already paid for; `admit=False` is what keeps the
         # verdict able to actually stop something.
         state = orchestrator.advance(state.campaign_id, admit=False)
-        pass_report = supervise_once(
-            store,
-            [
-                trial.run_id
-                for trial in state.trials
-                if trial.status in ACTIVE_TRIAL_STATES and trial.run_id
-            ],
-        )
-        supervision.extend(pass_report.actions)
-        supervision_errors.extend(pass_report.errors)
-
+        supervision.record(supervise_once(store, _active_run_ids(state)))
         if state.status in TERMINAL_STATUSES:
             break
 
-        verdict = _review(orchestrator, state, reviews)
-        if verdict == "stop":
-            state = orchestrator.stop(state.campaign_id, "agent_review_stop")
-            loop_stop = "agent_review_stop"
-            break
-
+        if state.rounds > reviewed_through:
+            # One review per cohort, before the next one is admitted.
+            reviewed_through = state.rounds
+            outcome = _act_on_review(orchestrator, store, state, reviews)
+            state = outcome.state
+            if outcome.loop_stop is not None:
+                return outcome
         state = orchestrator.advance(state.campaign_id)
+    return _LoopOutcome(state, "campaign_finished")
 
-    if loop_stop in {"max_rounds", "max_seconds"}:
-        # The last round was submitted and paid for. Leaving without reading it
-        # loses a finished trial and leaves the campaign claiming work in
-        # flight that nothing will ever collect.
-        state = orchestrator.reconcile(state.campaign_id)
 
-    if on_state is not None:
-        on_state(state)
+def _active_run_ids(state: CampaignState) -> list[str]:
+    return [t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES and t.run_id]
 
+
+def _act_on_review(
+    orchestrator: CampaignOrchestrator,
+    store: FilesystemRunStore,
+    state: CampaignState,
+    reviews: list[dict[str, Any]],
+) -> _LoopOutcome:
+    """Review the round that just finished, and act on the verdict it returns.
+
+    ``stop`` ends the campaign on the agent's judgement; ``needs_change`` files
+    the ticket first, because no parameter fixes a defect and the rest of the
+    budget would only buy more copies of the same failure.
+    """
+    review = _review(orchestrator, state, reviews)
+    verdict = str(review.get("verdict", ""))
+    if verdict == "stop":
+        stopped = orchestrator.stop(state.campaign_id, "agent_review_stop")
+        return _LoopOutcome(stopped, "agent_review_stop")
+    if verdict == "needs_change":
+        change = _change_request(state, review)
+        record_change_request(store, change)
+        stopped = orchestrator.stop(state.campaign_id, BLOCKED_ON_CHANGE)
+        return _LoopOutcome(stopped, "needs_change", change)
+    return _LoopOutcome(state)
+
+
+def _report(
+    orchestrator: CampaignOrchestrator,
+    state: CampaignState,
+    outcome: _LoopOutcome,
+    reviews: list[dict[str, Any]],
+    supervision: _SupervisionLog,
+    *,
+    elapsed: float,
+) -> LoopReport:
+    """Turn the finished campaign into the answer `run_loop`'s caller acts on."""
     pending = [t.trial_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
     goal = orchestrator.campaign_store.read_goal(state.campaign_id)
     summary = summarize_campaign(state, goal)
+    change = outcome.change_request
     return LoopReport(
         campaign_id=state.campaign_id,
         status=state.status,
@@ -163,38 +301,50 @@ def run_loop(
         rounds=state.rounds,
         trials=len(state.trials),
         agent_calls=state.agent_calls,
-        elapsed_seconds=round(now() - started, 3),
-        loop_stop=loop_stop,
+        elapsed_seconds=elapsed,
+        loop_stop=outcome.loop_stop or "campaign_finished",
         pending_trials=pending,
-        supervision=supervision,
-        supervision_errors=supervision_errors,
-        objective=summary["objective"],
-        best=summary["best"],
-        history=summary["history"],
+        supervision=supervision.actions,
+        supervision_errors=supervision.errors,
+        change_request=change.model_dump(mode="json") if change is not None else None,
+        objective=summary.objective,
+        best=summary.best,
+        verdict=summary.verdict,
+        success=summary.success,
+        history=summary.history,
         reviews=reviews,
     )
 
 
-def _review(
+def _review(  # ast-grep-ignore: no-dict-return-annotation
     orchestrator: CampaignOrchestrator,
     state: CampaignState,
     reviews: list[dict[str, Any]],
-) -> str:
+) -> dict[str, Any]:
     """Ask the agent whether the campaign is still worth running.
 
-    Returns the verdict, or ``""`` when no review happened — reviews are
-    opt-in, budgeted like any other agent call, and a failed review never
-    stops a campaign that is otherwise making progress.
+    Returns the reply, or ``{}`` when no review happened — reviews are opt-in,
+    budgeted like any other agent call, and a failed review never stops a
+    campaign that is otherwise making progress.
+
+    The reply is the agent's own JSON, passed through unchanged from
+    ``AgentResult.payload``. There is no shape here for us to declare, only one
+    an agent may or may not have honoured, so it stays a raw mapping and each
+    reader validates the keys it uses.
     """
     goal = orchestrator.campaign_store.read_goal(state.campaign_id)
     if not goal.analysis.review_between_rounds:
-        return ""
+        return {}  # ast-grep-ignore: no-dict-literal-return  # reviews are off, no reply
     if state.agent_calls >= goal.agent.max_calls:
-        return ""
+        return {}  # ast-grep-ignore: no-dict-literal-return  # out of agent budget, no reply
 
     runner: AgentRunner = orchestrator.agent_runner(goal, state.campaign_id)
     summary = summarize_campaign(state, goal)
-    result = runner.run(review_brief(goal, summary), role="reviewer")
+    # Serialised at the prompt boundary: the brief builders read one shape of
+    # evidence, and `round_brief`'s caller already hands them `summarize_trials`
+    # output. Typing one of the two and not the other would split that contract.
+    brief = review_brief(goal, summary.model_dump(mode="json"))
+    result = runner.run(brief, role="reviewer")
     state.agent_calls += 1
     orchestrator.campaign_store.write_state(state)
 
@@ -202,17 +352,57 @@ def _review(
     RoundLog(orchestrator.campaign_store.campaign_dir(state.campaign_id)).append(record)
     reviews.append(record.outcome)
     if not result.ok:
-        return ""
+        return {}  # ast-grep-ignore: no-dict-literal-return  # the call failed, no reply
 
     verdict = str(result.payload.get("verdict", ""))
     if verdict == "change_goal" and goal.analysis.apply_agent_changes:
         _apply_changes(orchestrator, state, goal, result.payload)
-    return verdict
+    return result.payload
 
 
-def _review_record(
-    state: CampaignState, goal: GoalSpec, result: AgentResult
-) -> RoundRecord:
+def _change_request(state: CampaignState, review: dict[str, Any]) -> ChangeRequest:
+    """Turn a `needs_change` verdict into a ticket a development flow can take.
+
+    The agent supplies the diagnosis; the evidence comes from the campaign
+    record, so a reader can check the claim instead of trusting it. The failed
+    trials are the evidence that matters: a defect the search cannot route
+    around shows up as the same error, trial after trial.
+    """
+    change = review.get("change") or {}
+    failed = [t for t in state.trials if t.status == "failed"]
+    title = str(change.get("title") or "").strip() or (
+        f"{state.name}: the campaign cannot proceed without a code change"
+    )
+    files = [str(f) for f in (change.get("files") or [])]
+    # A digest over what the ticket is about, not when it was raised: the same
+    # defect escalated twice must produce the same key, so a connector can
+    # refuse to start a second development flow for it.
+    digest = hashlib.sha256("\x00".join([title, *sorted(files)]).encode()).hexdigest()
+    return ChangeRequest(
+        campaign_id=state.campaign_id,
+        title=title,
+        rationale=str(review.get("reason", "")),
+        files=files,
+        trial_ids=[t.trial_id for t in failed],
+        run_ids=[t.run_id for t in failed if t.run_id],
+        error_tail=_error_tail(failed),
+        acceptance=str(change.get("acceptance", "")),
+        source_key=f"iax:{state.campaign_id}:{digest[:12]}",
+    )
+
+
+#: How much workload output a ticket carries. Enough to name the failure,
+#: little enough that an inbox stays readable.
+ERROR_TAIL_CHARS = 2000
+
+
+def _error_tail(failed: list[Any]) -> str:
+    """Return the errors of the failed trials, newest last, bounded in size."""
+    lines = [f"{t.trial_id}: {t.error}" for t in failed if t.error]
+    return "\n".join(lines)[-ERROR_TAIL_CHARS:]
+
+
+def _review_record(state: CampaignState, goal: GoalSpec, result: AgentResult) -> RoundRecord:
     payload = result.payload if result.ok else {}
     return RoundRecord(
         campaign_id=state.campaign_id,
@@ -260,9 +450,7 @@ def _apply_changes(
             _malformed_change_event(changes),
         )
         return
-    refused = {
-        key: value for key, value in changes.items() if key not in APPLICABLE_KEYS
-    }
+    refused = {key: value for key, value in changes.items() if key not in APPLICABLE_KEYS}
     if refused:
         orchestrator.campaign_store.append_event(
             state.campaign_id,
@@ -298,9 +486,7 @@ def _malformed_change_event(changes: object) -> RunEvent:
     # `changes` came out of an agent's JSON payload, so a str/list/int/float/bool
     # is already JSON-serializable as-is; anything else falls back to `repr()`
     # so a value that is not can never break writing this event to the log.
-    safe_changes = (
-        changes if isinstance(changes, (str, int, float, bool, list)) else repr(changes)
-    )
+    safe_changes = changes if isinstance(changes, (str, int, float, bool, list)) else repr(changes)
     return RunEvent(
         level="warning",
         message=(

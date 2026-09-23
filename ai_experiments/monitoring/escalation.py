@@ -17,13 +17,17 @@ import json
 import shlex
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, utc_now
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ai_experiments.schemas import CampaignState, GoalSpec
+    from ai_experiments.store import FilesystemRunStore
 
 EscalationAction = Literal["none", "invoke_agent", "budget_exhausted", "cooling_down"]
 
@@ -56,9 +60,7 @@ class EscalationLadder:
         return EscalationState(**json.loads(path.read_text()))
 
     def _write_state(self, run_id: str, state: EscalationState) -> None:
-        self._state_path(run_id).write_text(
-            json.dumps(state.model_dump(mode="json"), indent=2)
-        )
+        self._state_path(run_id).write_text(json.dumps(state.model_dump(mode="json"), indent=2))
 
     def observe(
         self,
@@ -125,10 +127,51 @@ class CampaignReview(BaseModel):
     note: str = ""
 
 
-EscalationItem = EscalationRequest | CampaignReview
+class ChangeRequest(BaseModel):
+    """One campaign that cannot proceed until somebody changes the code.
+
+    A campaign answers a question about parameters. When the evidence says the
+    blocker is a defect instead — every trial failing on the same error, a
+    workload that reports nothing, a harness that returns NaN at the edge of
+    the space — no amount of searching fixes it, and spending the budget only
+    buys more copies of the same failure.
+
+    This is the hand-off that leaves the loop: a ticket a development flow can
+    pick up. It carries evidence, not a diagnosis to trust — `trial_ids` and
+    `run_ids` point at records the reader can check, and `error_tail` is
+    workload output, so it is untrusted text that must never be interpolated
+    into a shell command.
+    """
+
+    kind: Literal["change"] = "change"
+    campaign_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    title: str
+    rationale: str = ""
+    #: Where the reporter thinks the defect lives. A hint for the flow, not a fact.
+    files: list[str] = Field(default_factory=list)
+    trial_ids: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    error_tail: str = ""
+    #: What proves the change worked, in one sentence a test can be written from.
+    acceptance: str = ""
+    #: Stable across repeated escalations of the same defect, so a connector
+    #: can refuse to launch the same development flow twice.
+    source_key: str = ""
+    note: str = (
+        "The campaign stopped with `blocked_on_change`. Land the fix on an "
+        "experimentation branch, then start a new campaign from the same goal: "
+        "trials measured before a code change are not comparable with the ones after."
+    )
+
+
+EscalationItem = EscalationRequest | CampaignReview | ChangeRequest
 
 #: Filename prefix that marks a campaign review inside the escalation inbox.
 CAMPAIGN_PREFIX = "campaign_"
+
+#: Filename prefix that marks a development hand-off inside the inbox.
+CHANGE_PREFIX = "change_"
 
 
 def escalate(
@@ -186,17 +229,42 @@ def list_escalations(store: FilesystemRunStore) -> list[EscalationItem]:
     escalations_dir = store.root / "_escalations"
     if not escalations_dir.exists():
         return []
-    items: list[EscalationItem] = []
-    for path in sorted(escalations_dir.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text())
-            if path.name.startswith(CAMPAIGN_PREFIX):
-                items.append(CampaignReview(**payload))
-            else:
-                items.append(EscalationRequest(**payload))
-        except (json.JSONDecodeError, ValidationError, OSError):
-            continue
-    return items
+    read = (_read_item(path) for path in sorted(escalations_dir.glob("*.json")))
+    return [item for item in read if item is not None]
+
+
+def _read_item(path: Path) -> EscalationItem | None:
+    """Parse one inbox file, or None when it is unreadable or malformed."""
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        if path.name.startswith(CHANGE_PREFIX):
+            return ChangeRequest(**payload)
+        if path.name.startswith(CAMPAIGN_PREFIX):
+            return CampaignReview(**payload)
+        return EscalationRequest(**payload)
+    except ValidationError:
+        return None
+
+
+def record_change_request(store: FilesystemRunStore, request: ChangeRequest) -> Path:
+    """Put a development hand-off in the inbox and return where it landed."""
+    escalations_dir = store.root / "_escalations"
+    escalations_dir.mkdir(parents=True, exist_ok=True)
+    path = escalations_dir / f"{CHANGE_PREFIX}{request.campaign_id}.json"
+    path.write_text(request.model_dump_json(indent=2))
+    return path
+
+
+def clear_change_request(store: FilesystemRunStore, campaign_id: str) -> None:
+    path = store.root / "_escalations" / f"{CHANGE_PREFIX}{campaign_id}.json"
+    path.unlink(missing_ok=True)
+
+
+def list_change_requests(store: FilesystemRunStore) -> list[ChangeRequest]:
+    return [i for i in list_escalations(store) if isinstance(i, ChangeRequest)]
 
 
 def list_run_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:
@@ -207,9 +275,7 @@ def list_campaign_reviews(store: FilesystemRunStore) -> list[CampaignReview]:
     return [i for i in list_escalations(store) if isinstance(i, CampaignReview)]
 
 
-def _in_cooldown(
-    last_call: datetime | None, policy: EscalationPolicy, now: datetime
-) -> bool:
+def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: datetime) -> bool:
     if last_call is None:
         return False
     if last_call.tzinfo is None:
@@ -220,7 +286,7 @@ def _in_cooldown(
 def _run_agent_command(
     store: FilesystemRunStore, run_id: str, policy: EscalationPolicy
 ) -> AgentVerdict:
-    assert policy.agent_command is not None
+    assert policy.agent_command is not None  # noqa: S101  # type narrowing, not a runtime check
     # Plain token replacement, not str.format: agent prompts legitimately
     # contain literal braces (JSON examples) that format() would reject.
     rendered = policy.agent_command.replace("{run_id}", run_id).replace(
@@ -228,16 +294,15 @@ def _run_agent_command(
     )
     command = shlex.split(rendered)
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # user-configured agent_command, this is the product
             command,
             capture_output=True,
             text=True,
             timeout=policy.agent_timeout_seconds,
+            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return AgentVerdict(
-            verdict="inconclusive", reason=f"agent command failed: {exc}"
-        )
+        return AgentVerdict(verdict="inconclusive", reason=f"agent command failed: {exc}")
 
     output = result.stdout.strip()
     try:
@@ -258,4 +323,32 @@ def _run_agent_command(
         verdict="inconclusive",
         reason="agent output was not a JSON verdict",
         raw_output=output[-2000:],
+    )
+
+
+def request_campaign_review(
+    run_store: FilesystemRunStore, state: CampaignState, goal: GoalSpec
+) -> None:
+    """Drop a review request for an agent session.
+
+    Analysis beyond the built-in strategy (e.g. reshaping the search space) costs
+    tokens, so it is opt-in via ``analysis.agent_review`` and file-based.
+    """
+    from ai_experiments.planner.analysis import summarize_campaign
+
+    escalations = run_store.root / "_escalations"
+    escalations.mkdir(parents=True, exist_ok=True)
+    review = CampaignReview(
+        campaign_id=state.campaign_id,
+        # Serialised, not the model: `CampaignReview.summary` is a plain dict so a
+        # review written by an older iax still reads back after a summary field moves.
+        summary=summarize_campaign(state, goal).model_dump(mode="json"),
+        note=(
+            "Review trial history; queue better trials via "
+            "`iax campaign suggest <campaign_id> --params '{...}'` "
+            "or stop via `iax campaign stop <campaign_id>`."
+        ),
+    )
+    (escalations / f"{CAMPAIGN_PREFIX}{state.campaign_id}.json").write_text(
+        json.dumps(review.model_dump(mode="json"), indent=2)
     )

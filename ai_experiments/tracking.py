@@ -22,11 +22,17 @@ daemon tick.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from ai_experiments.core.logger import get_logger
 from ai_experiments.repro import read_repro
 from ai_experiments.schemas import ExperimentManifest, RunEvent, RunStatus
-from ai_experiments.store import FilesystemRunStore
+from ai_experiments.settings import get_settings
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
+
+log = get_logger(__name__)
 
 _TERMINAL_MLFLOW_STATUS = {
     "completed": "FINISHED",
@@ -50,24 +56,37 @@ def _load_mlflow() -> Any:
 
 
 def _is_file_store(tracking_uri: str | None) -> bool:
-    """True when the URI resolves to MLflow's local filesystem store
-    (``file:...``, a plain path, or nothing — mlflow defaults to ./mlruns)."""
-    resolved = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")
+    """Return True when the URI resolves to MLflow's local filesystem store.
+
+    Covers ``file:...``, a plain path, or nothing — mlflow defaults to ./mlruns.
+    """
+    resolved = tracking_uri or get_settings().mlflow_tracking_uri
     return resolved == "" or resolved.startswith("file:") or "://" not in resolved
 
 
-def _file_store_optout(tracking_uri: str | None) -> dict[str, str]:
+def _file_store_optout(  # ast-grep-ignore: no-dict-return-annotation
+    tracking_uri: str | None,
+) -> dict[str, str]:
     """MLflow 3.x gates the filesystem store behind MLFLOW_ALLOW_FILE_STORE.
 
     Configuring a file store in iax is an explicit choice (and the only local
     option with mlflow-skinny, which has no SQL store), so opt out of the
     gate on the user's behalf — for this process and for the workload env.
     An explicit MLFLOW_ALLOW_FILE_STORE=false set by the user is respected.
+
+    Returns an env-var mapping spliced into the workload's subprocess
+    environment (``**tracker.extra_env`` below); the consumer is a dict
+    splice, not a typed caller.
     """
     if not _is_file_store(tracking_uri):
-        return {}
-    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    return {"MLFLOW_ALLOW_FILE_STORE": os.environ["MLFLOW_ALLOW_FILE_STORE"]}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # no opt-out needed, same shape
+    # mlflow reads this out of os.environ itself; we set it for mlflow and mirror it into the
+    # workload env. Not app config, and a cached settings read would not see the setdefault.
+    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")  # ast-grep-ignore: settings-module
+    value = os.environ["MLFLOW_ALLOW_FILE_STORE"]  # ast-grep-ignore: settings-module
+    # env-var mapping spliced into the workload's subprocess environment; the
+    # consumer is a dict splice (`**tracker.extra_env`), not a typed caller.
+    return {"MLFLOW_ALLOW_FILE_STORE": value}  # ast-grep-ignore: no-dict-literal-return
 
 
 class MlflowTracker:
@@ -104,10 +123,10 @@ class MlflowTracker:
         for key in ("campaign", "trial_id"):
             if manifest.metadata.get(key):
                 tags[f"iax.{key}"] = str(manifest.metadata[key])
-        repro = read_repro(store.run_dir(run_id)) or {}
-        if repro.get("git_sha"):
-            tags["mlflow.source.git.commit"] = repro["git_sha"]
-            tags["iax.git_dirty"] = str(repro.get("git_dirty"))
+        repro = read_repro(store.run_dir(run_id))
+        if repro is not None and repro.git_sha:
+            tags["mlflow.source.git.commit"] = repro.git_sha
+            tags["iax.git_dirty"] = str(repro.git_dirty)
 
         mlflow_run = self.client.create_run(
             experiment_id=self._experiment_id(str(experiment_name)),
@@ -121,9 +140,7 @@ class MlflowTracker:
             self.client.log_param(mlflow_run_id, str(name), value)
         return mlflow_run_id
 
-    def finalize_run(
-        self, store: FilesystemRunStore, run_id: str, mlflow_run_id: str
-    ) -> None:
+    def finalize_run(self, store: FilesystemRunStore, run_id: str, mlflow_run_id: str) -> None:
         """Mirror collected metrics + local artifacts, then close the run."""
         for index, point in enumerate(store.read_metrics(run_id)):
             step = point.step if point.step is not None else index
@@ -133,8 +150,11 @@ class MlflowTracker:
                     self.client.log_metric(
                         mlflow_run_id, name, value, timestamp=timestamp, step=step
                     )
-                except Exception:
-                    continue  # non-finite values may be rejected by some stores
+                # Stores differ in what they raise for a rejected (e.g. non-finite) value; one
+                # bad value must not cost the artifact upload and set_terminated below.
+                except Exception as exc:  # noqa: PERF203  # per-value isolation is the point
+                    log.debug("mlflow_log_metric_failed", metric=name, error=str(exc))
+                    continue
 
         artifacts = store.artifacts_dir(run_id)
         if artifacts.exists() and any(artifacts.iterdir()):
@@ -156,20 +176,24 @@ def tracker_for(manifest: ExperimentManifest) -> MlflowTracker | None:
     )
 
 
-def begin_tracking(
+def begin_tracking(  # ast-grep-ignore: no-dict-return-annotation
     store: FilesystemRunStore, run_id: str, manifest: ExperimentManifest
 ) -> dict[str, str]:
     """Submit-time hook used by the backends.
 
     Returns env vars for the workload ({} when tracking is off or broken) and
     records the mlflow run id in the run's status details for the daemon's
-    finalization pass.
+    finalization pass. This is an env-var mapping spliced into the workload's
+    subprocess environment (Ray's `runtime_env["env_vars"]`); the consumer is
+    a dict splice, not a typed caller. Only `backends/ray.py` consumes the
+    return value -- `backends/local.py` calls this for its side effects and
+    discards it.
     """
     if not manifest.tracking.mlflow:
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # tracking off, same shape
     try:
         tracker = tracker_for(manifest)
-        assert tracker is not None
+        assert tracker is not None  # noqa: S101  # type narrowing, not a runtime check
         mlflow_run_id = tracker.start_run(store, run_id, manifest)
     except Exception as exc:
         store.append_event(
@@ -180,7 +204,7 @@ def begin_tracking(
                 details={"error": str(exc)},
             ),
         )
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # tracking broke, same shape
     store.update_status(
         run_id,
         details={
@@ -188,12 +212,16 @@ def begin_tracking(
             "mlflow_tracking_uri": tracker.tracking_uri,
         },
     )
-    env = {
+    # Env-var mapping spliced into the workload's subprocess environment
+    # (Ray's runtime_env["env_vars"]); the consumer is a dict splice, not a
+    # typed caller. backends/local.py calls begin_tracking for its side
+    # effects and discards this return value -- backends/ray.py is the only
+    # consumer.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "MLFLOW_RUN_ID": mlflow_run_id,
         "MLFLOW_TRACKING_URI": str(tracker.tracking_uri),
         **tracker.extra_env,
     }
-    return env
 
 
 #: How many ticks a failing sync is retried before the daemon gives up on it.
@@ -247,9 +275,7 @@ def finalize_tracking(store: FilesystemRunStore, status: RunStatus) -> bool:
             RunEvent(
                 level="error" if give_up else "warning",
                 message=(
-                    "mlflow finalize failed; giving up"
-                    if give_up
-                    else "mlflow finalize failed"
+                    "mlflow finalize failed; giving up" if give_up else "mlflow finalize failed"
                 ),
                 details={"error": str(exc), "attempt": attempts},
             ),

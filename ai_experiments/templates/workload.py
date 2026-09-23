@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 
 def report(step: int, **metrics: float) -> None:
@@ -46,7 +47,7 @@ def main() -> None:
 
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
     if artifacts:
-        with open(os.path.join(artifacts, "result.json"), "w") as fh:
+        with (Path(artifacts) / "result.json").open("w") as fh:
             json.dump({"loss": loss, "params": params}, fh)
 
     sys.exit(0)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import io
 import os
 import shlex
@@ -11,8 +10,11 @@ import threading
 import traceback
 from collections import deque
 from pathlib import Path
-from types import FrameType
+from typing import TYPE_CHECKING
 
+import typer
+
+from ai_experiments.config_loading import load_stored
 from ai_experiments.failures import ERROR_TAIL_LINES, failure_message
 from ai_experiments.monitoring.rules import event_from_log_line
 from ai_experiments.procs import (
@@ -27,16 +29,38 @@ from ai_experiments.schemas import (
     MetricPoint,
     ResultRecord,
     RunEvent,
-    load_stored,
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from types import FrameType
+
 HEARTBEAT_SECONDS = 15
+
+app = typer.Typer(add_completion=False)
 
 #: States the supervisor may still write a final status over. Anything else is
 #: already terminal and must not be rewritten by the failure contract.
 NON_TERMINAL_STATES = {"submitted", "running", "unknown"}
+
+
+#: Variables that describe *the harness's* environment, not the workload's.
+#: `uv`, `poetry` and `conda` all read VIRTUAL_ENV, and a workload that
+#: manages its own environment either warns and ignores it or, worse,
+#: resolves against the wrong interpreter. A workload that genuinely wants
+#: one sets it in ``workload.env``.
+_HARNESS_ONLY_VARS = ("VIRTUAL_ENV",)
+
+
+def workload_env(  # ast-grep-ignore: no-dict-return-annotation
+    base: Mapping[str, str], manifest: ExperimentManifest
+) -> dict[str, str]:
+    """Build the environment the workload runs in: ours, minus what is ours alone."""
+    env = {k: v for k, v in base.items() if k not in _HARNESS_ONLY_VARS}
+    env.update(manifest.workload.env)
+    return env
 
 
 class _Supervisor:
@@ -82,7 +106,7 @@ class _Supervisor:
         return self._cancelled or self.store.cancel_requested(self.run_id)
 
     def _working_dir(self, manifest: ExperimentManifest) -> Path:
-        """The directory to run the workload in, taken as given.
+        """Return the directory to run the workload in, taken as given.
 
         The supervisor's own CWD is already the working dir (the backend
         starts it there), so resolving a relative path here would resolve it a
@@ -140,17 +164,15 @@ class _Supervisor:
         entrypoint = command if command is not None else manifest.workload.entrypoint
         cmd = [*shlex.split(entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
-        env = os.environ.copy()
         # env_for only ever adds keys, so it cannot take one away: scrub the
         # inherited environment first, or a value already set on the parent
         # process (iax daemon runs with whatever environment the operator
         # started it in) would reach the train phase untouched.
-        for key in DataSpec.ENV_KEYS:
-            env.pop(key, None)
+        inherited = {k: v for k, v in os.environ.items() if k not in DataSpec.ENV_KEYS}
         # `workload.env` (IAX_PARAMS included) is shared by every phase too,
         # so it is merged into each phase's environment rather than only the
         # single-entrypoint path's.
-        env.update(manifest.workload.env)
+        env = workload_env(inherited, manifest)
         env.update(manifest.workload.data.env_for(self.phase))
         env["IAX_PHASE"] = self.phase
         env["IAX_RUN_ID"] = self.run_id
@@ -168,9 +190,7 @@ class _Supervisor:
         status = self.store.read_status(self.run_id)
         if status.details.get("mlflow_run_id"):
             env["MLFLOW_RUN_ID"] = str(status.details["mlflow_run_id"])
-            env["MLFLOW_TRACKING_URI"] = str(
-                status.details.get("mlflow_tracking_uri", "")
-            )
+            env["MLFLOW_TRACKING_URI"] = str(status.details.get("mlflow_tracking_uri", ""))
 
         self._update_status(
             status="running",
@@ -186,7 +206,9 @@ class _Supervisor:
         )
 
         signal.signal(signal.SIGTERM, self._handle_sigterm)
-        self.process = subprocess.Popen(
+        # The command is the user's own workload entrypoint: launching it is what this
+        # worker exists to do, so there is no untrusted input to validate away.
+        self.process = subprocess.Popen(  # noqa: S603  # user-supplied workload entrypoint
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -218,7 +240,8 @@ class _Supervisor:
         heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True)
         heartbeat.start()
 
-        assert self.process.stdout is not None
+        assert self.process.stdout is not None  # noqa: S101  # type narrowing, not a runtime check
+        recent: deque[str] = deque(maxlen=ERROR_TAIL_LINES)
         # A binary pipe wrapped with newline="\n". In text mode python splits
         # on "\r" too, so every refresh of a progress bar became its own line
         # -- and then its own event. errors="replace" because workload output
@@ -226,30 +249,7 @@ class _Supervisor:
         stream = io.TextIOWrapper(
             self.process.stdout, encoding="utf-8", errors="replace", newline="\n"
         )
-        recent: deque[str] = deque(maxlen=ERROR_TAIL_LINES)
-        for raw in stream:
-            line = _overwrite(raw)
-            if not line:
-                continue
-            result = parse_result_line(line)
-            if result is not None:
-                self._route_declared_result(result)
-                continue
-
-            metric = parse_metric_line(line)
-            if metric is not None:
-                point = MetricPoint(step=metric["step"], values=metric["values"])
-                self.store.append_metric(self.run_id, point)
-                self._update_status(
-                    details={
-                        "last_metric_at": point.timestamp.isoformat(),
-                        "last_step": point.step,
-                        "last_metrics": point.values,
-                    }
-                )
-            else:
-                recent.append(line)
-                self.store.append_event(self.run_id, event_from_log_line(line))
+        self._stream_output(stream, recent)
 
         exit_code = self.process.wait()
         self._stop.set()
@@ -262,35 +262,68 @@ class _Supervisor:
             # The window between `process.wait()` returning and the next
             # phase's own `signal.signal(...)` call is microseconds wide and
             # cannot be hit deterministically without a test-only seam in
-            # this hot path, so this line is accepted untested (ledger:
-            # task-8 fix round 3).
+            # this hot path, so this line is accepted untested.
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        if exit_code == 0:
-            if self._cancel_requested():
-                # Exit 0 does not undo a stop request: a workload that traps
-                # SIGTERM and shuts down cleanly must still be recorded as
-                # cancelled, not completed.
+        return self._record_exit(exit_code, recent)
+
+    def _record_clean_exit(self, exit_code: int) -> None:
+        """Record an exit code of 0: completed, unless somebody asked it to stop."""
+        if self._cancel_requested():
+            # Exit 0 does not undo a stop request: a workload that traps
+            # SIGTERM and shuts down cleanly must still be recorded as
+            # cancelled, not completed.
+            self._update_status(
+                status="cancelled",
+                exit_code=exit_code,
+                completed_at=utc_now(),
+                error="workload exited after cancellation was requested",
+            )
+            self.store.append_event(
+                self.run_id,
+                RunEvent(level="warning", message="workload stopped as requested"),
+            )
+            return
+        if self.final:
+            self._update_status(status="completed", exit_code=exit_code, completed_at=utc_now())
+        self.store.append_event(self.run_id, RunEvent(message="workload completed"))
+
+    def _stream_output(self, stream: io.TextIOWrapper, recent: deque[str]) -> None:
+        """Route each line of workload output to the metric series or the event log."""
+        for raw in stream:
+            line = _overwrite(raw)
+            if not line:
+                continue
+            result = parse_result_line(line)
+            if result is not None:
+                self._route_declared_result(result)
+                continue
+
+            metric = parse_metric_line(line)
+            if metric is not None:
+                point = MetricPoint(step=metric.step, values=metric.values)
+                self.store.append_metric(self.run_id, point)
                 self._update_status(
-                    status="cancelled",
-                    exit_code=exit_code,
-                    completed_at=utc_now(),
-                    error="workload exited after cancellation was requested",
-                )
-                self.store.append_event(
-                    self.run_id,
-                    RunEvent(level="warning", message="workload stopped as requested"),
+                    details={
+                        "last_metric_at": point.timestamp.isoformat(),
+                        "last_step": point.step,
+                        "last_metrics": point.values,
+                    }
                 )
             else:
-                if self.final:
-                    # With two phases only the last may declare the run
-                    # completed; a non-final phase that exits 0 just hands
-                    # off to the next one, so it leaves status alone here.
-                    self._update_status(
-                        status="completed", exit_code=exit_code, completed_at=utc_now()
-                    )
-                self.store.append_event(
-                    self.run_id, RunEvent(message="workload completed")
-                )
+                recent.append(line)
+                self.store.append_event(self.run_id, event_from_log_line(line))
+
+    def _record_exit(self, exit_code: int, recent: deque[str]) -> int:
+        """Write the final status and event the workload's exit code implies.
+
+        Which of the four endings this was is the whole point: a signal nobody
+        asked for reads very differently from a cancellation, and both read
+        differently from a workload that simply returned non-zero. With two
+        phases only the final one may declare the run `completed`; a non-final
+        phase that exits 0 just hands off to the next one.
+        """
+        if exit_code == 0:
+            self._record_clean_exit(exit_code)
         elif exit_code < 0 and self._cancel_requested():
             self._update_status(
                 status="cancelled",
@@ -330,9 +363,7 @@ class _Supervisor:
                 status="failed",
                 exit_code=exit_code,
                 completed_at=utc_now(),
-                error=failure_message(
-                    f"workload exited with code {exit_code}", list(recent)
-                ),
+                error=failure_message(f"workload exited with code {exit_code}", list(recent)),
             )
             self.store.append_event(
                 self.run_id,
@@ -346,7 +377,7 @@ class _Supervisor:
 
 
 def _overwrite(raw: str) -> str:
-    """Collapse a carriage-return sequence the way a terminal displays it.
+    r"""Collapse a carriage-return sequence the way a terminal displays it.
 
     `tqdm` and every other progress bar rewrites one line with "\r". Only the
     final state of that line carries information; the refreshes before it are
@@ -363,9 +394,7 @@ def _signal_name(signum: int) -> str:
         return "unknown signal"
 
 
-def report_supervisor_failure(
-    store: FilesystemRunStore, run_id: str, exc: BaseException
-) -> None:
+def report_supervisor_failure(store: FilesystemRunStore, run_id: str, exc: BaseException) -> None:
     """Turn a crashed supervisor into an honest ``failed`` status.
 
     Without this the run keeps whatever status it had -- ``running``, usually
@@ -398,21 +427,52 @@ def report_supervisor_failure(
         traceback.print_exc(file=sys.stderr)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--runs-dir", required=True)
-    parser.add_argument("--phase", default="evaluate", choices=["train", "evaluate"])
-    args = parser.parse_args()
+def _require_nonempty_runs_dir(value: str) -> str:
+    """Reject an empty ``--runs-dir`` instead of silently redefining it.
 
-    store = FilesystemRunStore(args.runs_dir)
+    An empty value is not a missing one. ``FilesystemRunStore("")`` resolves
+    ``Path("")`` to the process's cwd, so an empty ``--runs-dir`` silently
+    supervises a run in a different store than the caller meant -- the same
+    class of bug as #21, arriving through the flag instead of the search. The
+    sole caller (`backends/local.py`) always passes ``str(self.store.root)``,
+    never empty, so rejecting it cannot affect a real invocation.
+    """
+    if not value.strip():
+        raise typer.BadParameter("must not be empty")
+    return value
+
+
+def _require_known_phase(value: str) -> str:
+    if value not in {"train", "evaluate"}:
+        raise typer.BadParameter("must be 'train' or 'evaluate'")
+    return value
+
+
+@app.command()
+def main(
+    run_id: str = typer.Option(..., "--run-id", help="Run id to supervise."),
+    runs_dir: str = typer.Option(
+        ...,
+        "--runs-dir",
+        help="Run store root.",
+        callback=_require_nonempty_runs_dir,
+    ),
+    phase: str = typer.Option(
+        "evaluate",
+        "--phase",
+        help="Which declared phase this supervisor runs; only `evaluate` may score.",
+        callback=_require_known_phase,
+    ),
+) -> None:
+    """Supervise one run: spawn its workload and stream metrics into the store."""
+    store = FilesystemRunStore(Path(runs_dir))
     try:
-        raise SystemExit(_Supervisor(store, args.run_id, phase=args.phase).run())
+        raise SystemExit(_Supervisor(store, run_id, phase=phase).run())
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)  # keep the evidence in worker.log
-        report_supervisor_failure(store, args.run_id, exc)
-        raise SystemExit(1)
+        report_supervisor_failure(store, run_id, exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
-    main()
+    app()

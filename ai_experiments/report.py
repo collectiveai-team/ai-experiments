@@ -23,32 +23,15 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from ai_experiments.schemas import MetricLine
+from ai_experiments.settings import get_settings
+
 METRIC_PREFIX = "IAX_METRIC "
 RESULT_PREFIX = "IAX_RESULT "
-
-
-def _coerce_numeric_values(payload: dict) -> dict[str, float]:
-    """Extract numeric values from a payload dict, coercing types and handling non-finite values.
-
-    Skips boolean values, converts int/float to float, and parses string
-    representations of non-finite floats (nan, inf, -inf, infinity, -infinity).
-    """
-    values: dict[str, float] = {}
-    for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
-    return values
 
 
 def artifacts_dir() -> Path | None:
@@ -59,7 +42,7 @@ def artifacts_dir() -> Path | None:
     None when running outside the harness (local backend sets it; on remote
     Ray clusters artifacts stay on the cluster's own storage).
     """
-    value = os.environ.get("IAX_ARTIFACTS_DIR")
+    value = get_settings().artifacts_dir
     if not value:
         return None
     path = Path(value)
@@ -86,12 +69,12 @@ def report_result(**values: float) -> None:
     sys.stdout.flush()
 
 
-def parse_metric_line(line: str) -> dict[str, Any] | None:
+def parse_metric_line(line: str) -> MetricLine | None:
     """Parse an ``IAX_METRIC {...}`` stdout line into step + numeric values.
 
-    Returns ``{"step": int | None, "values": {name: float}}`` or None when the
-    line is not a metric line or carries no usable values. Non-finite floats
-    (nan/inf) are preserved — detecting them is the monitor's job.
+    Returns a ``MetricLine`` or None when the line is not a metric line or
+    carries no usable values. Non-finite floats (nan/inf) are preserved --
+    detecting them is the monitor's job.
     """
     stripped = line.strip()
     idx = stripped.find(METRIC_PREFIX.strip())
@@ -110,13 +93,36 @@ def parse_metric_line(line: str) -> dict[str, Any] | None:
     if isinstance(step_raw, (int, float)) and not isinstance(step_raw, bool):
         step = int(step_raw)
 
-    values = _coerce_numeric_values(payload)
+    values: dict[str, float] = {}
+    for key, value in payload.items():
+        coerced = _coerce_metric_value(value)
+        if coerced is not None:
+            values[str(key)] = coerced
     if not values and step is None:
         return None
-    return {"step": step, "values": values}
+    return MetricLine(step=step, values=values)
 
 
-def parse_result_line(line: str) -> dict[str, float] | None:
+def _coerce_metric_value(value: object) -> float | None:
+    """One metric value as a float, or None when it is not a usable number.
+
+    Bools are rejected before ints: `isinstance(True, int)` is True in Python, and a
+    reported flag is not a measurement.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
+            return float(lowered.replace("infinity", "inf"))
+    return None
+
+
+def parse_result_line(  # ast-grep-ignore: no-dict-return-annotation
+    line: str,
+) -> dict[str, float] | None:
     """Parse an ``IAX_RESULT {...}`` line into numeric values, or None.
 
     A result has no step: it is the answer, not a point on a curve.
@@ -134,7 +140,11 @@ def parse_result_line(line: str) -> dict[str, float] | None:
         return None
     payload.pop("step", None)
 
-    values = _coerce_numeric_values(payload)
+    values = {
+        str(key): coerced
+        for key, value in payload.items()
+        if (coerced := _coerce_metric_value(value)) is not None
+    }
     return values or None
 
 

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import ai_experiments.phases as phases_module
 import ai_experiments.worker as worker_module
@@ -19,6 +20,9 @@ from ai_experiments.schemas import (
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _store_with(tmp_path, train_body: str, evaluate_body: str):
@@ -103,12 +107,13 @@ def test_both_phases_share_one_handoff_directory(tmp_path):
 
 
 def test_completed_is_not_written_until_the_final_phase(tmp_path, monkeypatch):
-    """`_Supervisor.run` only writes `completed` when `self.final` is True
-    (worker.py's `if self.final:` guard): a train phase that exits 0 hands
-    off to evaluate, it does not finish the run. Checking only the end state
-    (already covered by test_the_evaluator_result_is_the_one_that_counts)
-    would miss a mutant that dropped the guard -- the final status is
-    `completed` either way, only the sequence differs.
+    """`completed` is written only by the final phase.
+
+    `_Supervisor.run` only writes it when `self.final` is True (worker.py's `if self.final:` guard):
+    a train phase that exits 0 hands off to evaluate, it does not finish the run. Checking only the
+    end state (already covered by test_the_evaluator_result_is_the_one_that_counts) would miss a
+    mutant that dropped the guard -- the final status is `completed` either way, only the sequence
+    differs.
     """
     store, run_id = _store_with(
         tmp_path,
@@ -136,18 +141,16 @@ def test_completed_is_not_written_until_the_final_phase(tmp_path, monkeypatch):
 
 
 def test_started_at_is_not_moved_by_the_second_phase(tmp_path, monkeypatch):
-    """`started_at` measures the *run's* start, for monitoring's timeout, not
-    each phase's -- `_Supervisor.run` reads the stored value and only falls
-    back to `utc_now()` when there isn't one yet (worker.py). Real wall-clock
-    time is too coarse to trust here (both phases can start in the same
-    tick), so `utc_now` is patched to something that visibly advances on
-    every call: if the second phase wrote its own `started_at`, this would
-    catch it even though real time might not have.
+    """`started_at` measures the *run's* start, not each phase's.
+
+    It is for monitoring's timeout -- `_Supervisor.run` reads the stored value and only falls back
+    to `utc_now()` when there isn't one yet (worker.py). Real wall-clock time is too coarse to trust
+    here (both phases can start in the same tick), so `utc_now` is patched to something that visibly
+    advances on every call: if the second phase wrote its own `started_at`, this would catch it even
+    though real time might not have.
     """
     ticks = itertools.count()
-    monkeypatch.setattr(
-        worker_module, "utc_now", lambda: utc_now() + timedelta(hours=next(ticks))
-    )
+    monkeypatch.setattr(worker_module, "utc_now", lambda: utc_now() + timedelta(hours=next(ticks)))
     store, run_id = _store_with(
         tmp_path,
         """
@@ -208,9 +211,7 @@ def test_a_cancellation_before_the_first_phase_runs_nothing(tmp_path):
         for event in store.read_events(run_id)
         if event.message == "remaining phases skipped: cancellation requested"
     ]
-    assert len(skipped) == 1, (
-        "a cancellation that skipped every phase left no trace in the run log"
-    )
+    assert len(skipped) == 1, "a cancellation that skipped every phase left no trace in the run log"
     assert skipped[0].level == "warning"
     assert skipped[0].details["phase"] == "train"
 
@@ -235,8 +236,8 @@ def test_a_cancellation_between_the_phases_stops_the_evaluator(tmp_path, monkeyp
     )
 
     class _CancelledAfterTheTrainer(phases_module._Supervisor):
-        def run(self, **kwargs):
-            exit_code = super().run(**kwargs)
+        def run(self, command: str | None = None, work_dir: Path | None = None) -> int:
+            exit_code = super().run(command=command, work_dir=work_dir)
             if self.phase == "train":
                 store.request_cancel(run_id)
             return exit_code
@@ -262,14 +263,12 @@ def test_a_cancellation_between_the_phases_stops_the_evaluator(tmp_path, monkeyp
     assert skipped[0].details["phase"] == "evaluate"
 
 
-_SECOND_RESULT_WARNING = "more than one result declared; the later keys win"
+def test_a_second_declared_result_is_another_observation(tmp_path):
+    """Each `IAX_RESULT` line is one observation; a fold loop declares several.
 
-
-def test_a_second_declared_result_is_recorded_as_a_warning(tmp_path):
-    """Every document says a workload prints one `IAX_RESULT`. When one
-    prints two the reader merges them last-wins, and that merge used to
-    happen in silence -- an unreported contract violation on the only
-    channel that scores.
+    Whether a run declared more than its objective can use is judged where
+    the goal is known (`trial_sync`), so the store keeps every record, in
+    order, and says nothing here.
     """
     store, run_id = _store_with(
         tmp_path,
@@ -285,36 +284,8 @@ def test_a_second_declared_result_is_recorded_as_a_warning(tmp_path):
     assert [r.values for r in store.read_results(run_id)] == [
         {"test_acc": 0.10},
         {"test_acc": 0.99},
-    ], "the merge semantics are unchanged; only the silence is"
-    warnings = [
-        event
-        for event in store.read_events(run_id)
-        if event.message == _SECOND_RESULT_WARNING
     ]
-    assert len(warnings) == 1, (
-        "a workload that declared two results said so nowhere in its own log"
-    )
-    assert warnings[0].level == "warning"
-    assert warnings[0].details["results"] == 2
-
-
-def test_one_declared_result_is_not_warned_about(tmp_path):
-    """The normal case must stay quiet, or the warning above means nothing."""
-    store, run_id = _store_with(
-        tmp_path,
-        "pass",
-        """
-        print('IAX_RESULT {"test_acc": 0.99}')
-        """,
-    )
-
-    assert run_phases(store, run_id) == 0
-
-    assert not [
-        event
-        for event in store.read_events(run_id)
-        if event.message == _SECOND_RESULT_WARNING
-    ]
+    assert not [e for e in store.read_events(run_id) if e.level == "warning"]
 
 
 def test_a_single_entrypoint_workload_still_runs(tmp_path):
@@ -323,9 +294,7 @@ def test_a_single_entrypoint_workload_still_runs(tmp_path):
     script.write_text("print('IAX_RESULT {\"loss\": 0.25}')\n")
     manifest = ExperimentManifest(
         experiment="e",
-        workload=WorkloadSpec(
-            entrypoint=f"{sys.executable} toy.py", working_dir=str(tmp_path)
-        ),
+        workload=WorkloadSpec(entrypoint=f"{sys.executable} toy.py", working_dir=str(tmp_path)),
     )
     run_id, run_dir = store.create_run(manifest)
     # See _store_with: update_status needs a status a real submit() would
@@ -345,18 +314,16 @@ def test_a_single_entrypoint_workload_still_runs(tmp_path):
 
 
 def test_supervisor_failure_before_spawn_is_reported(tmp_path):
-    """Amendment 2/3: production now launches `-m ai_experiments.phases`, so
-    the failure contract that turns a crashed supervisor into a `failed`
-    status has to be proven against that entry point, not just against
-    `ai_experiments.worker` (tests/test_worker_lifecycle.py:135-165), which
-    production no longer runs.
+    """The failure contract is proven against `-m ai_experiments.phases`, the real entry point.
+
+    Production now launches that module, so turning a crashed supervisor into a `failed` status has
+    to be proven there, not just against `ai_experiments.worker` (tests/test_worker_lifecycle.py),
+    which production no longer runs.
     """
     store = FilesystemRunStore(tmp_path / "runs")
     manifest = ExperimentManifest(
         experiment="e",
-        workload=WorkloadSpec(
-            entrypoint=f"{sys.executable} -c pass", working_dir=str(tmp_path)
-        ),
+        workload=WorkloadSpec(entrypoint=f"{sys.executable} -c pass", working_dir=str(tmp_path)),
     )
     run_id, run_dir = store.create_run(manifest)
     # update_status refuses to fabricate a status for a run that was never
@@ -376,7 +343,7 @@ def test_supervisor_failure_before_spawn_is_reported(tmp_path):
     # Corrupt the persisted manifest so the launcher's own read of it raises.
     (run_dir / "manifest.yaml").write_text("{not: [valid")
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603  # fixed argv: the test's own script
         [
             sys.executable,
             "-m",
@@ -386,6 +353,7 @@ def test_supervisor_failure_before_spawn_is_reported(tmp_path):
             "--runs-dir",
             str(store.root),
         ],
+        check=False,
         capture_output=True,
         text=True,
     )

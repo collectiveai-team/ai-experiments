@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-import ai_experiments.cli as cli_module
 from ai_experiments.cli import app
+from ai_experiments.cli_support import EXIT_GOAL_NOT_REACHED
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / ".claude" / "skills"
 SKILL_FILES = sorted(p for p in SKILLS_DIR.glob("*/SKILL.md") if p.is_file())
@@ -33,7 +33,8 @@ def _command_names() -> set[str]:
     names = {_leaf(command) for command in app.registered_commands}
     for group in app.registered_groups:
         sub = group.typer_instance
-        group_name = group.name if isinstance(group.name, str) else sub.info.name
+        assert sub is not None, f"registered group {group.name} has no typer instance"
+        group_name = group.name if isinstance(group.name, str) else (sub.info.name or "")
         names.add(group_name)
         names.update(f"{group_name} {_leaf(c)}" for c in sub.registered_commands)
     return names
@@ -42,9 +43,7 @@ def _command_names() -> set[str]:
 def test_the_repo_ships_the_autonomous_experimentation_skill():
     """It is the entry point the README and AGENTS.md both point at."""
     assert (SKILLS_DIR / "autonomous-experimentation" / "SKILL.md").is_file()
-    assert (
-        SKILLS_DIR / "autonomous-experimentation" / "reference" / "goal.md"
-    ).is_file()
+    assert (SKILLS_DIR / "autonomous-experimentation" / "reference" / "goal.md").is_file()
 
 
 @pytest.mark.parametrize("path", SKILL_FILES, ids=lambda p: p.parent.name)
@@ -69,8 +68,67 @@ def test_agents_md_documents_the_real_exit_codes():
     """An agent branches on these numbers; they cannot drift from the code."""
     text = (SKILLS_DIR.parent.parent / "AGENTS.md").read_text()
     for code in (
-        cli_module.EXIT_GOAL_NOT_REACHED,
+        EXIT_GOAL_NOT_REACHED,
         2,
         3,
     ):
         assert f"| {code} |" in text
+
+
+def test_the_repo_ships_the_defining_goals_skill():
+    """The pre-flight half of the contract.
+
+    What an agent decides before a single trial runs, and cannot honestly decide afterwards.
+    """
+    assert (SKILLS_DIR / "defining-goals" / "SKILL.md").is_file()
+
+
+def test_the_goal_template_would_settle_something():
+    """`iax new goal` is the file agents copy, so it teaches whatever it contains.
+
+    A template that draws a goal warning teaches the warning.
+    """
+    from ai_experiments.preflight import goal_warnings
+    from ai_experiments.scaffold import render
+    from ai_experiments.schemas import GoalSpec
+
+    goal = GoalSpec(**yaml.safe_load(render("goal")))
+    assert goal_warnings(goal) == []
+
+
+#: The fields that decide whether a campaign's answer means anything. A skill
+#: that tells an agent to run campaigns without naming these is teaching the
+#: version of iax that reported a best trial and proved nothing.
+VERDICT_FIELDS = (
+    "aggregate",
+    "baseline_metric",
+    "changes_data",
+    "when",
+    "success_criteria",
+    "min_objective",
+    "min_observations",
+    "require_separation",
+    "require_beats_baseline",
+)
+
+
+def _schema_field_names() -> set[str]:
+    from ai_experiments.schemas import (
+        GoalSpec,
+        ObjectiveSpec,
+        ParamBase,
+        SuccessCriteria,
+    )
+
+    names: set[str] = set()
+    for model in (GoalSpec, ObjectiveSpec, SuccessCriteria, ParamBase):
+        names.update(model.model_fields)
+    return names
+
+
+@pytest.mark.parametrize("field", VERDICT_FIELDS)
+def test_defining_goals_documents_every_field_that_decides_a_verdict(field):
+    """Both directions: the skill names the field, and the field is real."""
+    assert field in _schema_field_names(), f"{field} is not a schema field any more"
+    text = (SKILLS_DIR / "defining-goals" / "SKILL.md").read_text()
+    assert f"`{field}`" in text, f"defining-goals never mentions {field}"

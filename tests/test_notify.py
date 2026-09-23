@@ -22,8 +22,7 @@ def test_command_sink_receives_payload(tmp_path):
     sink_file = tmp_path / "received.json"
     script = tmp_path / "sink.py"
     script.write_text(
-        "import sys, pathlib\n"
-        f"pathlib.Path({str(sink_file)!r}).write_text(sys.stdin.read())\n"
+        f"import sys, pathlib\npathlib.Path({str(sink_file)!r}).write_text(sys.stdin.read())\n"
     )
     notifier = Notifier(tmp_path / "runs", command=f"{sys.executable} {script}")
 
@@ -31,6 +30,18 @@ def test_command_sink_receives_payload(tmp_path):
 
     received = json.loads(sink_file.read_text())
     assert received["run_id"] == "run_x"
+
+
+def test_disallowed_webhook_scheme_is_skipped_not_raised(tmp_path):
+    notifier = Notifier(tmp_path / "runs", webhook_url="file:///etc/passwd")
+
+    payload = notifier.send("t", "m")
+
+    assert payload.title == "t"
+    logged = read_notifications(tmp_path / "runs")
+    assert len(logged) == 2
+    assert "notify_sink_error" in logged[-1]
+    assert "file:///etc/passwd" in logged[-1]["notify_sink_error"]
 
 
 def test_failing_sinks_never_raise(tmp_path):
@@ -42,5 +53,24 @@ def test_failing_sinks_never_raise(tmp_path):
 
     payload = notifier.send("t", "m")
 
-    assert payload["title"] == "t"
+    assert payload.title == "t"
     assert len(read_notifications(tmp_path / "runs")) == 1
+
+
+def test_send_flattens_extra_details_at_top_level(tmp_path):
+    """Pin the wire contract.
+
+    Extras from **details sit alongside timestamp/title/message/text, not
+    nested under a details/extra key -- the webhook and command sinks both
+    POST/pipe this object verbatim.
+    """
+    notifier = Notifier(tmp_path / "runs")
+
+    payload = notifier.send("t", "m", run_id="r1")
+
+    dumped = payload.model_dump(mode="json")
+    assert dumped["run_id"] == "r1"
+    assert dumped["title"] == "t"
+    assert "details" not in dumped
+    assert "extra" not in dumped
+    assert '"run_id"' in payload.model_dump_json()

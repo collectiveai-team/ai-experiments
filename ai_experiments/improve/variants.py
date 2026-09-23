@@ -23,7 +23,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
-from datetime import datetime
+from datetime import datetime  # noqa: TC003  # pydantic resolves this field at runtime
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -76,6 +76,8 @@ class VariantRecord(BaseModel):
     rationale: str = ""
     smoke_ok: bool | None = None
     smoke_output: str = ""
+    discarded: bool | None = None
+    discard_error: str = ""
 
 
 def variants_root(campaign_dir: str | Path) -> Path:
@@ -83,7 +85,7 @@ def variants_root(campaign_dir: str | Path) -> Path:
 
 
 def resolve_edit_path(root: Path, relative: str, spec: VariantSpec) -> Path:
-    """The absolute path an edit may write, or raise.
+    """Return the absolute path an edit may write, or raise.
 
     ``root`` must already exist and be resolved, so that a symlink planted
     inside the copy cannot redirect a write outside it.
@@ -157,18 +159,17 @@ def smoke_check(record: VariantRecord, spec: VariantSpec) -> VariantRecord:
     if not spec.smoke_command:
         return record
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # noqa: S603  # user-configured smoke command
             spec.smoke_command,
             cwd=record.root,
             capture_output=True,
             text=True,
             timeout=spec.smoke_timeout_seconds,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         record.smoke_ok = False
-        record.smoke_output = (
-            f"smoke check timed out after {spec.smoke_timeout_seconds}s"
-        )
+        record.smoke_output = f"smoke check timed out after {spec.smoke_timeout_seconds}s"
         return record
     except OSError as exc:
         record.smoke_ok = False
@@ -179,9 +180,27 @@ def smoke_check(record: VariantRecord, spec: VariantSpec) -> VariantRecord:
     return record
 
 
-def discard_variant(record: VariantRecord) -> None:
-    """Delete a variant's directory. Used for one that failed its smoke check."""
-    shutil.rmtree(record.root, ignore_errors=True)
+def discard_variant(record: VariantRecord) -> VariantRecord:
+    """Delete a variant's directory, and say whether the directory is gone.
+
+    Used for a variant that failed its smoke check. The smoke command runs
+    inside the copy and can leave a subprocess still writing there (``uv``
+    populating ``.venv``), so the first delete can fail on a directory that
+    is empty a moment later; it is retried once. Whatever is left is recorded
+    on the returned record instead of being swallowed: a leftover directory
+    is a variant the campaign believes it discarded and did not.
+    """
+    root = Path(record.root)
+    error = ""
+    for _ in range(2):
+        if not root.exists():
+            break
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            error = str(exc)
+    gone = not root.exists()
+    return record.model_copy(update={"discarded": gone, "discard_error": "" if gone else error})
 
 
 def _ignore(directory: str, names: list[str]) -> set[str]:

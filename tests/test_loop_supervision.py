@@ -19,6 +19,7 @@ from ai_experiments.monitoring.supervision import SupervisionReport, supervise_o
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.schemas import (
     BudgetSpec,
+    CampaignState,
     ExperimentManifest,
     GoalSpec,
     LogUniformParam,
@@ -32,7 +33,7 @@ from ai_experiments.schemas import (
 )
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
-from tests.test_orchestrator import FakeBackend
+from tests.conftest import FakeBackend
 
 
 def _store(tmp_path) -> FilesystemRunStore:
@@ -54,8 +55,9 @@ def _goal(**overrides) -> GoalSpec:
 
 
 def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
-    """The call site: every iteration hands supervise_once the run ids of
-    trials still in flight -- not the finished ones, not the campaign id.
+    """Every iteration hands supervise_once the run ids of trials still in flight.
+
+    Not the finished ones, not the campaign id.
 
     Task 12 moved this call to right after the cohort-closing
     `advance(admit=False)`, before the trailing `advance()` that admits the
@@ -75,10 +77,11 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
     finished_run_id: list[str] = []
 
     class SlowBackend(FakeBackend):
-        """The first run id ever inspected, across every instance this
-        backend factory constructs, finishes for real; every later one is
-        left in flight for the whole test -- a genuinely mixed campaign
-        state, so the active-state filter has something to filter out."""
+        """The first run id ever inspected finishes for real; every later one stays in flight.
+
+        Across every instance this backend factory constructs -- a genuinely mixed campaign state,
+        so the active-state filter has something to filter out.
+        """
 
         def inspect(self, run_id):
             if not finished_run_id:
@@ -97,10 +100,10 @@ def test_the_loop_supervises_the_trials_it_is_driving(tmp_path, monkeypatch):
 
     def _spy(run_store, run_ids, notifier=None):
         calls.append(list(run_ids))
-        campaigns = campaign_store.list_campaigns()
+        campaigns = list(campaign_store.list_campaigns())
         state = campaign_store.read_state(campaigns[0]) if campaigns else None
         active_at_call.append(
-            {t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES}
+            {t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES and t.run_id}
             if state is not None
             else set()
         )
@@ -161,13 +164,13 @@ def _running_run(
 
 
 def test_supervise_once_auto_kills_a_timed_out_run_like_the_daemon_does(tmp_path):
-    """A behaviour test, not just a call-site spy: driven directly, without
-    a daemon in sight, supervise_once must reach the same verdict the daemon
-    path reaches for the same fatal condition."""
+    """A behaviour test, not just a call-site spy.
+
+    Driven directly, without a daemon in sight, supervise_once must reach the same verdict the
+    daemon path reaches for the same fatal condition.
+    """
     store = _store(tmp_path)
-    run_id = _running_run(
-        store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None
-    )
+    run_id = _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None)
 
     report = supervise_once(store, [run_id])
 
@@ -182,10 +185,12 @@ def test_supervise_once_auto_kills_a_timed_out_run_like_the_daemon_does(tmp_path
 def test_supervise_once_reports_a_run_whose_check_raises_instead_of_hiding_it(
     tmp_path, monkeypatch
 ):
-    """A backend that raises on every diagnose used to fill TickReport.errors
-    before the extraction. supervise_once must still surface it -- a pass that
-    saw nothing wrong must not be indistinguishable from one that blew up on
-    every run it looked at."""
+    """A backend that raises on every diagnose must still surface in the errors.
+
+    It used to fill TickReport.errors before the extraction. supervise_once must still surface it --
+    a pass that saw nothing wrong must not be indistinguishable from one that blew up on every run
+    it looked at.
+    """
     store = _store(tmp_path)
     run_id = _running_run(store, MonitorPolicy())
 
@@ -203,9 +208,10 @@ def test_supervise_once_reports_a_run_whose_check_raises_instead_of_hiding_it(
 
 
 def test_the_daemons_tick_still_reports_a_run_whose_check_raises(tmp_path, monkeypatch):
-    """The same fault, reached through MonitorDaemon.tick() instead of
-    supervise_once directly -- the daemon must still fold supervise_once's
-    errors into its own TickReport.errors."""
+    """The same fault, reached through MonitorDaemon.tick() instead of supervise_once directly.
+
+    The daemon must still fold supervise_once's errors into its own TickReport.errors.
+    """
     store = _store(tmp_path)
     run_id = _running_run(store, MonitorPolicy())
 
@@ -223,8 +229,9 @@ def test_the_daemons_tick_still_reports_a_run_whose_check_raises(tmp_path, monke
 
 
 def test_the_loops_report_carries_a_fatal_action_supervision_took(tmp_path):
-    """A loop iteration over a run the rules call fatal ends with that action
-    in report.supervision -- the loop must not throw away what it did.
+    """A fatal action taken during a loop iteration ends up in report.supervision.
+
+    The loop must not throw away what it did.
 
     The run is backdated the same way `_running_run` backdates one, rather
     than relying on a real-time timeout race: a budget of exactly one trial
@@ -265,9 +272,10 @@ def test_the_loops_report_carries_a_fatal_action_supervision_took(tmp_path):
 
 
 def _run_a_reviewed_loop(tmp_path, reviewer):
-    """A loop with one trial in flight at a time, reviewed between rounds,
-    driven entirely by an injected reviewer -- the fixture Task 12's timing
-    test needs."""
+    """Run a loop with one trial in flight at a time, reviewed between rounds.
+
+    Driven entirely by an injected reviewer -- the fixture Task 12's timing test needs.
+    """
     store = _store(tmp_path)
     orchestrator = CampaignOrchestrator(
         store,
@@ -318,8 +326,10 @@ def test_the_review_sees_the_cohort_before_the_next_one_is_submitted(tmp_path):
 
 
 def test_advance_with_admit_false_submits_nothing(tmp_path):
-    """`admit=False` must refresh and score, never call `_fill_capacity` --
-    even when there is spare capacity and budget to fill it with."""
+    """`admit=False` must refresh and score, never call `_fill_capacity`.
+
+    Even when there is spare capacity and budget to fill it with.
+    """
     store = _store(tmp_path)
     orchestrator = CampaignOrchestrator(
         store,
@@ -342,8 +352,9 @@ def test_advance_with_admit_false_submits_nothing(tmp_path):
 
 
 def test_admit_false_still_escalates_a_finished_trial_under_agent_review(tmp_path):
-    """`analysis.agent_review` must survive the cohort-closing `admit=False`
-    pass, not just the trailing `admit=True` one.
+    """`analysis.agent_review` must survive the cohort-closing `admit=False` pass.
+
+    Not just the trailing `admit=True` one.
 
     `finished_now` is scored on the `admit=False` call and is always empty by
     the time the trailing `admit=True` call runs, so firing the escalation
@@ -375,9 +386,11 @@ def test_admit_false_still_escalates_a_finished_trial_under_agent_review(tmp_pat
     assert review.campaign_id == report.campaign_id
 
 
-def _started_campaign(tmp_path, goal: GoalSpec) -> tuple[CampaignOrchestrator, object]:
-    """An orchestrator with one live campaign, for exercising `_apply_changes`
-    directly against the real `edit_goal` validation path."""
+def _started_campaign(tmp_path, goal: GoalSpec) -> tuple[CampaignOrchestrator, CampaignState]:
+    """Build an orchestrator with one live campaign, for exercising `_apply_changes`.
+
+    Directly against the real `edit_goal` validation path.
+    """
     store = _store(tmp_path)
     orchestrator = CampaignOrchestrator(
         store,
@@ -436,18 +449,16 @@ def test_a_rejected_budget_change_is_recorded(tmp_path):
     _apply_changes(orchestrator, state, goal, payload)
 
     events = orchestrator.campaign_store.read_events(state.campaign_id)
-    refusals = [
-        event for event in events if "budget" in event.details.get("refused", {})
-    ]
-    assert refusals, (
-        "the refused budget change was never recorded in the campaign's events"
-    )
+    refusals = [event for event in events if "budget" in event.details.get("refused", {})]
+    assert refusals, "the refused budget change was never recorded in the campaign's events"
     assert refusals[0].details["refused"] == payload["suggested_changes"]
 
 
 def test_a_malformed_suggested_changes_is_recorded(tmp_path):
-    """A review that returns `suggested_changes` as something other than a
-    mapping must not vanish -- it is malformed, not merely unhelpful."""
+    """A malformed `suggested_changes` must not vanish.
+
+    A review that returns it as something other than a mapping is malformed, not merely unhelpful.
+    """
     goal = _goal()
     orchestrator, state = _started_campaign(tmp_path, goal)
 
@@ -460,8 +471,10 @@ def test_a_malformed_suggested_changes_is_recorded(tmp_path):
 
 
 def test_an_absent_suggested_changes_records_nothing(tmp_path):
-    """A review that simply has nothing to suggest is the normal case, not
-    a malformed one -- it must stay silent rather than add log noise."""
+    """A review with nothing to suggest is the normal case, not a malformed one.
+
+    It must stay silent rather than add log noise.
+    """
     goal = _goal()
     orchestrator, state = _started_campaign(tmp_path, goal)
     before = orchestrator.campaign_store.read_events(state.campaign_id)
@@ -472,10 +485,10 @@ def test_an_absent_suggested_changes_records_nothing(tmp_path):
 
 
 def test_the_loop_reports_what_supervision_could_not_do(tmp_path, monkeypatch):
-    """`supervise_once` already returns `errors` beside `actions`, and the
-    loop already lifts `actions`. Dropping the other half means an
-    unattended `iax loop` whose backend raises on every `diagnose()` returns
-    a report that looks exactly like a night on which everything was fine.
+    """The loop lifts `errors` from `supervise_once` beside `actions`.
+
+    Dropping the other half means an unattended `iax loop` whose backend raises on every
+    `diagnose()` returns a report that looks exactly like a night on which everything was fine.
     """
 
     class StuckBackend(FakeBackend):
@@ -507,12 +520,9 @@ def test_the_loop_reports_what_supervision_could_not_do(tmp_path, monkeypatch):
     )
 
     assert report.supervision_errors, (
-        "every diagnose() raised and the loop's report says supervision had "
-        "nothing to report"
+        "every diagnose() raised and the loop's report says supervision had nothing to report"
     )
-    assert any(
-        "ray dashboard unreachable" in error for error in report.supervision_errors
-    )
+    assert any("ray dashboard unreachable" in error for error in report.supervision_errors)
 
 
 def test_a_healthy_loop_reports_no_supervision_errors(tmp_path):

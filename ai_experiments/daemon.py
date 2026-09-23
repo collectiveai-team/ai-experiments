@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import signal
 import time
-from types import FrameType
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -31,9 +31,14 @@ from ai_experiments.monitoring.supervision import RunAction, supervise_once
 from ai_experiments.notify import Notifier
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import ACTIVE_RUN_STATES, utc_now
-from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
+
+if TYPE_CHECKING:
+    from types import FrameType
+
+    from ai_experiments.schemas import RunStatus
+    from ai_experiments.store import FilesystemRunStore
 
 
 class TickReport(BaseModel):
@@ -54,9 +59,7 @@ class MonitorDaemon:
     ) -> None:
         self.run_store = run_store
         self.campaign_store = campaign_store or CampaignStore(run_store.root)
-        self.orchestrator = orchestrator or CampaignOrchestrator(
-            run_store, self.campaign_store
-        )
+        self.orchestrator = orchestrator or CampaignOrchestrator(run_store, self.campaign_store)
         self.notifier = notifier or Notifier(run_store.root)
         self._stop = False
         self.ticks = 0
@@ -85,47 +88,61 @@ class MonitorDaemon:
         return report
 
     def _check_runs(self, report: TickReport) -> None:
-        from ai_experiments.tracking import TrackingSyncError, finalize_tracking
-
-        active_run_ids: list[str] = []
-        for run_id in sorted(self.run_store.list_runs()):
-            # Reading the status is itself fallible (a torn or truncated
-            # status.json), so it belongs inside the guard: one unreadable run
-            # must not end the tick for every other run being supervised.
-            try:
-                status = self.run_store.read_status(run_id)
-                if status.details.get(SYNTHETIC_STATUS_KEY):
-                    raise RuntimeError(status.error or "status unreadable")
-            except Exception as exc:
-                report.errors.append(f"{run_id}: {exc}")
-                continue
-
-            if status.status not in ACTIVE_RUN_STATES:
-                try:
-                    if finalize_tracking(self.run_store, status):
-                        report.actions.append(
-                            RunAction(
-                                run_id=run_id,
-                                decision=status.status,
-                                action="mlflow_synced",
-                            )
-                        )
-                except TrackingSyncError as exc:
-                    report.errors.append(f"{run_id}: {exc}")
-                except Exception as exc:
-                    report.errors.append(f"{run_id}: mlflow finalize: {exc}")
-                continue
-            report.runs_checked += 1
-            active_run_ids.append(run_id)
-
+        active_run_ids = [
+            run_id
+            for run_id in sorted(self.run_store.list_runs())
+            if self._check_one_run(run_id, report)
+        ]
         pass_report = supervise_once(self.run_store, active_run_ids, self.notifier)
         # Grouped by category, not sorted by run_id: mlflow-finalize actions/
-        # errors above were appended in this loop's own run_id order, and
-        # everything supervise_once found is appended after as one block --
-        # report.actions/errors are no longer strictly run_id-ordered across
-        # the two categories.
+        # errors above were appended in run_id order, and everything
+        # supervise_once found is appended after as one block -- report.actions/
+        # errors are no longer strictly run_id-ordered across the two categories.
         report.actions.extend(pass_report.actions)
         report.errors.extend(pass_report.errors)
+
+    def _check_one_run(self, run_id: str, report: TickReport) -> bool:
+        """Return whether this run is still active and so due for supervision.
+
+        A finished run is synced to its tracker here instead; an unreadable
+        one is reported and skipped.
+        """
+        # Reading the status is itself fallible (a torn or truncated
+        # status.json), so it belongs inside the guard: one unreadable run
+        # must not end the tick for every other run being supervised.
+        try:
+            status = self.run_store.read_status(run_id)
+            if status.details.get(SYNTHETIC_STATUS_KEY):
+                raise RuntimeError(status.error or "status unreadable")
+        except Exception as exc:
+            report.errors.append(f"{run_id}: {exc}")
+            return False
+
+        if status.status not in ACTIVE_RUN_STATES:
+            self._sync_finished_run(run_id, status, report)
+            return False
+
+        report.runs_checked += 1
+        return True
+
+    def _sync_finished_run(self, run_id: str, status: RunStatus, report: TickReport) -> None:
+        from ai_experiments.tracking import TrackingSyncError, finalize_tracking
+
+        try:
+            if finalize_tracking(self.run_store, status):
+                report.actions.append(
+                    RunAction(
+                        run_id=run_id,
+                        decision=status.status,
+                        action="mlflow_synced",
+                    )
+                )
+        # TrackingSyncError already says which run and why; anything else needs
+        # the "mlflow finalize" prefix to be attributable in the tick report.
+        except TrackingSyncError as exc:
+            report.errors.append(f"{run_id}: {exc}")
+        except Exception as exc:
+            report.errors.append(f"{run_id}: mlflow finalize: {exc}")
 
     def _advance_campaigns(self, report: TickReport) -> None:
         for campaign_id in self.campaign_store.list_campaigns():
@@ -176,10 +193,12 @@ class MonitorDaemon:
         while not self._stop:
             report = self.tick(interval_seconds=interval_seconds)
             if report.actions or report.errors:
+                # ast-grep-ignore: log-no-print  # run_forever's stdout is the daemon's JSON stream
                 print(json.dumps(report.model_dump(mode="json")), flush=True)
             elif time.monotonic() >= next_heartbeat:
                 # A quiet daemon that never speaks cannot be told from a dead
                 # one in a log someone reads tomorrow morning.
+                # ast-grep-ignore: log-no-print  # same daemon JSON stream as above
                 print(
                     json.dumps(
                         {

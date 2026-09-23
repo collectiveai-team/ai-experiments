@@ -1,0 +1,5 @@
+cod_tipo_evento;Suma de duracion_hs;fecha;Suma de hora_inicio;nemo_grupo;Suma de periodo;Suma de valorizacion_ars;motivo
+Lim;3;17/08/2022 0:00;2;LDCUTV15;202208;5998;MAPRO por limpieza condensador
+Lim;2;21/12/2022 0:00;2;LDCUTV15;202212;66691;Limpieza del condensador
+F;5;22/12/2022 0:00;4;LDCUTV15;202212;1234;Falla no relacionada
+Lim;1;01/11/2023 0:00;18;LDCUTV15;202311;33346;Limpieza del condensador

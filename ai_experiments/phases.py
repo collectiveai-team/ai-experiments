@@ -12,11 +12,11 @@ import argparse
 import sys
 import traceback
 
+from ai_experiments.config_loading import load_stored
 from ai_experiments.schemas import (
     ACTIVE_RUN_STATES,
     ExperimentManifest,
     RunEvent,
-    load_stored,
 )
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.worker import _Supervisor, report_supervisor_failure
@@ -56,12 +56,8 @@ def run_phases(store: FilesystemRunStore, run_id: str) -> int:
                 ),
             )
             return 1
-        store.append_event(
-            run_id, RunEvent(message="phase started", details={"phase": phase})
-        )
-        supervisor = _Supervisor(
-            store, run_id, phase=phase, final=index == len(phases) - 1
-        )
+        store.append_event(run_id, RunEvent(message="phase started", details={"phase": phase}))
+        supervisor = _Supervisor(store, run_id, phase=phase, final=index == len(phases) - 1)
         exit_code = supervisor.run(command=command, work_dir=work_dir)
         if exit_code != 0:
             return exit_code
@@ -101,7 +97,7 @@ def main() -> None:
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)  # keep the evidence in worker.log
         report_supervisor_failure(store, args.run_id, exc)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

@@ -45,17 +45,20 @@ def test_every_example_goal_points_at_a_workload_that_exists(path):
 def _load(script: str):
     """Import an example workload without making `examples/` a package."""
     spec = importlib.util.spec_from_file_location(script[:-3], EXAMPLES / script)
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 def _run(script: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603  # fixed argv, our own example scripts
         [sys.executable, str(EXAMPLES / script), *args],
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
 
 
@@ -117,7 +120,7 @@ def test_the_agentic_target_is_reachable_inside_its_own_search_space():
 
     workload = _load("agentic_train.py")
     goal = GoalSpec.from_yaml(EXAMPLES / "goal_agentic.yaml")
-    rng = random.Random(0)
+    rng = random.Random(0)  # noqa: S311  # test fixture, not security
     feasible = []
     for _ in range(2000):
         params = sample(goal.search_space, rng)
@@ -126,9 +129,7 @@ def test_the_agentic_target_is_reachable_inside_its_own_search_space():
             <= workload.DEVICE_MEMORY_GB
         )
         if fits:
-            feasible.append(
-                workload.loss_surface(params["lr"], params["width"], params["depth"])
-            )
+            feasible.append(workload.loss_surface(params["lr"], params["width"], params["depth"]))
 
     assert feasible, "no configuration in the search space fits the device"
     assert min(feasible) < goal.objective.target
@@ -173,3 +174,41 @@ def test_a_failed_trial_carries_the_reason_the_workload_gave(tmp_path):
 
     assert state.trials[0].status == "failed"
     assert "out of memory" in (state.trials[0].error or "")
+
+
+MAINTENANCE_GOAL = EXAMPLES / "maintenance_events" / "goal.yaml"
+
+
+def test_the_maintenance_events_goal_draws_no_preflight_warning():
+    """The worked example is what the next campaign will copy.
+
+    It is the example the skills point at, so whatever it does is what gets copied -- including how
+    it declares success and how far a code variant is allowed to reach.
+    """
+    from ai_experiments.preflight import goal_warnings
+
+    assert goal_warnings(GoalSpec.from_yaml(MAINTENANCE_GOAL)) == []
+
+
+def test_the_maintenance_events_variant_sandbox_excludes_the_evaluation():
+    """A variant that may rewrite `evaluation.py` optimizes its own thermometer.
+
+    Every score after that is its own.
+    """
+    goal = GoalSpec.from_yaml(MAINTENANCE_GOAL)
+
+    assert goal.variants.enabled
+    assert goal.variants.editable_paths
+    assert not any("evaluation" in path for path in goal.variants.editable_paths)
+
+
+def test_the_maintenance_events_entrypoint_works_from_a_variant_copy():
+    """An entrypoint that names the example's path only works outside the sandbox.
+
+    A variant runs the same entrypoint with the copy as working_dir.
+    """
+    goal = GoalSpec.from_yaml(MAINTENANCE_GOAL)
+    source = goal.variants.source_dir or goal.workload.working_dir
+
+    assert source not in goal.workload.entrypoint
+    assert (EXAMPLES.parent / source / "pyproject.toml").is_file()

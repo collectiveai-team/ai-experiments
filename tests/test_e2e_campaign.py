@@ -11,8 +11,8 @@ import json
 import os
 import subprocess
 import sys
-import time
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -95,7 +95,8 @@ def test_local_campaign_end_to_end(tmp_path):
 
     assert state.best_trial_id is not None
     best = next(t for t in state.trials if t.trial_id == state.best_trial_id)
-    assert best.objective_value == min(t.objective_value for t in completed)
+    completed_values = [t.objective_value for t in completed if t.objective_value is not None]
+    assert best.objective_value == min(completed_values)
 
 
 def test_the_shipped_example_scores_only_from_its_evaluator(tmp_path):
@@ -103,7 +104,7 @@ def test_the_shipped_example_scores_only_from_its_evaluator(tmp_path):
     work.mkdir()
     env = {**os.environ, "IAX_WORK_DIR": str(work)}
 
-    train = subprocess.run(
+    train = subprocess.run(  # noqa: S603  # fixed argv: the test's own script
         [
             sys.executable,
             str(EXAMPLES / "toy_train.py"),
@@ -114,6 +115,7 @@ def test_the_shipped_example_scores_only_from_its_evaluator(tmp_path):
         ],
         cwd=tmp_path,
         env=env,
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -121,10 +123,11 @@ def test_the_shipped_example_scores_only_from_its_evaluator(tmp_path):
     assert "IAX_RESULT" not in train.stdout
     assert "IAX_METRIC" in train.stdout
 
-    evaluate = subprocess.run(
+    evaluate = subprocess.run(  # noqa: S603  # fixed argv: the test's own script
         [sys.executable, str(EXAMPLES / "toy_evaluate.py")],
         cwd=tmp_path,
         env=env,
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -180,16 +183,13 @@ def test_the_harness_carries_the_handoff_between_the_two_phases(tmp_path):
     assert len(completed) == 2
 
     for trial in completed:
+        assert trial.run_id is not None
         # The scored number has to be derivable from the artifact the trainer
         # wrote -- that is the whole point of running the evaluator separately.
-        model = json.loads(
-            (store.run_dir(trial.run_id) / "work" / "model.json").read_text()
-        )
+        model = json.loads((store.run_dir(trial.run_id) / "work" / "model.json").read_text())
         assert trial.objective_value == pytest.approx((model["x"] - 2.0) ** 2)
         assert len(store.read_results(trial.run_id)) == 1
         assert len(store.read_metrics(trial.run_id)) == 5
         assert not [
-            event
-            for event in store.read_events(trial.run_id)
-            if "train phase" in event.message
+            event for event in store.read_events(trial.run_id) if "train phase" in event.message
         ]

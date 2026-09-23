@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ai_experiments.planner.search_space import active_space
 from ai_experiments.schemas import (
     ChoiceParam,
     IntParam,
@@ -29,7 +30,7 @@ class ParamValidationError(ValueError):
         super().__init__("; ".join(violations))
 
 
-def validate_params(
+def validate_params(  # ast-grep-ignore: no-dict-return-annotation
     space: dict[str, ParamSpec], params: dict[str, Any]
 ) -> dict[str, Any]:
     """Return `params` coerced to the space's types, or raise.
@@ -37,12 +38,27 @@ def validate_params(
     Missing keys are rejected too: a partial assignment silently inherits the
     workload's own defaults for the rest, which makes the trial's recorded
     params a lie about what ran.
+
+    The keys are the user's own search-space parameter names, so there is no
+    class to return: a parameter assignment is a mapping by construction, the
+    same shape `planner.search_space.sample` and `perturb` produce and the same
+    shape `TrialRecord.params` stores.
     """
     violations: list[str] = []
     unknown = sorted(set(params) - set(space))
     if unknown:
         violations.append(
             f"unknown parameter(s) {unknown}; the search space defines {sorted(space)}"
+        )
+    # A conditional dimension is not a dimension of *this* assignment, so it is
+    # neither required nor allowed here: sending it anyway records a parameter
+    # the run never reads.
+    space = active_space(space, params)
+    inactive = sorted(set(params) - set(space) - set(unknown))
+    if inactive:
+        violations.append(
+            f"parameter(s) {inactive} do not apply to this assignment; their "
+            "`when` condition does not hold"
         )
     missing = sorted(set(space) - set(params))
     if missing:

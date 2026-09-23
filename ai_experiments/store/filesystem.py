@@ -8,8 +8,11 @@ from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING
 
+from ai_experiments.config_loading import load_stored
+from ai_experiments.core.logger import get_logger
+from ai_experiments.responses import ArtifactEntry
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
@@ -17,14 +20,18 @@ from ai_experiments.schemas import (
     RunEvent,
     RunHandle,
     RunStatus,
-    load_stored,
     utc_now,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 #: Marks a ``RunStatus`` the store synthesized because the real file was
 #: missing or unreadable. Such a status describes the *store's* inability to
 #: answer, not the run — persisting it would fabricate history, so
 #: :meth:`FilesystemRunStore.update_status` refuses to write on top of one.
+log = get_logger(__name__)
+
 SYNTHETIC_STATUS_KEY = "_synthetic"
 
 #: Where a project keeps its runs, relative to the project root.
@@ -48,7 +55,9 @@ def default_runs_root(start: str | Path | None = None) -> Path:
     3. The nearest directory at or above the start holding a project marker.
     4. The start directory, for a project that has neither.
     """
-    override = os.environ.get("IAX_RUNS_DIR")
+    # Read raw, not via get_settings(): the setting carries a non-empty default, so a
+    # cached read can never say "unset" -- and "unset" is what selects the walk-up below.
+    override = os.environ.get("IAX_RUNS_DIR")  # ast-grep-ignore: settings-module
     if override:
         return Path(override).expanduser().resolve()
     here = Path(start).resolve() if start is not None else Path.cwd().resolve()
@@ -77,7 +86,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(text)
-        os.replace(tmp, path)
+        tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -96,14 +105,8 @@ def with_resolved_working_dir(manifest: ExperimentManifest) -> ExperimentManifes
 class FilesystemRunStore:
     """Filesystem-backed run state used by schedulers and agents."""
 
-    def __init__(
-        self, root: str | Path | None = None, capture_repro: bool = True
-    ) -> None:
-        self.root = (
-            Path(root).expanduser().resolve()
-            if root is not None
-            else default_runs_root()
-        )
+    def __init__(self, root: str | Path | None = None, capture_repro: bool = True) -> None:
+        self.root = Path(root).expanduser().resolve() if root is not None else default_runs_root()
         self.capture_repro = capture_repro
 
     def create_run(self, manifest: ExperimentManifest) -> tuple[str, Path]:
@@ -137,10 +140,12 @@ class FilesystemRunStore:
         if self.capture_repro:
             from ai_experiments.repro import capture_repro
 
+            # Reproducibility capture must never block a submit.
             try:
                 capture_repro(run_dir, resolved.workload.working_dir)
-            except Exception:
-                pass  # reproducibility capture must never block a submit
+            except Exception as exc:
+                # Best effort: repro capture must never block a submit.
+                log.debug("repro_capture_failed", run_id=run_id, error=str(exc))
         return run_id, run_dir
 
     def run_dir(self, run_id: str) -> Path:
@@ -211,7 +216,7 @@ class FilesystemRunStore:
         )
 
     def read_status(self, run_id: str) -> RunStatus:
-        """Current status, or a synthetic ``unknown`` when it cannot be read.
+        """Return the current status, or a synthetic ``unknown`` when it cannot be read.
 
         A truncated or otherwise unparsable file is quarantined the same way a
         missing one is: one corrupt run must not take down the daemon
@@ -240,9 +245,7 @@ class FilesystemRunStore:
                     # The read did not describe the run, so this update has no base to
                     # merge onto. Writing it would fabricate a status and, for a
                     # corrupt file, destroy the evidence of what went wrong.
-                    raise RuntimeError(
-                        f"cannot update status for {run_id}: {status.error}"
-                    )
+                    raise RuntimeError(f"cannot update status for {run_id}: {status.error}")
                 data = status.model_dump()
                 if isinstance(updates.get("details"), dict):
                     updates["details"] = {
@@ -289,13 +292,20 @@ class FilesystemRunStore:
         """Whether a cancellation was requested for this run."""
         return self.cancel_marker_path(run_id).exists()
 
+    def events_path(self, run_id: str) -> Path:
+        """Where a run's own output lands.
+
+        Named because it is what a person is looking for: `worker.log` is the
+        supervisor's output and is empty unless the supervisor itself crashed.
+        """
+        return self.run_dir(run_id) / "events.jsonl"
+
     def append_event(self, run_id: str, event: RunEvent) -> None:
-        events_path = self.run_dir(run_id) / "events.jsonl"
-        with events_path.open("a") as fh:
+        with self.events_path(run_id).open("a") as fh:
             fh.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def read_events(self, run_id: str, tail: int | None = None) -> list[RunEvent]:
-        lines = _read_lines(self.run_dir(run_id) / "events.jsonl", tail)
+        lines = _read_lines(self.events_path(run_id), tail)
         return [RunEvent(**json.loads(line)) for line in lines]
 
     def metrics_path(self, run_id: str) -> Path:
@@ -307,9 +317,7 @@ class FilesystemRunStore:
 
     def write_metrics(self, run_id: str, points: list[MetricPoint]) -> None:
         lines = [json.dumps(point.model_dump(mode="json")) for point in points]
-        atomic_write_text(
-            self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else "")
-        )
+        atomic_write_text(self.metrics_path(run_id), "\n".join(lines) + ("\n" if lines else ""))
 
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
         lines = _read_lines(self.metrics_path(run_id), tail)
@@ -319,28 +327,15 @@ class FilesystemRunStore:
         return self.run_dir(run_id) / "results.jsonl"
 
     def append_result(self, run_id: str, record: ResultRecord) -> None:
-        """Append a declared result, and say so when it is not the first.
+        """Append a declared result: one observation on the only channel that scores.
 
-        Every document tells a workload to print exactly one ``IAX_RESULT``
-        line, and the reader merges whatever it finds last-wins
-        (`planner.analysis.extract_objective`). A second declaration is a
-        broken contract on the only channel that scores, and it used to land
-        in silence. The warning is raised here, where the append happens, so
-        it lands on the run that caused it instead of on whoever reads it
-        later -- and so both backends get it from one place.
+        A single evaluation declares one; a fold or seed loop declares one per
+        fold, and ``objective.aggregate`` decides how they become a score.
+        Whether *this* run declared more than its objective can use is judged
+        where the goal is known (`trial_sync`), not here.
         """
-        already = len(_read_lines(self.results_path(run_id), None))
         with self.results_path(run_id).open("a") as fh:
             fh.write(json.dumps(record.model_dump(mode="json")) + "\n")
-        if already:
-            self.append_event(
-                run_id,
-                RunEvent(
-                    level="warning",
-                    message="more than one result declared; the later keys win",
-                    details={"results": already + 1, "values": record.values},
-                ),
-            )
 
     def read_results(self, run_id: str) -> list[ResultRecord]:
         lines = _read_lines(self.results_path(run_id), None)
@@ -349,39 +344,35 @@ class FilesystemRunStore:
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
 
-    def list_artifacts(self, run_id: str) -> list[dict[str, object]]:
+    def list_artifacts(self, run_id: str) -> list[ArtifactEntry]:
         """Relative path, size, and mtime for every file under artifacts/."""
         root = self.artifacts_dir(run_id)
         if not root.exists():
             return []
-        entries: list[dict[str, object]] = []
+        entries: list[ArtifactEntry] = []
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
             stat = path.stat()
             entries.append(
-                {
-                    "path": str(path.relative_to(root)),
-                    "size_bytes": stat.st_size,
-                    "modified_at": datetime.fromtimestamp(
-                        stat.st_mtime, tz=timezone.utc
-                    ).isoformat(),
-                }
+                ArtifactEntry(
+                    path=str(path.relative_to(root)),
+                    size_bytes=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                )
             )
         return entries
 
     def manifest_path(self, run_id: str) -> Path:
-        """What was executed: absolute ``working_dir``, safe from any CWD."""
+        """Return the manifest as executed: absolute ``working_dir``, safe from any CWD."""
         return self.run_dir(run_id) / "manifest.yaml"
 
     def source_manifest_path(self, run_id: str) -> Path:
-        """What was submitted, verbatim. Absent when the two are identical."""
+        """Return the manifest as submitted, verbatim. Absent when the two are identical."""
         return self.run_dir(run_id) / "manifest.source.yaml"
 
-    def read_manifest(
-        self, run_id: str, source: bool = False
-    ) -> ExperimentManifest | None:
-        """The run's manifest; ``source=True`` for the portable original.
+    def read_manifest(self, run_id: str, source: bool = False) -> ExperimentManifest | None:
+        """Return the run's manifest; ``source=True`` for the portable original.
 
         ``source`` falls back to the executed manifest when no separate
         original was kept, so callers that want "the manifest as the author
@@ -407,7 +398,7 @@ class FilesystemRunStore:
 
 
 def _read_lines(path: Path, tail: int | None) -> list[str]:
-    """The non-empty lines of an append-only file, at most ``tail`` of them.
+    """Return the non-empty lines of an append-only file, at most ``tail`` of them.
 
     Both these files grow without bound while a run does, and every monitoring
     tick reads the last few. Streaming into a bounded deque keeps that read

@@ -17,6 +17,9 @@ goal.yaml ──> planner ──> trials ──> backend (local | ray @ aws/gcp/
                                                     (kill / escalate)
 ```
 
+📖 **[docs/architecture.md](docs/architecture.md)** — the full reference: every
+component, flow diagram, state machine, on-disk layout and contract in one page.
+
 ## Responsibilities
 
 - Understand a goal manifest: objective metric, search space, budget, strategy.
@@ -417,6 +420,11 @@ opt-in points:
 - **Campaign review** — set `analysis.agent_review: true` and each round drops
   a review request with the trial history; the agent queues better trials with
   `iax campaign suggest <campaign_id> --params '{"lr": 3e-4}'`.
+- **Development hand-off** — a review that answers `needs_change` stops the
+  campaign with `blocked_on_change` and files a ticket. `iax handoff` turns
+  that ticket into an issue on a fresh `exp/<campaign>-<digest>` worktree and
+  calls a development flow (`orq-lite intake` by default). The fix never lands
+  on the branch the campaign measured, so before and after stay comparable.
 
 ## Install
 
@@ -460,11 +468,15 @@ npx skills@latest add https://github.com/collectiveai-team/ai-experiments
 npx skills@latest add git@github.com:collectiveai-team/ai-experiments.git
 ```
 
-This installs the `autonomous-experimentation`, `running-campaigns`,
-`submitting-experiments`, `monitoring-experiments`, `diagnosing-experiments`,
-and `cancelling-experiments` skills into the project's `.claude/skills/` (add
-`-g` for `~/.claude/skills/`). `autonomous-experimentation` is the one that
-turns "get val_loss under 0.05" into a goal file and an `iax loop` run.
+This installs the `defining-goals`, `autonomous-experimentation`,
+`running-campaigns`, `proposing-variants`, `submitting-experiments`,
+`monitoring-experiments`, `diagnosing-experiments`, and
+`cancelling-experiments` skills into the project's `.claude/skills/` (add `-g`
+for `~/.claude/skills/`).
+`autonomous-experimentation` is the one that turns "get val_loss under 0.05"
+into a goal file and an `iax loop` run; `defining-goals` is what it reads
+first, to decide what the campaign would have to show for that number to mean
+anything.
 
 Agents that do not load Claude Code skills read `AGENTS.md` at the repo root:
 the same entry point, the exit-code contract, and where the procedure lives.
@@ -518,9 +530,9 @@ print('IAX_METRIC {"step": 12, "loss": 0.0734}')   # progress: plotted, and
                                                     # what a trial is scored on
 
 print('IAX_RESULT {"loss": 0.0734}')               # the declared result: one
-                                                    # line, from the `evaluate`
-                                                    # phase, and the only thing
-                                                    # that scores a trial
+                                                    # line per observation, from
+                                                    # the `evaluate` phase, and the
+                                                    # only thing that scores a trial
 ```
 
 A workload that never prints `IAX_RESULT` scores nothing: it fails with
@@ -567,7 +579,7 @@ workload's good behaviour.
 experiment: demand_forecast_baseline
 backend: ray
 workload:
-  entrypoint: python
+  entrypoint: "uv run"
   args:
     - -m
     - ts_agents_lab.cli
@@ -617,6 +629,7 @@ iax leaderboard
 # one goal in, one answer out (the agent entry point)
 iax loop goal.yaml --json --max-rounds 20    # exit 0 = target reached, 4 = not
 iax loop goal.yaml --resume <campaign_id>    # continue a bounded loop
+iax handoff <campaign_id> --dry-run          # a defect blocks the goal: file it as development work
 
 # campaigns (goal-driven auto-experiment loop)
 iax campaign validate goal.yaml
@@ -680,7 +693,7 @@ run, and watches it for you.
 **On the local Ray cluster:**
 
 > Launch the demand-forecast training on the Ray backend with 4 CPUs and 1 GPU
-> (entrypoint `python -m forecast.train configs/base.yaml`). Keep monitoring it and only
+> (entrypoint `uv run -m forecast.train configs/base.yaml`). Keep monitoring it and only
 > ping me if it fails or looks stuck — otherwise summarize the results when it completes.
 
 ## Local Ray cluster
@@ -713,6 +726,12 @@ iax status <run_id> --json   # mirrors the Ray job state
 
 Add worker nodes from other machines with `ray start --address=<head-host>:6379`. Tear
 the cluster down with `ray stop`.
+
+A Ray workload resolves its entrypoint on the node that runs it, not on yours, so
+`uv run` needs `uv` installed on every worker. `iax validate` cannot check that —
+its preflight only sees the submitting machine, which is why a missing entrypoint is
+a warning there and not an error. Pin a `python3` entrypoint instead if the cluster
+image has no `uv`.
 
 ## Composition With Workbench
 

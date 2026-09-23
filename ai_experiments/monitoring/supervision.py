@@ -1,10 +1,11 @@
-"""The per-run supervision pass, shared by `MonitorDaemon.tick` and `run_loop`
-so both paths diagnose, escalate and kill by the same rules.
+"""The per-run supervision pass, shared by `MonitorDaemon.tick` and `run_loop`.
+
+Both paths diagnose, escalate and kill by the same rules.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -14,15 +15,19 @@ from ai_experiments.monitoring.escalation import (
     clear_escalation,
     escalate,
 )
-from ai_experiments.notify import Notifier
 from ai_experiments.schemas import (
     ACTIVE_RUN_STATES,
     MonitorPolicy,
     RunEvent,
     utc_now,
 )
-from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.filesystem import SYNTHETIC_STATUS_KEY
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from ai_experiments.notify import Notifier
+    from ai_experiments.store import FilesystemRunStore
 
 #: How each reap outcome reads in a run's ``error``. Outcomes that mean the
 #: workload was already gone say nothing -- there is nothing to report.
@@ -225,9 +230,7 @@ def _handle_fatal(
         )
     if policy.auto_kill:
         backend.cancel(run_id)
-        run_store.update_status(
-            run_id, error=f"auto-killed: {', '.join(decision.reasons)}"
-        )
+        run_store.update_status(run_id, error=f"auto-killed: {', '.join(decision.reasons)}")
         run_store.append_event(
             run_id,
             RunEvent(

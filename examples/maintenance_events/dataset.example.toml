@@ -1,0 +1,5 @@
+# Copiar a dataset.local.toml (gitignoreado) y completar UNA de las dos.
+# El link de Drive es privado y no se commitea nunca.
+
+# url = "https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing"
+# local_path = "/ruta/absoluta/a/maintenance-events-v1.zip"

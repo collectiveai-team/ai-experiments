@@ -85,9 +85,10 @@ def _two_phase_manifest(tmp_path, train: str, evaluate: str) -> ExperimentManife
 
 
 def test_a_typo_in_evaluate_is_caught_even_though_entrypoint_is_train(tmp_path):
-    """`entrypoint` is the one command a two-phase workload never runs -- a
-    typo in `evaluate:` used to pass here silently and only surface after a
-    full training run."""
+    """`entrypoint` is the one command a two-phase workload never runs.
+
+    A typo in `evaluate:` used to pass here silently and only surface after a full training run.
+    """
     warnings = workload_warnings(
         _two_phase_manifest(tmp_path, sys.executable, "definitely-not-a-binary")
     )
@@ -107,18 +108,16 @@ def test_every_failing_phase_is_reported_not_just_the_first(tmp_path):
 
 
 def test_a_runnable_two_phase_workload_has_no_warnings(tmp_path):
-    assert (
-        workload_warnings(_two_phase_manifest(tmp_path, sys.executable, sys.executable))
-        == []
-    )
+    assert workload_warnings(_two_phase_manifest(tmp_path, sys.executable, sys.executable)) == []
 
 
 def test_a_half_declared_workload_is_a_warning_not_a_crash(tmp_path):
-    """`phases()` raises on a workload declaring only one of train/evaluate;
-    the model validator normally blocks that at construction, but
-    `model_copy` and attribute assignment skip "after" validators (the
-    planner builds trial manifests with `model_copy`), so `phases()` re-checks
-    -- and this function only ever returns warnings, never raises."""
+    """`phases()` raises on a workload declaring only one of train/evaluate.
+
+    The model validator normally blocks that at construction, but `model_copy` and attribute
+    assignment skip "after" validators (the planner builds trial manifests with `model_copy`), so
+    `phases()` re-checks -- and this function only ever returns warnings, never raises.
+    """
     coherent = _two_phase_manifest(tmp_path, sys.executable, sys.executable)
     half_declared = coherent.model_copy(
         update={"workload": coherent.workload.model_copy(update={"evaluate": None})}
@@ -157,30 +156,23 @@ def test_validate_strict_passes_a_runnable_workload(tmp_path):
 
 
 def test_logs_worker_surfaces_the_supervisor_log(tmp_path):
-    """The supervisor's traceback used to be readable only by knowing the run
-    store's layout."""
+    """The supervisor's traceback used to be readable only by knowing the run store's layout."""
     runs_dir = tmp_path / "runs"
     path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
-    submitted = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(runs_dir), "--json"]
-    )
+    submitted = runner.invoke(app, ["submit", str(path), "--runs-dir", str(runs_dir), "--json"])
     assert submitted.exit_code == 0
     run_id = json.loads(submitted.stdout)["run_id"]
 
     state = None
     for _ in range(300):
-        status = runner.invoke(
-            app, ["status", run_id, "--runs-dir", str(runs_dir), "--json"]
-        )
+        status = runner.invoke(app, ["status", run_id, "--runs-dir", str(runs_dir), "--json"])
         state = json.loads(status.stdout)["status"]
         if state == "failed":
             break
         time.sleep(0.05)
     assert state == "failed"
 
-    result = runner.invoke(
-        app, ["logs", run_id, "--worker", "--runs-dir", str(runs_dir)]
-    )
+    result = runner.invoke(app, ["logs", run_id, "--worker", "--runs-dir", str(runs_dir)])
 
     assert result.exit_code == 0
     assert "FileNotFoundError" in result.stdout
@@ -192,9 +184,7 @@ def test_logs_worker_reports_a_missing_log(tmp_path):
     store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
     run_id, _ = store.create_run(_manifest(sys.executable, str(tmp_path)))
 
-    result = runner.invoke(
-        app, ["logs", run_id, "--worker", "--runs-dir", str(store.root)]
-    )
+    result = runner.invoke(app, ["logs", run_id, "--worker", "--runs-dir", str(store.root)])
 
     assert result.exit_code == 1
     assert "no worker log" in result.stderr
@@ -236,9 +226,7 @@ def test_submit_warns_on_stderr_and_still_submits(tmp_path):
 def test_submit_is_quiet_about_a_runnable_workload(tmp_path):
     path = _manifest_file(tmp_path, sys.executable, str(tmp_path))
 
-    result = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs")]
-    )
+    result = runner.invoke(app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs")])
 
     assert result.exit_code == 0
     assert "Warning" not in result.stderr
@@ -248,9 +236,7 @@ def test_submit_strict_refuses_and_creates_no_run(tmp_path):
     runs_dir = tmp_path / "runs"
     path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
 
-    result = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"]
-    )
+    result = runner.invoke(app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"])
 
     assert result.exit_code == 2
     assert "is not on PATH" in result.stderr
@@ -280,9 +266,7 @@ def test_campaign_start_strict_refuses_and_creates_no_campaign(tmp_path):
     )
 
     assert result.exit_code == 2
-    listed = runner.invoke(
-        app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"]
-    )
+    listed = runner.invoke(app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"])
     assert json.loads(listed.stdout) == []
 
 
@@ -311,9 +295,144 @@ def test_a_runnable_campaign_records_no_warning(tmp_path):
 
     store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
     campaign_store = CampaignStore(store.root)
-    goal = GoalSpec.from_yaml(_goal_file(tmp_path, sys.executable, str(tmp_path)))
+    # A bare interpreter is not a runnable *campaign* workload: the goal's
+    # search space puts `--x` on every trial's command line, and only a
+    # script that declares it can take one.
+    script = tmp_path / "train.py"
+    script.write_text(
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        'p.add_argument("--x", type=float)\n'
+        "p.parse_args()\n"
+    )
+    goal = GoalSpec.from_yaml(_goal_file(tmp_path, f"{sys.executable} {script}", str(tmp_path)))
 
     state = CampaignOrchestrator(store, campaign_store).start(goal)
 
     messages = [e.message for e in campaign_store.read_events(state.campaign_id)]
     assert "workload may not start" not in messages
+
+
+# --- the search space the workload will actually be handed ---------------
+
+_ACCEPTS = """\
+import argparse
+p = argparse.ArgumentParser()
+p.add_argument("--label-source")
+p.add_argument("--window-days", type=int)
+p.parse_args()
+"""
+
+_REJECTS = """\
+import argparse
+p = argparse.ArgumentParser()
+p.add_argument("--label-source")
+p.parse_args()
+"""
+
+
+def _goal_with(tmp_path, script: str, space: dict, **workload):
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+    )
+    from ai_experiments.schemas import (
+        WorkloadSpec as W,
+    )
+
+    path = tmp_path / "train.py"
+    path.write_text(script)
+    return GoalSpec(
+        goal="probe",
+        name="probe",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space=space,
+        workload=W(
+            entrypoint=f"{sys.executable} {path}",
+            working_dir=str(tmp_path),
+            **workload,
+        ),
+        budget=BudgetSpec(max_trials=1, max_parallel=1),
+    )
+
+
+def test_a_workload_that_declares_every_flag_draws_no_warning(tmp_path):
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {
+            "label_source": {"type": "choice", "values": ["a"]},
+            "window_days": {"type": "choice", "values": [30]},
+        },
+    )
+    assert workload_warnings(goal) == []
+
+
+def test_a_key_the_workload_cannot_parse_is_named_with_its_flag(tmp_path):
+    """The campaign's most expensive failure, caught before the first trial.
+
+    Every trial gets every search space key on its command line, so one key
+    the parser never declared fails all of them identically.
+    """
+    goal = _goal_with(
+        tmp_path,
+        _REJECTS,
+        {
+            "label_source": {"type": "choice", "values": ["a"]},
+            "window_days": {"type": "choice", "values": [30]},
+        },
+    )
+    warnings = workload_warnings(goal)
+
+    assert len(warnings) == 1
+    assert "window_days" in warnings[0]
+    assert "--window-days" in warnings[0]
+    assert "label_source" not in warnings[0]
+
+
+def test_the_probe_asks_the_workload_not_the_launcher(tmp_path):
+    """`uv run` and `python -m` are launchers; their help is not the answer.
+
+    With the script in `args` the entrypoint alone is an interpreter, and
+    `python --help` lists python's own long options -- enough to look like a
+    parser that declared something, and none of it the workload's. Every
+    search space key then reads as undeclared, on every campaign start.
+    """
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {"window_days": {"type": "choice", "values": [30]}},
+    )
+    goal.workload.args = [str(tmp_path / "train.py")]
+    goal.workload.entrypoint = sys.executable
+
+    assert workload_warnings(goal) == []
+
+
+def test_the_probe_respects_the_workload_flag_style(tmp_path):
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {"label_source": {"type": "choice", "values": ["a"]}},
+        flag_style="underscore",
+    )
+    warnings = workload_warnings(goal)
+
+    assert len(warnings) == 1
+    assert "--label_source" in warnings[0]
+
+
+def test_a_workload_with_no_usable_help_is_given_the_benefit_of_the_doubt(tmp_path):
+    """Absence of a `--help` is not evidence the flags are wrong."""
+    goal = _goal_with(
+        tmp_path,
+        "import sys; sys.exit(3)",
+        {"label_source": {"type": "choice", "values": ["a"]}},
+    )
+    assert workload_warnings(goal) == []
+
+
+def test_a_manifest_has_no_search_space_to_check(tmp_path):
+    """`workload_warnings` still answers for a plain manifest."""
+    assert workload_warnings(_manifest(sys.executable, str(tmp_path))) == []

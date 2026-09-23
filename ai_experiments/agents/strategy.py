@@ -13,18 +13,22 @@ why. An agent outage must slow a campaign down, never stop it.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import round_brief
-from ai_experiments.agents.runner import AgentRunner
 from ai_experiments.planner.analysis import summarize_trials
 from ai_experiments.planner.search_space import params_key
 from ai_experiments.planner.strategies import get_strategy
 from ai_experiments.planner.validation import ParamValidationError, validate_params
-from ai_experiments.schemas import GoalSpec, TrialRecord
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ai_experiments.agents.contracts import AgentResult
+    from ai_experiments.agents.runner import AgentRunner
+    from ai_experiments.schemas import GoalSpec, TrialRecord
 
 
 class AgentDecision(BaseModel):
@@ -60,9 +64,7 @@ class AgentStrategy:
         self.on_result = on_result
         self.last_decision = AgentDecision()
 
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         if count <= 0:
             return []
         brief = round_brief(goal, summarize_trials(trials, goal), count)
@@ -89,9 +91,7 @@ class AgentStrategy:
             decision.accepted = accepted
             self.last_decision = decision
             return accepted
-        return self._fall_back(
-            goal, trials, count, decision, "the agent proposed no usable trials"
-        )
+        return self._fall_back(goal, trials, count, decision, "the agent proposed no usable trials")
 
     def _accept(
         self,
@@ -102,18 +102,14 @@ class AgentStrategy:
         decision: AgentDecision,
     ) -> list[dict[str, Any]]:
         if not isinstance(proposals, list):
-            decision.rejected.append(
-                {"params": proposals, "reason": "'trials' was not a list"}
-            )
+            decision.rejected.append({"params": proposals, "reason": "'trials' was not a list"})
             return []
         seen = {params_key(t.params) for t in trials}
         accepted: list[dict[str, Any]] = []
         for proposal in proposals[: count * 4]:
             params = proposal.get("params") if isinstance(proposal, dict) else proposal
             if not isinstance(params, dict):
-                decision.rejected.append(
-                    {"params": proposal, "reason": "no 'params' object"}
-                )
+                decision.rejected.append({"params": proposal, "reason": "no 'params' object"})
                 continue
             try:
                 coerced = validate_params(goal.search_space, params)

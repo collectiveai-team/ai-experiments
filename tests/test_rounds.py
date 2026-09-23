@@ -18,7 +18,7 @@ from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import GoalSpec
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
-from tests.test_orchestrator import FakeBackend
+from tests.conftest import FakeBackend
 
 runner = CliRunner()
 
@@ -64,7 +64,7 @@ def test_a_campaign_writes_one_record_per_stage_in_order(tmp_path):
 
     log = RoundLog(CampaignStore(store.root).campaign_dir(state.campaign_id))
     records = log.read()
-    assert [r.stage for r in records][0] == "propose"
+    assert next(r.stage for r in records) == "propose"
     assert "evaluate" in {r.stage for r in records}
     assert [r.round for r in records] == sorted(r.round for r in records)
     proposed = {tid for r in records if r.stage == "propose" for tid in r.trial_ids}
@@ -99,13 +99,9 @@ def test_an_agent_round_records_its_hypothesis_and_its_rejections(tmp_path):
     )
     orchestrator, store = _harness(tmp_path, agent_runner=agent)
 
-    state = orchestrator.start(
-        _goal(strategy={"name": "agent", "seed": 1, "fallback": "random"})
-    )
+    state = orchestrator.start(_goal(strategy={"name": "agent", "seed": 1, "fallback": "random"}))
 
-    proposal = RoundLog(
-        CampaignStore(store.root).campaign_dir(state.campaign_id)
-    ).read()[0]
+    proposal = RoundLog(CampaignStore(store.root).campaign_dir(state.campaign_id)).read()[0]
     assert proposal.hypothesis == "x is far from the optimum"
     assert proposal.rationale == "bracket the minimum"
     assert proposal.agent_calls == 1
@@ -142,7 +138,8 @@ def test_rounds_command_reads_the_history_back(tmp_path):
 
     assert result.exit_code == 0
     records = json.loads(result.stdout)
-    assert records and records[0]["stage"] == "propose"
+    assert records
+    assert records[0]["stage"] == "propose"
 
 
 def test_trials_command_lists_every_trial_with_its_run_id(tmp_path):
@@ -206,8 +203,6 @@ def test_campaign_status_reports_when_the_loop_last_advanced(tmp_path):
 
 def test_rounds_and_trials_reject_an_unknown_campaign(tmp_path):
     for command in (["campaign", "rounds"], ["campaign", "trials"]):
-        result = runner.invoke(
-            app, [*command, "cmp_nope", "--runs-dir", str(tmp_path), "--json"]
-        )
+        result = runner.invoke(app, [*command, "cmp_nope", "--runs-dir", str(tmp_path), "--json"])
         assert result.exit_code == 1
         assert json.loads(result.stdout)["code"] == "not_found"

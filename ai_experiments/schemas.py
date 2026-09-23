@@ -1,71 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, TypeVar, Union
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 import yaml
 from pydantic import (
     BaseModel,
-    ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
-from ai_experiments.schema_errors import describe
+from ai_experiments.config_loading import (
+    REMOVED_MONITOR_KEYS,
+    ConfigModel,
+    load_config,
+)
 
-#: Keys older versions of iax defined, defaulted, documented -- and never read.
-#: They are rejected in a hand-written file and dropped from a stored one (#14).
-REMOVED_MONITOR_KEYS = ("checks", "no_event_after_minutes")
-
-
-class ConfigModel(BaseModel):
-    """Base for every model a human or an agent writes by hand.
-
-    An unknown key is an error, not a comment: silently dropping ``monitor:``
-    for ``monitoring:`` leaves the author sure they configured something they
-    did not. Models that only describe *stored* state stay permissive, so an
-    older file keeps loading after a field is added.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-
-ConfigT = TypeVar("ConfigT", bound=ConfigModel)
-
-
-def load_config(model: type[ConfigT], path: str | Path) -> ConfigT:
-    """Load a hand-written YAML config, reporting a bad key by name."""
-    with Path(path).open() as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a YAML mapping of fields")
-    try:
-        return model(**data)
-    except ValidationError as exc:
-        raise ValueError(describe(model, exc)) from exc
-
-
-def load_stored(model: type[ConfigT], path: str | Path) -> ConfigT:
-    """Load a config iax itself wrote, tolerating keys older versions emitted.
-
-    A run directory written before a field was removed still has to replay,
-    so the stored path drops those keys instead of refusing the file.
-    """
-    with Path(path).open() as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a YAML mapping of fields")
-    monitoring = data.get("monitoring")
-    if isinstance(monitoring, dict):
-        for key in REMOVED_MONITOR_KEYS:
-            monitoring.pop(key, None)
-    try:
-        return model(**data)
-    except ValidationError as exc:
-        raise ValueError(describe(model, exc)) from exc
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def utc_now() -> datetime:
@@ -116,7 +69,8 @@ class DataSpec(ConfigModel):
     val: str | None = None
     test: str | None = None
 
-    def env_for(self, phase: str) -> dict[str, str]:
+    def env_for(self, phase: str) -> dict[str, str]:  # ast-grep-ignore: no-dict-return-annotation
+        """Environment for one phase: the test split is exposed only to `evaluate`."""
         env: dict[str, str] = {}
         if self.train:
             env["IAX_DATA_TRAIN"] = self.train
@@ -125,6 +79,15 @@ class DataSpec(ConfigModel):
         if phase == "evaluate" and self.test:
             env["IAX_DATA_TEST"] = self.test
         return env
+
+
+#: How a search space key becomes a command-line flag. Keys are Python
+#: identifiers, so a two-word parameter is ``label_source``; the CLI
+#: convention every argument parser follows spells it ``--label-source``.
+FlagStyle = Literal["hyphen", "underscore"]
+
+#: How a run's observations collapse into one objective value.
+Aggregate = Literal["best", "mean", "bootstrap"]
 
 
 class WorkloadSpec(ConfigModel):
@@ -175,6 +138,10 @@ class WorkloadSpec(ConfigModel):
                 "required to run as two phases"
             )
         return [("evaluate", self.entrypoint)]
+
+    #: Exactly one spelling is sent. Emitting both "to be safe" is what
+    #: breaks argparse, which rejects any long option it did not declare.
+    flag_style: FlagStyle = "hyphen"
 
 
 class ResourceSpec(ConfigModel):
@@ -337,6 +304,18 @@ class ResultRecord(BaseModel):
     values: dict[str, float] = Field(default_factory=dict)
 
 
+class MetricLine(BaseModel):
+    """One parsed ``IAX_METRIC`` stdout line, before it is stamped into a MetricPoint.
+
+    `step`/`values` are the fixed schema; `values` itself stays a raw
+    ``{name: float}`` map because the workload's own metric names are not
+    fixed. No timestamp here -- callers stamp that at observation time.
+    """
+
+    step: int | None = None
+    values: dict[str, float] = Field(default_factory=dict)
+
+
 class MonitorDecision(BaseModel):
     run_id: str
     decision: Literal[
@@ -362,7 +341,26 @@ class DiagnosisReport(BaseModel):
 # --- Goal / campaign layer -------------------------------------------------
 
 
-class ChoiceParam(ConfigModel):
+class ParamBase(ConfigModel):
+    """What every search space dimension can say about itself."""
+
+    #: This dimension changes the data or the labels a trial is evaluated
+    #: on, not just how the model is fit. Trials that differ on it are
+    #: scored on different problems, so their raw metrics are not
+    #: comparable and the objective needs a ``baseline_metric`` to become
+    #: a lift. ``window_days``, ``resample_freq`` and a choice of label
+    #: source are all of this kind; a learning rate is not.
+    changes_data: bool = False
+    #: Draw this dimension only for trials where the named parameters take
+    #: one of the listed values, as in ``{"model": ["hist_gb"]}``. A space
+    #: without it hands every model every other model's knobs: those trials
+    #: are duplicates the deduplicator cannot see, and their spread reads as
+    #: evidence that the knobs do nothing. Conditions may only name
+    #: unconditional keys — see :meth:`GoalSpec.conditions_resolve`.
+    when: dict[str, list[Any]] = Field(default_factory=dict)
+
+
+class ChoiceParam(ParamBase):
     type: Literal["choice"]
     values: list[Any]
 
@@ -374,7 +372,7 @@ class ChoiceParam(ConfigModel):
         return value
 
 
-class UniformParam(ConfigModel):
+class UniformParam(ParamBase):
     type: Literal["uniform"]
     low: float
     high: float
@@ -386,7 +384,7 @@ class UniformParam(ConfigModel):
         return self
 
 
-class LogUniformParam(ConfigModel):
+class LogUniformParam(ParamBase):
     type: Literal["loguniform"]
     low: float
     high: float
@@ -400,7 +398,7 @@ class LogUniformParam(ConfigModel):
         return self
 
 
-class IntParam(ConfigModel):
+class IntParam(ParamBase):
     type: Literal["int"]
     low: int
     high: int
@@ -413,15 +411,64 @@ class IntParam(ConfigModel):
 
 
 ParamSpec = Annotated[
-    Union[ChoiceParam, UniformParam, LogUniformParam, IntParam],
+    ChoiceParam | UniformParam | LogUniformParam | IntParam,
     Field(discriminator="type"),
 ]
 
 
 class ObjectiveSpec(ConfigModel):
     metric: str
+    #: A metric that is a property of the trial's *data* rather than its
+    #: model: a class base rate, a naive forecast, last release's number.
+    #: When set, a trial scores ``metric - baseline_metric`` taken from the
+    #: same observation, so trials evaluated on different slices stay
+    #: comparable. Without it, a search space dimension that moves the
+    #: baseline is rewarded for moving it.
+    baseline_metric: str | None = None
     mode: Literal["min", "max"] = "min"
     target: float | None = None
+    #: How a run's many observations become one score. Epochs are successive
+    #: states of one model, so ``best`` is the answer. Folds are independent
+    #: evaluations of the *same* configuration, and there ``best`` is
+    #: max-of-k: biased upward by exactly the noise the folds exist to
+    #: measure. ``mean`` averages them and reports the standard error, so the
+    #: campaign can tell a real lead from a lucky fold. ``bootstrap`` is for
+    #: observations that are resamples of *one* evaluation: their spread is
+    #: already the standard error of the statistic, so dividing it by the
+    #: square root of their count would shrink the interval by exactly the
+    #: factor the resampling exists to expose.
+    aggregate: Aggregate = "best"
+
+
+class SuccessCriteria(ConfigModel):
+    """What this campaign has to show before its result counts.
+
+    ``objective.target`` is the value the campaign *stops* at; this is the bar
+    the result has to clear to be believed, and it is written before anything
+    runs so that afterwards the answer is arithmetic instead of an argument.
+    A goal that declares none gets ``met: null`` — not a pass.
+    """
+
+    #: The objective value the best trial has to reach, read in the
+    #: objective's own direction.
+    min_objective: float | None = None
+    #: How many observations that value has to be averaged over. A winner
+    #: resting on one evaluation has measured the evaluation, not the model.
+    min_observations: int | None = None
+    #: The best trial must be distinguishable from the runner-up at 95%.
+    #: Unmeasurable counts as unmet: the criterion asks for evidence.
+    require_separation: bool = False
+    #: The best trial's interval must clear its declared baseline.
+    require_beats_baseline: bool = False
+
+    @property
+    def declared(self) -> bool:
+        return (
+            self.min_objective is not None
+            or self.min_observations is not None
+            or self.require_separation
+            or self.require_beats_baseline
+        )
 
 
 class BudgetSpec(ConfigModel):
@@ -430,6 +477,10 @@ class BudgetSpec(ConfigModel):
     max_hours: float | None = None
     max_gpu_hours: float | None = None
     gpu_hour_rate: float | None = None  # currency per GPU-hour, for cost display
+    #: Consecutive failed trials, with nothing ever scored, before the
+    #: campaign gives up. A workload the harness cannot talk to fails
+    #: identically every time, so the rest of the budget buys nothing.
+    halt_after_failures: int = 8
 
     @model_validator(mode="after")
     def positive_budget(self) -> BudgetSpec:
@@ -437,6 +488,8 @@ class BudgetSpec(ConfigModel):
             raise ValueError("max_trials must be >= 1")
         if self.max_parallel < 1:
             raise ValueError("max_parallel must be >= 1")
+        if self.halt_after_failures < 1:
+            raise ValueError("halt_after_failures must be >= 1")
         return self
 
 
@@ -512,6 +565,9 @@ class GoalSpec(ConfigModel):
     objective: ObjectiveSpec
     search_space: dict[str, ParamSpec]
     workload: WorkloadSpec
+    #: The bar the result has to clear to count. Declaring none is
+    #: allowed and is reported as such; it is not a pass.
+    success_criteria: SuccessCriteria = Field(default_factory=SuccessCriteria)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     agent: AgentSpec = Field(default_factory=AgentSpec)
@@ -534,9 +590,12 @@ class GoalSpec(ConfigModel):
 
     @field_validator("search_space")
     @classmethod
-    def search_space_not_empty(
+    def search_space_not_empty(  # ast-grep-ignore: no-dict-return-annotation
         cls, value: dict[str, ParamSpec]
     ) -> dict[str, ParamSpec]:
+        # A pydantic field validator's signature must return exactly the type
+        # it validates -- search_space is itself a name -> ParamSpec mapping,
+        # not a fixed schema.
         if not value:
             raise ValueError("search_space needs at least one parameter")
         return value
@@ -545,6 +604,31 @@ class GoalSpec(ConfigModel):
     def objective_metric_monitored(self) -> GoalSpec:
         if self.monitoring.objective_metric is None:
             self.monitoring.objective_metric = self.objective.metric
+        return self
+
+    @model_validator(mode="after")
+    def conditions_resolve(self) -> GoalSpec:
+        """Require every ``when`` to name a key that exists and is drawn first.
+
+        Restricting conditions to one level keeps the sampling order obvious
+        — unconditional keys, then everything that depends on them — and
+        costs nothing anyone has asked for. A typo'd condition would
+        otherwise silently never hold, quietly deleting a dimension from the
+        search.
+        """
+        for name, spec in self.search_space.items():
+            for other in spec.when:
+                if other not in self.search_space:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which the space does not define — typo?"
+                    )
+                if self.search_space[other].when:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which is itself conditional; conditions "
+                        "may only name unconditional keys"
+                    )
         return self
 
     @classmethod
@@ -564,9 +648,7 @@ TrialState = Literal[
     "cancelled",
 ]
 
-CampaignStatus = Literal[
-    "running", "paused", "stopping", "completed", "stopped", "failed"
-]
+CampaignStatus = Literal["running", "paused", "stopping", "completed", "stopped", "failed"]
 
 
 class TrialRecord(BaseModel):
@@ -578,8 +660,18 @@ class TrialRecord(BaseModel):
     run_id: str | None = None
     status: TrialState = "planned"
     objective_value: float | None = None
+    #: Standard error of ``objective_value`` when the objective averages its
+    #: observations, and ``None`` when nothing measured the spread. A score
+    #: without it cannot be compared to another score honestly.
+    objective_stderr: float | None = None
+    #: How many observations the score was computed from.
+    objective_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     gpu_hours: float | None = None
+    #: How long the trial actually occupied the machine. Recorded whether
+    #: or not there are GPUs, because a CPU campaign that reports only
+    #: `gpu_hours` reports that it cost nothing.
+    wall_hours: float | None = None
     created_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     error: str | None = None

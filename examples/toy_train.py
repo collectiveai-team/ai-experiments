@@ -10,7 +10,7 @@ cluster — the harness extracts metrics and results from both phases' stdout.
 
 from __future__ import annotations
 
-import argparse
+import argparse  # ast-grep-ignore: cli-typed-framework  # standalone example: stays dependency-free
 import json
 import os
 import random
@@ -27,31 +27,36 @@ def main() -> None:
     parser.add_argument("--sleep", type=float, default=0.5)
     args = parser.parse_args()
 
-    rng = random.Random(0)
+    rng = random.Random(0)  # noqa: S311  # demo script, not security
     x = args.x0
     for step in range(args.steps):
         grad = 2 * (x - 2.0) + rng.gauss(0, 0.1)
         x -= args.lr * grad
         loss = (x - 2.0) ** 2
-        print("IAX_METRIC " + json.dumps({"step": step, "loss": loss, "x": x}))
+        print(  # ast-grep-ignore: log-no-print  # example script, stdout is the artifact
+            "IAX_METRIC " + json.dumps({"step": step, "loss": loss, "x": x})
+        )
         sys.stdout.flush()
         time.sleep(args.sleep)
 
     # The trainer produces an artifact. It does not declare a result: the
     # number it would be judged by is not its to report.
     loss = (x - 2.0) ** 2
-    work = Path(os.environ.get("IAX_WORK_DIR", "."))
+    # standalone example: stays dependency-free
+    work = Path(os.environ.get("IAX_WORK_DIR", "."))  # ast-grep-ignore: settings-module
     with (work / "model.json").open("w") as fh:
         json.dump({"x": x}, fh)
 
     # Anything written to $IAX_ARTIFACTS_DIR is listed by `iax artifacts
     # <run_id>` and downloadable from the dashboard.
-    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
+    artifacts = os.environ.get("IAX_ARTIFACTS_DIR")  # ast-grep-ignore: settings-module
     if artifacts:
-        with open(os.path.join(artifacts, "model.json"), "w") as fh:
+        with (Path(artifacts) / "model.json").open("w") as fh:
             json.dump({"x": x, "loss": loss}, fh)
 
-    print(f"final x={x:.4f} loss={loss:.6f}")
+    print(  # ast-grep-ignore: log-no-print  # example script, stdout is the artifact
+        f"final x={x:.4f} loss={loss:.6f}"
+    )
     sys.stdout.flush()
 
 

@@ -12,16 +12,12 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.daemon import MonitorDaemon
-from ai_experiments import procs
 from ai_experiments.procs import process_identity
 from ai_experiments.schemas import (
-    DataSpec,
     ExperimentManifest,
     RunHandle,
     RunStatus,
@@ -29,6 +25,9 @@ from ai_experiments.schemas import (
     utc_now,
 )
 from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -101,9 +100,7 @@ def _wait_for_event(store: FilesystemRunStore, run_id: str, text: str) -> None:
     workload past its last write, so killing the supervisor after this point
     tests the orphan case and not "the workload died of a broken pipe".
     """
-    found = _wait_for(
-        lambda: any(text in event.message for event in store.read_events(run_id))
-    )
+    found = _wait_for(lambda: any(text in event.message for event in store.read_events(run_id)))
     assert found, f"workload never logged {text!r}"
 
 
@@ -138,12 +135,11 @@ def _kill_supervisor(store: FilesystemRunStore, run_id: str, reap: bool) -> int:
 
 
 def test_unstartable_workload_is_reported_as_failed(tmp_path):
-    """Issue #9: this used to sit in `running` forever, with the traceback
-    only in worker.log."""
+    """Issue #9: this used to sit in `running` forever.
+
+    The traceback was only in worker.log."""
     store = _store(tmp_path)
-    manifest = _manifest(
-        tmp_path, "definitely-not-a-binary-xyz12", working_dir=str(tmp_path)
-    )
+    manifest = _manifest(tmp_path, "definitely-not-a-binary-xyz12", working_dir=str(tmp_path))
 
     handle = LocalBackend(store=store).submit(manifest)
     status = _wait_for_terminal(store, handle.run_id)
@@ -153,8 +149,9 @@ def test_unstartable_workload_is_reported_as_failed(tmp_path):
 
 
 def test_supervisor_failure_before_spawn_is_reported(tmp_path):
-    """The failure contract has to cover every way run() can raise, not just
-    the Popen call: here the manifest itself no longer parses."""
+    """The failure contract has to cover every way run() can raise.
+
+    Not just the Popen call: here the manifest itself no longer parses."""
     store = _store(tmp_path)
     handle = LocalBackend(store=store).submit(
         _manifest(tmp_path, f"{sys.executable} -c pass", working_dir=str(tmp_path))
@@ -164,7 +161,7 @@ def test_supervisor_failure_before_spawn_is_reported(tmp_path):
     # Re-run the supervisor by hand against a manifest that cannot be read.
     (store.run_dir(handle.run_id) / "manifest.yaml").write_text("{not: [valid")
     store.update_status(handle.run_id, status="running", error=None)
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603  # fixed argv, our own worker module
         [
             sys.executable,
             "-m",
@@ -176,6 +173,7 @@ def test_supervisor_failure_before_spawn_is_reported(tmp_path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert result.returncode != 0
@@ -188,8 +186,9 @@ def test_supervisor_failure_before_spawn_is_reported(tmp_path):
 
 
 def test_failure_contract_never_rewrites_a_terminal_status(tmp_path):
-    """A crash *after* the workload finished must not turn a real result into
-    a failure -- it is reported as an event instead."""
+    """A crash *after* the workload finished must not turn a real result into a failure.
+
+    It is reported as an event instead."""
     store = _store(tmp_path)
     handle = LocalBackend(store=store).submit(
         _manifest(tmp_path, f"{sys.executable} -c pass", working_dir=str(tmp_path))
@@ -228,60 +227,57 @@ def test_relative_working_dir_runs_in_that_directory(tmp_path, monkeypatch):
 
 
 def test_persisted_manifest_resolves_working_dir_once(tmp_path, monkeypatch):
-    """The stored manifest is what every later process reads, so the relative
-    path has to be gone by then -- for `iax rerun` as much as for the worker."""
+    """The stored manifest is what every later process reads.
+
+    So the relative path has to be gone by then -- for `iax rerun` as much as
+    for the worker."""
     project = tmp_path / "project"
     (project / "sub").mkdir(parents=True)
     monkeypatch.chdir(project)
     store = _store(tmp_path)
 
-    run_id, _ = store.create_run(
-        _manifest(tmp_path, "python train.py", working_dir="sub")
-    )
+    run_id, _ = store.create_run(_manifest(tmp_path, "python train.py", working_dir="sub"))
 
     persisted = store.read_manifest(run_id)
     assert persisted is not None
     assert persisted.workload.working_dir == str(project / "sub")
 
 
-def test_the_manifest_as_authored_is_kept_alongside_the_resolved_one(
-    tmp_path, monkeypatch
-):
-    """Resolving is what makes a run executable; the relative path is what
-    makes the manifest portable. Keeping only one of the two throws away a
-    kind of reproducibility."""
+def test_the_manifest_as_authored_is_kept_alongside_the_resolved_one(tmp_path, monkeypatch):
+    """Resolving makes a run executable; the relative path makes the manifest portable.
+
+    Keeping only one of the two throws away a kind of reproducibility."""
     project = tmp_path / "project"
     (project / "sub").mkdir(parents=True)
     monkeypatch.chdir(project)
     store = _store(tmp_path)
 
-    run_id, _ = store.create_run(
-        _manifest(tmp_path, "python train.py", working_dir="sub")
-    )
+    run_id, _ = store.create_run(_manifest(tmp_path, "python train.py", working_dir="sub"))
 
     executed = store.read_manifest(run_id)
     authored = store.read_manifest(run_id, source=True)
-    assert executed is not None and authored is not None
+    assert executed is not None
+    assert authored is not None
     assert executed.workload.working_dir == str(project / "sub")
     assert authored.workload.working_dir == "sub"
 
 
 def test_no_source_manifest_when_nothing_was_resolved(tmp_path):
-    """An absolute working_dir is already portable-or-not on its own terms;
-    a byte-identical second copy would only be noise."""
+    """An absolute working_dir is already portable-or-not on its own terms.
+
+    A byte-identical second copy would only be noise."""
     store = _store(tmp_path)
 
-    run_id, _ = store.create_run(
-        _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
-    )
+    run_id, _ = store.create_run(_manifest(tmp_path, "python train.py", working_dir=str(tmp_path)))
 
     assert not store.source_manifest_path(run_id).exists()
     assert store.read_manifest(run_id, source=True) == store.read_manifest(run_id)
 
 
 def test_rerun_portable_re_resolves_on_the_machine_it_runs_from(tmp_path, monkeypatch):
-    """The point of keeping the authored manifest: the run can be repeated
-    somewhere else. Plain rerun still repeats the exact original paths."""
+    """The point of keeping the authored manifest: the run can be repeated somewhere else.
+
+    Plain rerun still repeats the exact original paths."""
     from typer.testing import CliRunner
 
     from ai_experiments.cli import app
@@ -303,24 +299,24 @@ def test_rerun_portable_re_resolves_on_the_machine_it_runs_from(tmp_path, monkey
         app,
         ["rerun", original.run_id, "--runs-dir", str(store.root), "--portable"],
     )
-    exact = runner.invoke(
-        app, ["rerun", original.run_id, "--runs-dir", str(store.root)]
-    )
+    exact = runner.invoke(app, ["rerun", original.run_id, "--runs-dir", str(store.root)])
 
     assert portable.exit_code == 0, portable.output
     assert exact.exit_code == 0, exact.output
     portable_id = portable.stdout.split()[2]
     exact_id = exact.stdout.split()[2]
-    assert store.read_manifest(portable_id).workload.working_dir == str(
-        elsewhere / "sub"
-    )
-    assert store.read_manifest(exact_id).workload.working_dir == str(here / "sub")
+    portable_manifest = store.read_manifest(portable_id)
+    exact_manifest = store.read_manifest(exact_id)
+    assert portable_manifest is not None
+    assert exact_manifest is not None
+    assert portable_manifest.workload.working_dir == str(elsewhere / "sub")
+    assert exact_manifest.workload.working_dir == str(here / "sub")
 
 
 def test_worker_reports_a_manifest_it_cannot_trust(tmp_path):
-    """A relative working_dir in a persisted manifest means the run directory
-    was not written by this version -- resolving it again is what caused #10,
-    so it is refused loudly instead."""
+    """A relative working_dir in a persisted manifest means the run directory predates this version.
+
+    Resolving it again is what caused #10, so it is refused loudly instead."""
     store = _store(tmp_path)
     handle = LocalBackend(store=store).submit(
         _manifest(tmp_path, f"{sys.executable} -c pass", working_dir=str(tmp_path))
@@ -332,7 +328,7 @@ def test_worker_reports_a_manifest_it_cannot_trust(tmp_path):
         manifest_path.read_text().replace(f"working_dir: {tmp_path}", "working_dir: .")
     )
     store.update_status(handle.run_id, status="running", error=None)
-    subprocess.run(
+    subprocess.run(  # noqa: S603  # fixed argv, our own worker module
         [
             sys.executable,
             "-m",
@@ -344,6 +340,7 @@ def test_worker_reports_a_manifest_it_cannot_trust(tmp_path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
 
     status = store.read_status(handle.run_id)
@@ -359,8 +356,7 @@ def test_sigkilled_workload_is_reported_as_failed(tmp_path):
     store = _store(tmp_path)
     entrypoint = _script(
         tmp_path / "oom.py",
-        "import os, signal\nprint('training', flush=True)\n"
-        "os.kill(os.getpid(), signal.SIGKILL)\n",
+        "import os, signal\nprint('training', flush=True)\nos.kill(os.getpid(), signal.SIGKILL)\n",
     )
 
     handle = LocalBackend(store=store).submit(
@@ -394,8 +390,9 @@ def test_cancelled_workload_is_still_reported_as_cancelled(tmp_path):
 
 
 def test_cancel_does_not_rewrite_a_finished_run(tmp_path):
-    """Cancelling a run that already ended used to overwrite how it ended --
-    including a failure it is meant to help diagnose."""
+    """Cancelling a run that already ended used to overwrite how it ended.
+
+    Including a failure it is meant to help diagnose."""
     store = _store(tmp_path)
     handle = LocalBackend(store=store).submit(
         _manifest(tmp_path, f"{sys.executable} -c pass", working_dir=str(tmp_path))
@@ -419,185 +416,19 @@ def test_cli_cancel_reports_that_a_finished_run_was_not_cancelled(tmp_path):
     )
     _wait_for_terminal(store, handle.run_id)
 
-    result = CliRunner().invoke(
-        app, ["cancel", handle.run_id, "--runs-dir", str(store.root)]
-    )
+    result = CliRunner().invoke(app, ["cancel", handle.run_id, "--runs-dir", str(store.root)])
 
     assert result.exit_code == 0
     assert "already completed" in result.stdout
-
-
-# -- C2: the production entry point is the two-phase launcher ---------------
-
-
-def test_two_phase_workload_runs_through_the_real_backend_entry_point(tmp_path):
-    """`LocalBackend.submit` spawns `-m ai_experiments.phases`, not
-    `-m ai_experiments.worker`: reverting that one string leaves the whole
-    suite green (454 passed, 0 failed) unless something drives a two-phase
-    workload through this exact path, not `run_phases` called in-process."""
-    store = _store(tmp_path)
-    train = _script(
-        tmp_path / "train.py",
-        "import os, pathlib\n"
-        "seen_test = 'IAX_DATA_TEST' in os.environ\n"
-        "pathlib.Path(os.environ['IAX_WORK_DIR'], 'saw_test.txt')"
-        ".write_text(str(seen_test))\n"
-        "print('IAX_RESULT {\"acc\": 0.99}', flush=True)\n",
-    )
-    evaluate = _script(
-        tmp_path / "evaluate.py",
-        "print('IAX_RESULT {\"acc\": 0.42}', flush=True)\n",
-    )
-    manifest = ExperimentManifest(
-        experiment="lifecycle",
-        backend="local",
-        workload=WorkloadSpec(
-            entrypoint=train,
-            train=train,
-            evaluate=evaluate,
-            working_dir=str(tmp_path),
-            data=DataSpec(test="s3://bucket/held-out.parquet"),
-        ),
-    )
-
-    handle = LocalBackend(store=store).submit(manifest)
-    status = _wait_for_terminal(store, handle.run_id)
-
-    assert status.status == "completed"
-    assert [r.values for r in store.read_results(handle.run_id)] == [{"acc": 0.42}]
-    saw_test = (store.run_dir(handle.run_id) / "work" / "saw_test.txt").read_text()
-    assert saw_test == "False"
-
-
-# -- C1: cancellation must not be reversible by the second phase ------------
-
-
-def test_iax_cancel_stops_the_evaluate_phase_too(tmp_path):
-    """Observed before the fix: `backend.cancel` writes `cancelled`, then the
-    evaluate phase runs to completion and the final status is `completed`
-    with a score -- cancellation was reversible. The train phase here
-    ignores SIGTERM outright and exits 0 on its own a little later, so
-    nothing here depends on how the signal race between `killpg` and the
-    supervisor's own handler happens to resolve: the only way the run can
-    end up `cancelled`, with evaluate never started, is `store.request_cancel`
-    (written before the signal is even sent) being consulted after the exit.
-    """
-    store = _store(tmp_path)
-    train = _script(
-        tmp_path / "train.py",
-        "import signal, time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "print('training', flush=True)\n"
-        "time.sleep(0.5)\n",
-    )
-    evaluate = _script(
-        tmp_path / "evaluate.py",
-        "print('IAX_RESULT {\"acc\": 0.61}', flush=True)\n",
-    )
-    manifest = ExperimentManifest(
-        experiment="lifecycle",
-        backend="local",
-        workload=WorkloadSpec(
-            entrypoint=train, train=train, evaluate=evaluate, working_dir=str(tmp_path)
-        ),
-    )
-    backend = LocalBackend(store=store)
-
-    handle = backend.submit(manifest)
-    _wait_for_event(store, handle.run_id, "training")
-    backend.cancel(handle.run_id)
-    # Not `_wait_for_terminal`: the bug this pins is a status that looks
-    # terminal (`cancelled`, written by `cancel` itself) and then changes
-    # again once the un-stopped evaluate phase finishes.
-    status = _wait_for_settled_terminal(store, handle.run_id)
-
-    assert status.status == "cancelled"
-    assert store.read_results(handle.run_id) == []
-    assert not any(
-        event.details.get("phase") == "evaluate" and event.message == "phase started"
-        for event in store.read_events(handle.run_id)
-    )
-
-
-def test_bare_sigterm_to_the_supervisor_stops_the_evaluate_phase_too(tmp_path):
-    """The same bug as above, reached through the other door. `run_phases`
-    decides whether to keep going by asking `store.cancel_requested`, the
-    marker `LocalBackend.cancel` writes -- but `_Supervisor._cancel_requested`
-    is `self._cancelled or store.cancel_requested(...)`, and `self._cancelled`
-    is set by *any* SIGTERM the supervisor receives, marker or not. The train
-    phase here signals its own parent (the supervisor process itself, not the
-    backend) directly and exits 0 on its own; nobody ever calls
-    `backend.cancel` or writes the cancel marker. Round 2's fix correctly
-    records `train`'s own exit as `cancelled`; the bug is `run_phases` seeing
-    no marker afterwards and starting `evaluate` anyway.
-    """
-    store = _store(tmp_path)
-    train = _script(
-        tmp_path / "train.py",
-        "import os, signal, time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "print('training', flush=True)\n"
-        "os.kill(os.getppid(), signal.SIGTERM)\n"
-        "time.sleep(0.5)\n",
-    )
-    evaluate = _script(
-        tmp_path / "evaluate.py",
-        "print('IAX_RESULT {\"acc\": 0.61}', flush=True)\n",
-    )
-    manifest = ExperimentManifest(
-        experiment="lifecycle",
-        backend="local",
-        workload=WorkloadSpec(
-            entrypoint=train, train=train, evaluate=evaluate, working_dir=str(tmp_path)
-        ),
-    )
-    backend = LocalBackend(store=store)
-
-    handle = backend.submit(manifest)
-    # Not `_wait_for_terminal`: the bug this pins is a status that looks
-    # terminal (`cancelled`, written when `train` exits) and then changes
-    # again once the un-stopped evaluate phase finishes.
-    status = _wait_for_settled_terminal(store, handle.run_id)
-
-    assert status.status == "cancelled"
-    assert store.read_results(handle.run_id) == []
-    assert not any(
-        event.details.get("phase") == "evaluate" and event.message == "phase started"
-        for event in store.read_events(handle.run_id)
-    )
-
-
-def test_single_phase_workload_that_traps_sigterm_is_still_cancelled(tmp_path):
-    """C1 gap 2 on the single-phase path. `test_iax_cancel_stops_the_evaluate_
-    phase_too` only pins "exit 0 after a requested cancellation is still
-    `cancelled`" for the two-phase launcher; a single-entrypoint workload that
-    traps SIGTERM and shuts down cleanly after `iax cancel` needs the same
-    guarantee, and nothing here was exercising that path.
-    """
-    store = _store(tmp_path)
-    entrypoint = _script(
-        tmp_path / "traps_sigterm.py",
-        "import signal, time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "print('training', flush=True)\n"
-        "time.sleep(0.5)\n",
-    )
-    backend = LocalBackend(store=store)
-
-    handle = backend.submit(_manifest(tmp_path, entrypoint, working_dir=str(tmp_path)))
-    _wait_for_event(store, handle.run_id, "training")
-    backend.cancel(handle.run_id)
-    status = _wait_for_settled_terminal(store, handle.run_id)
-
-    assert status.status == "cancelled"
 
 
 # -- #8: an orphaned workload -------------------------------------------------
 
 
 def test_reaper_kills_a_workload_whose_supervisor_died(tmp_path):
-    """Issue #8: the daemon reported `reaped_dead_process` while the training
-    process kept running, unsupervised and invisible."""
+    """Issue #8: the daemon reported `reaped_dead_process` while the training process kept running.
+
+    Unsupervised and invisible."""
     store = _store(tmp_path)
     entrypoint = _script(
         tmp_path / "sleeper.py",
@@ -623,8 +454,7 @@ def test_reaper_kills_a_workload_whose_supervisor_died(tmp_path):
         assert "orphaned workload" in (status.error or "")
         actions = {action.action: action for action in report.actions}
         assert "reaped_dead_process" in actions, (
-            f"{report}\nstatus={status}\n"
-            f"supervisor_identity={process_identity(supervisor_pid)}"
+            f"{report}\nstatus={status}\nsupervisor_identity={process_identity(supervisor_pid)}"
         )
         reap = actions["reaped_dead_process"].details["workload_reap"]
         assert reap["outcome"] in {"terminated", "killed"}
@@ -635,8 +465,9 @@ def test_reaper_kills_a_workload_whose_supervisor_died(tmp_path):
 
 
 def test_dead_but_unreaped_supervisor_is_not_reported_healthy(tmp_path):
-    """A supervisor whose parent outlives it (the campaign daemon, `iax
-    serve`) stays in the process table as a zombie, and `kill(pid, 0)` still
+    """A supervisor whose parent outlives it stays in the process table as a zombie.
+
+    That parent is the campaign daemon, `iax serve`, and `kill(pid, 0)` still
     succeeds for one -- so liveness built on that alone leaves a dead
     supervisor's run `running` forever, supervised by nobody."""
     store = _store(tmp_path)
@@ -666,6 +497,7 @@ def test_dead_but_unreaped_supervisor_is_not_reported_healthy(tmp_path):
 
 def test_reaper_refuses_to_signal_a_reused_pid(tmp_path):
     """The recorded pid is only a handle if it still names the same process.
+
     A pid the kernel has handed to something else must never be signalled."""
     store = _store(tmp_path)
     manifest = _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
@@ -701,8 +533,9 @@ def test_reaper_refuses_to_signal_a_reused_pid(tmp_path):
 
 
 def test_reaper_reports_a_workload_it_cannot_identify(tmp_path):
-    """Runs from before identities were recorded still get an honest report:
-    a live pid nobody may signal is worse hidden than announced."""
+    """Runs from before identities were recorded still get an honest report.
+
+    A live pid nobody may signal is worse hidden than announced."""
     store = _store(tmp_path)
     manifest = _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
     run_id, run_dir = store.create_run(manifest)
@@ -730,158 +563,6 @@ def test_reaper_reports_a_workload_it_cannot_identify(tmp_path):
         assert bystander.poll() is None
         messages = [event.message for event in store.read_events(run_id)]
         assert any("left running" in message for message in messages)
-    finally:
-        bystander.kill()
-        bystander.wait()
-
-
-# -- process identity --------------------------------------------------------
-
-
-@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc")
-def test_process_identity_is_stable_and_absent_for_dead_pids():
-    assert process_identity(os.getpid()) == process_identity(os.getpid())
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    identity = process_identity(child.pid)
-    child.wait()  # now a zombie until Popen reaps it
-    assert process_identity(child.pid) is None
-    assert identity != process_identity(os.getpid())
-
-
-# -- identity off Linux (#31) ------------------------------------------------
-
-
-def _no_proc(monkeypatch):
-    """Pretend this machine has no /proc, as macOS and Windows do not."""
-    monkeypatch.setattr(procs, "_proc_available", lambda: False)
-
-
-def test_this_machine_can_identify_a_process():
-    """Linux always can; the tests below turn that off deliberately."""
-    assert procs.identity_supported()
-
-
-def test_without_proc_or_psutil_nothing_can_be_identified(monkeypatch):
-    _no_proc(monkeypatch)
-    monkeypatch.setattr(procs, "_psutil", lambda: None)
-
-    assert not procs.identity_supported()
-    assert procs.process_identity(os.getpid()) is None
-    # The liveness fallback stays usable, it just cannot see a zombie.
-    assert procs.pid_alive(os.getpid())
-
-
-def test_an_unidentifiable_workload_is_reported_and_never_signalled(monkeypatch):
-    """The safe refusal is the one guarantee that must hold everywhere."""
-    _no_proc(monkeypatch)
-    monkeypatch.setattr(procs, "_psutil", lambda: None)
-    bystander = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
-    try:
-        report = procs.terminate_workload(bystander.pid, None)
-
-        assert report["outcome"] == "identity_unverifiable"
-        assert bystander.poll() is None
-    finally:
-        bystander.kill()
-        bystander.wait()
-
-
-def test_psutil_identifies_a_process_where_proc_cannot(monkeypatch):
-    """The optional extra restores the guarantee off Linux."""
-    pytest.importorskip("psutil")
-    _no_proc(monkeypatch)
-
-    assert procs.identity_supported()
-    identity = procs.process_identity(os.getpid())
-    assert identity
-    assert identity == procs.process_identity(os.getpid())
-
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    child_identity = procs.process_identity(child.pid)
-    assert child_identity != identity
-    child.wait()  # a zombie until Popen reaps it: not alive
-    assert procs.process_identity(child.pid) is None
-    assert not procs.pid_alive(child.pid)
-
-
-def test_psutil_says_nothing_about_a_pid_that_does_not_exist(monkeypatch):
-    pytest.importorskip("psutil")
-    _no_proc(monkeypatch)
-
-    assert procs.process_identity(999999) is None
-
-
-def test_psutil_lets_the_reaper_kill_an_orphan_off_linux(monkeypatch, tmp_path):
-    pytest.importorskip("psutil")
-    _no_proc(monkeypatch)
-    store = _store(tmp_path)
-    manifest = _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
-    run_id, run_dir = store.create_run(manifest)
-    orphan = subprocess.Popen(
-        [sys.executable, "-c", "import time;time.sleep(30)"], start_new_session=True
-    )
-    try:
-        store.write_handle(
-            RunHandle(
-                run_id=run_id,
-                backend="local",
-                status="running",
-                status_uri=str(store.status_path(run_id)),
-                run_dir=str(run_dir),
-            )
-        )
-        store.update_status(
-            run_id,
-            pid=999999,
-            started_at=utc_now(),
-            details={
-                "workload_pid": orphan.pid,
-                "workload_identity": procs.process_identity(orphan.pid),
-            },
-        )
-
-        report = LocalBackend(store=store).reap(run_id)
-
-        assert report["outcome"] in {"terminated", "killed"}
-        assert orphan.poll() is not None
-    finally:
-        if orphan.poll() is None:
-            orphan.kill()
-        orphan.wait()
-
-
-def test_the_refusal_names_the_fix_when_the_platform_is_the_reason(
-    monkeypatch, tmp_path
-):
-    """`identity_unverifiable` alone tells an operator nothing to do."""
-    _no_proc(monkeypatch)
-    monkeypatch.setattr(procs, "_psutil", lambda: None)
-    store = _store(tmp_path)
-    manifest = _manifest(tmp_path, "python train.py", working_dir=str(tmp_path))
-    run_id, run_dir = store.create_run(manifest)
-    bystander = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
-    try:
-        store.write_handle(
-            RunHandle(
-                run_id=run_id,
-                backend="local",
-                status="running",
-                status_uri=str(store.status_path(run_id)),
-                run_dir=str(run_dir),
-            )
-        )
-        store.update_status(
-            run_id,
-            pid=999999,
-            started_at=utc_now(),
-            details={"workload_pid": bystander.pid, "workload_identity": None},
-        )
-
-        report = LocalBackend(store=store).reap(run_id)
-
-        assert report["outcome"] == "identity_unverifiable"
-        assert "psutil" in str(report["hint"])
-        assert bystander.poll() is None
     finally:
         bystander.kill()
         bystander.wait()

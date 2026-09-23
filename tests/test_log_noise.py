@@ -107,7 +107,8 @@ def test_a_blank_line_is_not_an_event(tmp_path):
 
     messages = [event.message for event in store.read_events(run_id)]
 
-    assert "first" in messages and "last" in messages
+    assert "first" in messages
+    assert "last" in messages
     assert "" not in messages
 
 
@@ -121,8 +122,10 @@ def test_a_blank_line_is_not_an_event(tmp_path):
     ],
 )
 def test_a_metric_that_measures_error_is_not_an_error(line):
-    """ "error" is ordinary metric vocabulary, and a substring match said
-    every epoch of a healthy run was a failure."""
+    """ "error" is ordinary metric vocabulary.
+
+    A substring match said every epoch of a healthy run was a failure.
+    """
     assert event_from_log_line(line).level == "info"
 
 
@@ -144,15 +147,10 @@ def test_a_real_failure_is_still_an_error(line):
 def test_tail_reads_only_the_tail(tmp_path):
     """Every monitoring tick reads the last few events of an unbounded file."""
     store = FilesystemRunStore(tmp_path / "runs")
-    manifest = ExperimentManifest(
-        experiment="tail", workload=WorkloadSpec(entrypoint="true")
-    )
+    manifest = ExperimentManifest(experiment="tail", workload=WorkloadSpec(entrypoint="true"))
     run_id, run_dir = store.create_run(manifest)
     (run_dir / "events.jsonl").write_text(
-        "".join(
-            '{"level": "info", "message": "line %d"}\n' % index
-            for index in range(5_000)
-        )
+        "".join(f'{{"level": "info", "message": "line {index}"}}\n' for index in range(5_000))
     )
 
     events = store.read_events(run_id, tail=3)

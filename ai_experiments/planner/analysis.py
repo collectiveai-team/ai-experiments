@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+import statistics
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
 
-from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
-from ai_experiments.store import FilesystemRunStore
+from ai_experiments.responses import (
+    BestTrialSummary,
+    BudgetSummary,
+    CampaignHistoryEntry,
+    CampaignSummary,
+    CampaignVerdict,
+    SuccessReport,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from ai_experiments.schemas import (
+        CampaignState,
+        GoalSpec,
+        ObjectiveSpec,
+        ResultRecord,
+        SuccessCriteria,
+        TrialRecord,
+    )
+    from ai_experiments.store import FilesystemRunStore
 
 
 class ObjectiveReading(BaseModel):
@@ -22,9 +42,18 @@ class ObjectiveReading(BaseModel):
     """
 
     value: float | None = None
+    #: Standard error of ``value`` across the observations it averages, and
+    #: ``None`` whenever the spread is not measurable — a ``best`` objective,
+    #: or a single observation. Reporting 0.0 there would claim a certainty
+    #: one sample cannot support.
+    stderr: float | None = None
+    #: How many observations carried a usable value.
+    n_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     declared_results: list[str] = Field(default_factory=list)
-    miss_reason: Literal["no_result", "metric_absent", "not_finite"] | None = None
+    miss_reason: Literal["no_result", "metric_absent", "not_finite", "baseline_absent"] | None = (
+        None
+    )
 
     def miss_message(self, metric: str) -> str | None:
         if self.miss_reason is None:
@@ -37,7 +66,17 @@ class ObjectiveReading(BaseModel):
         declared = ", ".join(self.declared_results) or "(none)"
         if self.miss_reason == "metric_absent":
             return (
-                f"objective metric '{metric}' is not in the declared result; "
+                f"objective metric '{metric}' is not in the declared result; declared: {declared}"
+            )
+        if self.miss_reason == "baseline_absent":
+            return (
+                f"objective metric '{metric}' was declared but its baseline never was, so the "
+                f"trial has no comparable score; declared: {declared}"
+            )
+        if self.miss_reason == "baseline_absent":
+            return (
+                f"objective metric '{metric}' was declared but its baseline "
+                f"never was, so the trial has no comparable score; "
                 f"declared: {declared}"
             )
         return (
@@ -49,37 +88,97 @@ class ObjectiveReading(BaseModel):
 def extract_objective(
     store: FilesystemRunStore, run_id: str, objective: ObjectiveSpec
 ) -> ObjectiveReading:
-    """The result the run declared, or why there is none.
+    """Read the result the run declared, its uncertainty, and why there is none.
 
     Only ``IAX_RESULT`` scores. Aggregating a progress curve — the old
     ``min(values)`` — rewarded whichever trial rolled the dice most times,
-    and rewarded a crashed run for one lucky step before it died.
+    and rewarded a crashed run for one lucky step before it died. Each
+    declared result is one observation: a single evaluation prints one, a
+    fold or seed loop prints one per fold, and ``objective.aggregate`` says
+    how they become one score.
     """
     results = store.read_results(run_id)
     if not results:
         return ObjectiveReading(miss_reason="no_result")
 
-    values: dict[str, float] = {}
+    final: dict[str, float] = {}
     for record in results:
-        values.update(record.values)
-    observed = sorted(values)
-
-    if objective.metric not in values:
+        final.update(record.values)
+    observed = sorted(final)
+    if objective.metric not in final:
         return ObjectiveReading(
-            final_metrics=values,
+            final_metrics=final,
             declared_results=observed,
             miss_reason="metric_absent",
         )
-    value = values[objective.metric]
-    if not math.isfinite(value):
-        return ObjectiveReading(
-            final_metrics=values,
-            declared_results=observed,
-            miss_reason="not_finite",
+
+    values = list(_scored(results, objective))
+    if not values:
+        # A baseline the workload never declared is its own failure: scoring
+        # the raw metric instead would rank this trial on a different scale
+        # from the rest, which is the whole thing `baseline_metric` prevents.
+        reason = (
+            "baseline_absent"
+            if objective.baseline_metric is not None and objective.baseline_metric not in observed
+            else "not_finite"
         )
+        return ObjectiveReading(
+            final_metrics=final,
+            declared_results=observed,
+            miss_reason=reason,
+        )
+    value, stderr = _aggregate(values, objective)
     return ObjectiveReading(
-        value=value, final_metrics=values, declared_results=observed
+        value=value,
+        stderr=stderr,
+        n_observations=len(values),
+        final_metrics=final,
+        declared_results=observed,
     )
+
+
+def _aggregate(values: list[float], objective: ObjectiveSpec) -> tuple[float, float | None]:
+    """One score out of many observations, and how sure of it we are.
+
+    Three kinds of observation need three answers. Under ``best`` they are
+    stages of one run, so their spread measures training progress rather than
+    uncertainty and no standard error is defined. Under ``mean`` they are
+    independent evaluations of one configuration, so the error of their
+    average shrinks with their count. Under ``bootstrap`` they are resamples
+    of a *single* evaluation: their spread already is the standard error of
+    the statistic, and dividing it again would shrink the interval by exactly
+    the factor the resampling exists to expose — while the count is a
+    computational knob, so confidence would become something a workload could
+    buy by resampling longer.
+    """
+    if objective.aggregate == "best":
+        return (max(values) if objective.mode == "max" else min(values)), None
+    mean = statistics.fmean(values)
+    if len(values) < 2:
+        return mean, None
+    spread = statistics.stdev(values)
+    if objective.aggregate == "bootstrap":
+        return mean, spread
+    return mean, spread / math.sqrt(len(values))
+
+
+def _scored(results: list[ResultRecord], objective: ObjectiveSpec) -> Iterator[float]:
+    """Every declared result that carries a usable value of the objective.
+
+    With a baseline, the two metrics are paired *within one declared result*.
+    Taking the best metric and the best baseline separately would produce a
+    lift no single observation ever achieved.
+    """
+    for record in results:
+        if objective.metric not in record.values:
+            continue
+        value = record.values[objective.metric]
+        if objective.baseline_metric is not None:
+            if objective.baseline_metric not in record.values:
+                continue
+            value -= record.values[objective.baseline_metric]
+        if math.isfinite(value):
+            yield value
 
 
 def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool:
@@ -89,7 +188,7 @@ def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool
 
 
 def best_of(trials: list[TrialRecord], mode: str) -> TrialRecord | None:
-    """The best *completed* trial.
+    """Return the best *completed* trial.
 
     A crashed trial can report a good value moments before it dies — an OOM
     kill mid-epoch, a diverging run that prints one lucky step. Letting such a
@@ -106,44 +205,54 @@ def best_of(trials: list[TrialRecord], mode: str) -> TrialRecord | None:
     ]
     if not scored:
         return None
-    key = (
-        (lambda t: -t.objective_value)
-        if mode == "max"
-        else (lambda t: t.objective_value)
-    )  # type: ignore[operator]
-    return min(scored, key=key)  # type: ignore[arg-type]
+
+    def _key(trial: TrialRecord) -> float:
+        # scored is filtered above to non-None, finite objective_value; cast makes
+        # that already-proven invariant visible to the type checker.
+        value = cast("float", trial.objective_value)
+        return -value if mode == "max" else value
+
+    return min(scored, key=_key)
 
 
 def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     return best_of(state.trials, mode)
 
 
-def trial_history(trials: list[TrialRecord]) -> list[dict[str, Any]]:
+def trial_history(trials: list[TrialRecord]) -> list[CampaignHistoryEntry]:
     """Every trial an agent can learn from: scored ones and failures alike."""
     return [
-        {
-            "trial_id": t.trial_id,
-            "status": t.status,
-            "objective_value": t.objective_value,
-            "params": t.params,
-            "error": t.error,
-        }
+        CampaignHistoryEntry(
+            trial_id=t.trial_id,
+            status=t.status,
+            objective_value=t.objective_value,
+            params=t.params,
+            error=t.error,
+        )
         for t in trials
         if t.objective_value is not None or t.error is not None
     ]
 
 
-def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any]:
-    """The evidence block an agent plans from, without a CampaignState.
+def summarize_trials(  # ast-grep-ignore: no-dict-return-annotation
+    trials: list[TrialRecord], goal: GoalSpec
+) -> dict[str, Any]:
+    """Return the evidence block an agent plans from, without a CampaignState.
 
     A strategy sees trials, not campaigns. This is the same history and best
     trial that ``summarize_campaign`` reports, so the agent and the dashboard
     never disagree about what happened.
+
+    Serialised on purpose: this is the prompt boundary. Its only consumer is
+    ``agents.prompts.round_brief``, whose other caller hands it
+    ``summarize_campaign(...).model_dump(mode="json")`` — one shape of evidence
+    for both briefs. Typing one side and not the other would split that
+    contract, so both stay JSON-shaped until the pair is typed together.
     """
     best = best_of(trials, goal.objective.mode)
-    return {
+    return {  # ast-grep-ignore: no-dict-literal-return  # prompt boundary, see the docstring
         "trials_total": len(trials),
-        "history": trial_history(trials),
+        "history": [entry.model_dump(mode="json") for entry in trial_history(trials)],
         "best": (
             {
                 "trial_id": best.trial_id,
@@ -157,51 +266,280 @@ def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any
     }
 
 
-def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
+#: Two-sided 95% normal quantile. The intervals below are normal
+#: approximations over a handful of folds, so they are indicative, not exact:
+#: their job is to stop a campaign announcing a lead the data cannot carry,
+#: and for that a slightly narrow interval still beats no interval at all.
+Z95 = 1.959963984540054
+
+
+def confidence_interval(value: float | None, stderr: float | None) -> tuple[float, float] | None:
+    """Return the 95% interval around a score, or ``None`` when nothing measured it."""
+    if value is None or stderr is None:
+        return None
+    return (value - Z95 * stderr, value + Z95 * stderr)
+
+
+def campaign_verdict(state: CampaignState, goal: GoalSpec) -> CampaignVerdict:
+    """Whether the campaign actually found anything, decided in code.
+
+    Two questions a report must not leave to the reader. First, is the best
+    trial distinguishable from the second best, or is the ranking noise? The
+    best of many noisy trials beats its runner-up by construction, so a
+    headline that names a winner without this check is reporting the
+    selection, not a result. Second, when the objective is a lift over a
+    baseline the trial reported itself, does that lift clear zero?
+
+    ``None`` on either answer means *not measured* — the objective takes the
+    best observation and so carries no spread — which is a different claim
+    from ``False``, and the report must keep them apart.
+    """
+    mode = goal.objective.mode
+    ranked = sorted(
+        (t for t in state.trials if t.status == "completed" and t.objective_value is not None),
+        key=lambda t: cast("float", t.objective_value),
+        reverse=mode == "max",
+    )
+    best = ranked[0] if ranked else None
+    runner_up = ranked[1] if len(ranked) > 1 else None
+
+    margin, separated = _separation(best, runner_up, mode)
+
+    beats_baseline: bool | None = None
+    if goal.objective.baseline_metric is not None and best is not None:
+        interval = confidence_interval(best.objective_value, best.objective_stderr)
+        if interval is not None:
+            beats_baseline = interval[0] > 0 if mode == "max" else interval[1] < 0
+
+    return CampaignVerdict(
+        best_trial_id=best.trial_id if best else None,
+        runner_up_trial_id=runner_up.trial_id if runner_up else None,
+        margin=margin,
+        separated=separated,
+        beats_baseline=beats_baseline,
+        confidence=0.95,
+    )
+
+
+def _separation(
+    best: TrialRecord | None, runner_up: TrialRecord | None, mode: str
+) -> tuple[float | None, bool | None]:
+    """Measure the best trial's lead over the runner-up, and whether it clears the noise."""
+    if best is None or runner_up is None:
+        return None, None
+    best_value = cast("float", best.objective_value)
+    runner_value = cast("float", runner_up.objective_value)
+    margin = best_value - runner_value if mode == "max" else runner_value - best_value
+    if best.objective_stderr is None or runner_up.objective_stderr is None:
+        return margin, None
+    spread = math.hypot(best.objective_stderr, runner_up.objective_stderr)
+    return margin, margin > Z95 * spread
+
+
+def evaluate_success(
+    best: BestTrialSummary | None,
+    verdict: CampaignVerdict,
+    criteria: SuccessCriteria,
+    mode: str,
+) -> SuccessReport:
+    """Whether the campaign cleared the bar it set itself, and what it missed.
+
+    Every check reports the evidence it wanted, so a failure reads as an
+    instruction: raise the folds, set a baseline, run more trials. The one
+    rule that is easy to get wrong is that *unmeasured* fails a criterion
+    that asks for measurement — a campaign cannot satisfy "show me the lead
+    is real" by never looking.
+    """
+    if not criteria.declared:
+        return SuccessReport(declared=False, met=None, unmet=[])
+    if best is None or best.objective_value is None:
+        return SuccessReport(
+            declared=True,
+            met=False,
+            unmet=["no trial produced a usable objective value"],
+        )
+
+    unmet = [
+        *_objective_shortfall(best.objective_value, criteria, mode),
+        *_observation_shortfall(best.n_observations or 0, criteria),
+        *_separation_shortfall(verdict, criteria),
+        *_baseline_shortfall(verdict, criteria),
+    ]
+    return SuccessReport(declared=True, met=not unmet, unmet=unmet)
+
+
+def _objective_shortfall(value: float, criteria: SuccessCriteria, mode: str) -> list[str]:
+    if criteria.min_objective is None:
+        return []
+    cleared = value >= criteria.min_objective if mode == "max" else value <= criteria.min_objective
+    if cleared:
+        return []
+    direction = "at least" if mode == "max" else "at most"
+    return [
+        f"objective {value:.6g} does not reach the required "
+        f"{direction} {criteria.min_objective:.6g}"
+    ]
+
+
+def _observation_shortfall(n: int, criteria: SuccessCriteria) -> list[str]:
+    if criteria.min_observations is None or n >= criteria.min_observations:
+        return []
+    return [
+        f"the score rests on {n} observation{'' if n == 1 else 's'}, "
+        f"fewer than the required {criteria.min_observations}"
+    ]
+
+
+def _separation_shortfall(verdict: CampaignVerdict, criteria: SuccessCriteria) -> list[str]:
+    if not criteria.require_separation:
+        return []
+    if verdict.separated is None:
+        return [
+            "separation from the runner-up was never measured; the "
+            "objective needs `aggregate: mean` or `bootstrap`, and a second "
+            "scored trial"
+        ]
+    if not verdict.separated:
+        return [f"the lead over {verdict.runner_up_trial_id} is within the noise at 95% confidence"]
+    return []
+
+
+def _baseline_shortfall(verdict: CampaignVerdict, criteria: SuccessCriteria) -> list[str]:
+    if not criteria.require_beats_baseline:
+        return []
+    if verdict.beats_baseline is None:
+        return [
+            "the comparison against the baseline was never measured; the "
+            "objective needs `baseline_metric`, and `aggregate: mean` or "
+            "`bootstrap`"
+        ]
+    if not verdict.beats_baseline:
+        return ["the interval does not clear the baseline"]
+    return []
+
+
+class ResultView(Protocol):
+    """What `result_lines` needs to speak a verdict: a summary or a loop report."""
+
+    @property
+    def objective(self) -> ObjectiveSpec | None: ...
+    @property
+    def best(self) -> BestTrialSummary | None: ...
+    @property
+    def verdict(self) -> CampaignVerdict | None: ...
+    @property
+    def success(self) -> SuccessReport | None: ...
+
+
+def result_lines(summary: ResultView) -> list[str]:
+    """Speak the campaign's finding, in the words a report should use.
+
+    One place decides how a verdict is spoken, so the CLI, the loop and the
+    dashboard cannot disagree about whether a campaign found something. The
+    rules it encodes: a score is never printed without its interval when one
+    exists, a lead inside the noise is named as such instead of being
+    announced, and nothing is claimed about a comparison nobody measured.
+    """
+    best = summary.best
+    if best is None or best.objective_value is None or summary.objective is None:
+        return []
+    metric = summary.objective.metric
+    baseline = summary.objective.baseline_metric
+    scale = f"{metric} lift over {baseline}" if baseline else metric
+
+    score = f"{best.objective_value:.6g}"
+    if best.stderr is not None:
+        score += f" ± {best.stderr:.3g}"
+        if best.n_observations:
+            score += f" (SE over {best.n_observations} observations)"
+    lines = [f"{best.trial_id}: {scale} = {score}"]
+    lines.extend(_verdict_lines(summary.verdict))
+    lines.extend(_success_lines(summary.success))
+    return lines
+
+
+def _verdict_lines(verdict: CampaignVerdict | None) -> list[str]:
+    if verdict is None:
+        return []
+    lines: list[str] = []
+    if verdict.runner_up_trial_id and verdict.separated is not None:
+        margin = cast("float", verdict.margin)
+        lines.append(
+            f"lead of {margin:.3g} beats {verdict.runner_up_trial_id} at 95% confidence"
+            if verdict.separated
+            else f"lead of {margin:.3g} is not distinguishable from "
+            f"{verdict.runner_up_trial_id} at 95% confidence; the ranking is within the noise"
+        )
+    if verdict.beats_baseline is not None:
+        lines.append(
+            "the interval clears the baseline"
+            if verdict.beats_baseline
+            else "the interval does not clear the baseline: this campaign has "
+            "not shown the model beats it"
+        )
+    return lines
+
+
+def _success_lines(success: SuccessReport | None) -> list[str]:
+    if success is None or not success.declared:
+        return [
+            "no success criteria were declared, so this result cannot be "
+            "called a success or a failure"
+        ]
+    if success.met:
+        return ["success criteria met"]
+    return ["success criteria NOT met: " + "; ".join(success.unmet)]
+
+
+def summarize_campaign(state: CampaignState, goal: GoalSpec) -> CampaignSummary:
     by_status: dict[str, int] = {}
     for trial in state.trials:
         by_status[trial.status] = by_status.get(trial.status, 0) + 1
     best = best_trial(state, goal.objective.mode)
-    history = trial_history(state.trials)
-    gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
-    cost = (
-        gpu_hours * goal.budget.gpu_hour_rate
-        if goal.budget.gpu_hour_rate is not None
+    best_block = (
+        BestTrialSummary(
+            trial_id=best.trial_id,
+            run_id=best.run_id,
+            objective_value=best.objective_value,
+            stderr=best.objective_stderr,
+            n_observations=best.objective_observations,
+            ci95=confidence_interval(best.objective_value, best.objective_stderr),
+            params=best.params,
+        )
+        if best
         else None
     )
-    return {
-        "campaign_id": state.campaign_id,
-        "name": state.name,
-        "goal": state.goal,
-        "status": state.status,
-        "stop_reason": state.stop_reason,
-        "created_at": state.created_at.isoformat(),
-        "last_advanced_at": state.updated_at.isoformat(),
-        "gpu_hours": round(gpu_hours, 4),
-        "estimated_cost": round(cost, 2) if cost is not None else None,
-        "budget": {
-            "max_trials": goal.budget.max_trials,
-            "max_gpu_hours": goal.budget.max_gpu_hours,
-            "gpu_hour_rate": goal.budget.gpu_hour_rate,
-        },
-        "objective": {
-            "metric": goal.objective.metric,
-            "mode": goal.objective.mode,
-            "target": goal.objective.target,
-        },
-        "rounds": state.rounds,
-        "agent_calls": state.agent_calls,
-        "trials_by_status": by_status,
-        "trials_total": len(state.trials),
-        "best": (
-            {
-                "trial_id": best.trial_id,
-                "run_id": best.run_id,
-                "objective_value": best.objective_value,
-                "params": best.params,
-            }
-            if best
-            else None
+    verdict = campaign_verdict(state, goal)
+    history = trial_history(state.trials)
+    gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
+    wall_hours = sum(t.wall_hours or 0.0 for t in state.trials)
+    cost = gpu_hours * goal.budget.gpu_hour_rate if goal.budget.gpu_hour_rate is not None else None
+    return CampaignSummary(
+        campaign_id=state.campaign_id,
+        name=state.name,
+        goal=state.goal,
+        status=state.status,
+        stop_reason=state.stop_reason,
+        created_at=state.created_at.isoformat(),
+        last_advanced_at=state.updated_at.isoformat(),
+        gpu_hours=round(gpu_hours, 4),
+        wall_hours=round(wall_hours, 4),
+        estimated_cost=round(cost, 2) if cost is not None else None,
+        budget=BudgetSummary(
+            max_trials=goal.budget.max_trials,
+            max_gpu_hours=goal.budget.max_gpu_hours,
+            gpu_hour_rate=goal.budget.gpu_hour_rate,
         ),
-        "history": history,
-    }
+        # copy, don't alias: `budget` above is a fresh BudgetSummary, and a summary that
+        # shared the goal's ObjectiveSpec instance would let a mutation of either reach the
+        # other. pydantic v2 stores the instance as-is, so the copy has to be explicit.
+        objective=goal.objective.model_copy(),
+        rounds=state.rounds,
+        agent_calls=state.agent_calls,
+        trials_by_status=by_status,
+        trials_total=len(state.trials),
+        best=best_block,
+        verdict=verdict,
+        success=evaluate_success(best_block, verdict, goal.success_criteria, goal.objective.mode),
+        history=history,
+    )

@@ -20,7 +20,7 @@ summarizes the fields; if it disagrees with the code, the code wins.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `entrypoint` | string | — (required) | e.g. `python`, `python3`. Always required by the schema, even when `train`/`evaluate` are set — but then it is never run. |
+| `entrypoint` | string | — (required) | e.g. `uv run`, `python3`. Split on whitespace, so a runner and its flags belong here. Always required by the schema, even when `train`/`evaluate` are set — but then it is never run. |
 | `args` | list[string] | `[]` | e.g. `["-m", "pkg.cli", "train", "cfg.yaml"]`. Appended to **every** phase that runs — `entrypoint` alone, or both `train` and `evaluate` when declared. `{name}` placeholders a campaign substitutes per trial live here, not in `train`/`evaluate` (those two are static strings, never templated). |
 | `train` | string \| null | `null` | Optional first phase's command. Requires `evaluate` too — declaring only one is rejected. When both are set, `entrypoint` is unused and `train`/`evaluate` run instead, in order. May report progress (`IAX_METRIC`); a result (`IAX_RESULT`) it prints is discarded with a warning. |
 | `evaluate` | string \| null | `null` | Optional second phase's command. Requires `train` too. The only phase whose declared result (`IAX_RESULT`) scores. |

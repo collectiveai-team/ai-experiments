@@ -8,7 +8,12 @@ single trial runs — always run it.
 ## objective
 
 ```yaml
-objective: { metric: val_loss, mode: min, target: 0.05 }
+objective:
+  metric: val_loss
+  mode: min
+  target: 0.05
+  aggregate: best          # best | mean | bootstrap
+  # baseline_metric: val_loss_baseline
 ```
 
 - `metric` must be **exactly** a key in the `IAX_RESULT` line the workload's
@@ -21,6 +26,44 @@ objective: { metric: val_loss, mode: min, target: 0.05 }
 - `target` is optional. With it, the campaign stops the moment a trial reaches
   it (`stop_reason: target_reached`, `iax loop` exits 0). Without it, the
   campaign always spends its budget and `iax loop` always exits 4.
+- `aggregate` collapses a trial's observations into one score. `best` treats
+  the reported lines as stages of one training run and takes the extreme.
+  `mean` treats them as independent evaluations of the same configuration —
+  folds, seeds, held-out windows — and reports the average with its standard
+  error. `bootstrap` treats them as resamples of one evaluation and reports
+  that spread *as* the standard error, without dividing by √k. Only `mean` and
+  `bootstrap` produce the interval that `require_separation` and
+  `require_beats_baseline` are checked against; under `best` both come back
+  *not measured*.
+- `baseline_metric` turns the objective into a lift: the harness scores
+  `metric - baseline_metric`, **paired inside each observation**, so the
+  workload must print both keys on the same line. Use it whenever the search
+  can change the data a trial is scored on, since raw values from different
+  slices rank a slice rather than a model.
+
+Choosing these is the **defining-goals** skill; this file only says what the
+fields do.
+
+## success_criteria
+
+```yaml
+success_criteria:
+  min_objective: 0.05          # `mode: min` reads this as "at most"
+  min_observations: 10
+  require_separation: true     # needs aggregate: mean or bootstrap
+  require_beats_baseline: true # needs baseline_metric
+```
+
+What the campaign has to show before its result counts, written before it
+runs. Declared criteria are the authority on the outcome: `iax loop` exits 4
+when any of them is unmet, even if `target_reached` fired. A goal that
+declares none reports `met: null` — not a pass — and falls back to the bare
+target check.
+
+A criterion whose evidence was never measured fails: `require_separation`
+under `aggregate: best` has no interval to test, and the campaign cannot
+satisfy it by not looking. `iax campaign validate --strict` refuses a goal
+that asks for evidence its objective cannot produce.
 
 ## search_space
 
@@ -39,6 +82,19 @@ search_space:
   puts almost every sample above `1e-3`.
 - Use `choice` for anything not numeric, and for values a workload only
   accepts from a fixed set.
+- Two optional keys on any parameter:
+
+  ```yaml
+  window_days: { type: choice, values: [30, 90], changes_data: true }
+  patch_size:  { type: choice, values: [8, 16], when: { model: [vit] } }
+  ```
+
+  `changes_data` marks a dimension that changes the data or the labels the
+  trial is scored on, not just how it is fit; preflight warns when one exists
+  without `objective.baseline_metric`. `when` draws the dimension only for
+  trials whose other params match, so a `resnet` trial is never handed a
+  `patch_size` it ignores — those would be duplicate trials the deduplicator
+  cannot see. A `when` may only name unconditional keys.
 - Every key must reach the workload. Params appear as `IAX_PARAMS` (a JSON
   env var) and, when named in `workload.args`, as `{placeholder}`
   substitutions. A key the workload ignores wastes the whole search.
@@ -49,14 +105,15 @@ search_space:
 
 ```yaml
 workload:
-  # `entrypoint` is the single-phase fallback: with both `train` and
-  # `evaluate` set, those two run instead and the entrypoint is unused.
-  entrypoint: python
-  # The trainer's flags live here, not in a top-level `args`: `args` is
-  # appended to every phase, so it would hand the trainer's flags to the
-  # evaluator too.
-  train: "python train.py --epochs 20"
-  evaluate: "python evaluate.py"
+  # Single phase: the entrypoint runs and may declare the result.
+  entrypoint: "uv run"
+  args: ["train.py", "--lr", "{lr}"]   # {param} is substituted per trial
+  # Two phases: with both `train` and `evaluate` set, those two run instead
+  # and the entrypoint is unused. The trainer's flags live in the phase
+  # command, not in `args`: `args` is appended to every phase, so it would
+  # hand the trainer's flags to the evaluator too.
+  # train: "python train.py --epochs 20"
+  # evaluate: "python evaluate.py"
   working_dir: "."                     # relative paths resolve from here
   env: { CUDA_VISIBLE_DEVICES: "0" }
 ```
