@@ -287,6 +287,35 @@ La validación es walk-forward: train expansivo, el bloque siguiente como test y
 un **gap igual al horizonte** entre el fin del train y el inicio del test, para
 que ninguna ventana de train pueda ver el evento que su test predice.
 
+## Qué contestó la campaña
+
+`cmp_8b677e32ecb6`, 24 trials, 24 completos, 0 fallos, 1256 s de máquina.
+
+**Sí, con reservas.** El mejor trial da un lift de **0,162 ± 0,061** sobre 17
+folds: el intervalo despeja el cero y los tres criterios se cumplen. Es
+`logreg` — el modelo más simple de los dos — con ventanas de 180 días y
+remuestreo diario, sobre `union`.
+
+Lo que sostiene la respuesta no es ese trial solo, que al fin y al cabo es el
+máximo de 24 y como tal está sesgado hacia arriba. Es que **los 24 trials dan
+lift positivo** (de 0,036 a 0,162) y **9 de 24 despejan el cero por su cuenta**,
+sin ser el máximo de nada. Los folds válidos fueron 13 a 17 en todos, así que
+`min_observations: 10` no eliminó a nadie: el cambio de 12 a 20 folds hizo
+exactamente lo que se le pidió.
+
+Dos reservas que el `met: true` no dice:
+
+- **El estimador agrupado concuerda en dirección pero no en magnitud.** Positivo
+  en 22 de 24 trials, pero para el ganador da 0,071 ± 0,051, que *no* despeja el
+  cero. La lectura honesta es que el efecto existe y es más chico que lo que
+  sugiere el promedio de folds del trial seleccionado. (Esto también matiza la
+  medición de la sección anterior: el desacuerdo *de signo* entre los dos
+  estimadores era propio de la familia de configuraciones que se midió ahí, no
+  general.)
+- **No hay ganador.** `t021` le saca 0,011 a `t012`, dentro del ruido. La
+  campaña lo reporta y no lo usa como criterio, que es la razón por la que
+  `require_separation` está en `false`.
+
 ## Rondas que cambian el código
 
 `goal.yaml` habilita variantes: una ronda puede agregar una feature o un modelo
