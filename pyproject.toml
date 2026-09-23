@@ -53,7 +53,7 @@ dev = [
   # Pinned exactly to the ruff-pre-commit rev in prek.toml: `uv run ruff` and the gate
   # that blocks a commit must not disagree about what counts as a lint error. A floor is not
   # enough: uv resolved >=0.15.22 straight to 0.16.8, reintroducing the skew.
-  "ruff==0.15.22",
+  "ruff==0.16.7",
   "psutil>=5.9.0",
 ]
 
