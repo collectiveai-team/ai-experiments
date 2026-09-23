@@ -125,10 +125,51 @@ class CampaignReview(BaseModel):
     note: str = ""
 
 
-EscalationItem = EscalationRequest | CampaignReview
+class ChangeRequest(BaseModel):
+    """One campaign that cannot proceed until somebody changes the code.
+
+    A campaign answers a question about parameters. When the evidence says the
+    blocker is a defect instead — every trial failing on the same error, a
+    workload that reports nothing, a harness that returns NaN at the edge of
+    the space — no amount of searching fixes it, and spending the budget only
+    buys more copies of the same failure.
+
+    This is the hand-off that leaves the loop: a ticket a development flow can
+    pick up. It carries evidence, not a diagnosis to trust — `trial_ids` and
+    `run_ids` point at records the reader can check, and `error_tail` is
+    workload output, so it is untrusted text that must never be interpolated
+    into a shell command.
+    """
+
+    kind: Literal["change"] = "change"
+    campaign_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    title: str
+    rationale: str = ""
+    #: Where the reporter thinks the defect lives. A hint for the flow, not a fact.
+    files: list[str] = Field(default_factory=list)
+    trial_ids: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    error_tail: str = ""
+    #: What proves the change worked, in one sentence a test can be written from.
+    acceptance: str = ""
+    #: Stable across repeated escalations of the same defect, so a connector
+    #: can refuse to launch the same development flow twice.
+    source_key: str = ""
+    note: str = (
+        "The campaign stopped with `blocked_on_change`. Land the fix on an "
+        "experimentation branch, then start a new campaign from the same goal: "
+        "trials measured before a code change are not comparable with the ones after."
+    )
+
+
+EscalationItem = EscalationRequest | CampaignReview | ChangeRequest
 
 #: Filename prefix that marks a campaign review inside the escalation inbox.
 CAMPAIGN_PREFIX = "campaign_"
+
+#: Filename prefix that marks a development hand-off inside the inbox.
+CHANGE_PREFIX = "change_"
 
 
 def escalate(
@@ -190,13 +231,33 @@ def list_escalations(store: FilesystemRunStore) -> list[EscalationItem]:
     for path in sorted(escalations_dir.glob("*.json")):
         try:
             payload = json.loads(path.read_text())
-            if path.name.startswith(CAMPAIGN_PREFIX):
+            if path.name.startswith(CHANGE_PREFIX):
+                items.append(ChangeRequest(**payload))
+            elif path.name.startswith(CAMPAIGN_PREFIX):
                 items.append(CampaignReview(**payload))
             else:
                 items.append(EscalationRequest(**payload))
         except (json.JSONDecodeError, ValidationError, OSError):
             continue
     return items
+
+
+def record_change_request(store: FilesystemRunStore, request: ChangeRequest) -> Path:
+    """Put a development hand-off in the inbox and return where it landed."""
+    escalations_dir = store.root / "_escalations"
+    escalations_dir.mkdir(parents=True, exist_ok=True)
+    path = escalations_dir / f"{CHANGE_PREFIX}{request.campaign_id}.json"
+    path.write_text(request.model_dump_json(indent=2))
+    return path
+
+
+def clear_change_request(store: FilesystemRunStore, campaign_id: str) -> None:
+    path = store.root / "_escalations" / f"{CHANGE_PREFIX}{campaign_id}.json"
+    path.unlink(missing_ok=True)
+
+
+def list_change_requests(store: FilesystemRunStore) -> list[ChangeRequest]:
+    return [i for i in list_escalations(store) if isinstance(i, ChangeRequest)]
 
 
 def list_run_escalations(store: FilesystemRunStore) -> list[EscalationRequest]:

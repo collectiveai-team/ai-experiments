@@ -8,14 +8,18 @@ the user's first `iax validate`.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import sysconfig
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from ai_experiments import scaffold
 from ai_experiments.cli import app
+from ai_experiments.preflight import workload_warnings
 from ai_experiments.schemas import ExperimentManifest, GoalSpec
 
 runner = CliRunner()
@@ -42,6 +46,40 @@ def test_goal_template_validates_against_the_schema(tmp_path):
     # The goal validator mirrors the objective onto monitoring; a template that
     # names a metric nobody monitors would score nothing.
     assert goal.monitoring.objective_metric == "loss"
+
+
+@pytest.mark.parametrize("kind", ["manifest", "goal"])
+def test_template_entrypoint_resolves_without_the_harness_venv(
+    tmp_path, kind, monkeypatch
+):
+    """A template that validates but cannot spawn is still a broken scaffold.
+
+    `entrypoint: python` passed every check here and then failed at the first
+    trial with `FileNotFoundError: 'python'`. PEP 394 only guarantees
+    `python3`, so a bare `python` is absent on macOS and on Debian without
+    `python-is-python3` -- it resolves only inside an activated venv, which is
+    why the suite never saw it: pytest runs under `uv run`, so `.venv/bin` is
+    on PATH and every name resolves.
+
+    The supervisor spawns the workload with the PATH it inherited, and a user
+    who runs `uv tool install ai-experiments` or `.venv/bin/iax` has no
+    `.venv/bin` there. So drop it before checking: the shipped entrypoint has
+    to resolve on the machine's own PATH, not on the harness's.
+    """
+    venv_bin = Path(sysconfig.get_path("scripts"))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            entry
+            for entry in os.environ["PATH"].split(os.pathsep)
+            if entry and Path(entry) != venv_bin
+        ),
+    )
+    path = tmp_path / f"{kind}.yaml"
+    scaffold.write(kind, path)
+    schema = ExperimentManifest if kind == "manifest" else GoalSpec
+
+    assert workload_warnings(schema.from_yaml(path)) == []
 
 
 def test_workload_template_runs_and_reports_metrics(tmp_path):

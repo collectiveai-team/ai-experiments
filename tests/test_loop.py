@@ -311,3 +311,136 @@ def test_loop_command_rejects_an_invalid_goal(tmp_path):
     result = runner.invoke(app, ["loop", str(path)])
 
     assert result.exit_code == 2
+
+
+def test_max_rounds_collects_the_round_it_already_paid_for(tmp_path):
+    """A trial that finished before the limit must not be thrown away.
+
+    `FakeBackend` completes a run on the next inspect, exactly like a real
+    backend whose process ends between two ticks. Stopping without that final
+    read left the trial `submitted` forever, and its measured value unread
+    (found by a real campaign on vjepa-experiment: a GPU trial ran, completed,
+    and never entered the leaderboard).
+    """
+    orchestrator, store = _harness(tmp_path)
+    goal = _goal(objective={"metric": "loss", "mode": "min", "target": 1e-12})
+
+    report = run_loop(
+        goal, store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+
+    state = CampaignStore(store.root).read_state(report.campaign_id)
+    assert state.trials
+    assert [t.status for t in state.trials] == ["completed"] * len(state.trials)
+    assert all(t.objective_value is not None for t in state.trials)
+    assert report.pending_trials == []
+    assert report.best is not None
+
+
+def test_the_report_names_the_trials_it_could_not_collect(tmp_path):
+    """A campaign with work in flight is not an answer, and must not read as one."""
+
+    class SlowBackend(FakeBackend):
+        def inspect(self, run_id):  # never finishes
+            return self.store.read_status(run_id)
+
+    store = FilesystemRunStore(tmp_path / "runs")
+    orchestrator = CampaignOrchestrator(
+        store,
+        CampaignStore(store.root),
+        backend_factory=lambda goal: SlowBackend(store),
+    )
+
+    report = run_loop(
+        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+
+    assert report.loop_stop == "max_rounds"
+    assert report.pending_trials
+    assert not report.target_reached
+
+
+def test_reconcile_finishes_a_campaign_whose_last_trial_met_the_target(tmp_path):
+    """The target can be met by the very round the limit interrupted."""
+    orchestrator, store = _harness(tmp_path)
+
+    run_loop(
+        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
+    )
+    campaign_id = CampaignStore(store.root).list_campaigns()[0]
+    state = orchestrator.reconcile(campaign_id)
+
+    assert state.status in {"running", "completed"}
+    assert all(t.status != "submitted" for t in state.trials)
+
+
+def test_a_review_that_finds_a_defect_stops_the_campaign_and_files_a_ticket(tmp_path):
+    """No parameter fixes a bug, so the loop must stop and ask for a change."""
+    agent = StubAgentRunner(
+        [
+            {
+                "verdict": "needs_change",
+                "reason": "every trial dies in the loader, whatever x is",
+                "change": {
+                    "title": "the loader crashes on an empty window",
+                    "files": ["toy.py"],
+                    "acceptance": "a window of zero frames returns an empty batch",
+                },
+            }
+        ]
+    )
+    orchestrator, store = _harness(tmp_path, agent_runner=agent)
+    goal = _goal(
+        objective={"metric": "loss", "mode": "min", "target": 1e-12},
+        analysis={"review_between_rounds": True},
+    )
+
+    report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
+
+    assert report.loop_stop == "needs_change"
+    assert not report.target_reached
+    assert report.change_request is not None
+    assert report.change_request["title"] == "the loader crashes on an empty window"
+    assert report.change_request["files"] == ["toy.py"]
+    assert report.change_request["rationale"].startswith("every trial dies")
+    assert report.change_request["source_key"].startswith(f"iax:{report.campaign_id}:")
+
+    state = CampaignStore(store.root).read_state(report.campaign_id)
+    assert state.status == "stopped"
+    assert state.stop_reason == "blocked_on_change"
+
+
+def test_the_ticket_reaches_the_escalation_inbox(tmp_path):
+    """The ticket has to outlive the loop process, or nobody ever reads it."""
+    from ai_experiments.monitoring.escalation import list_change_requests
+
+    agent = StubAgentRunner(
+        [{"verdict": "needs_change", "reason": "the harness reports no metric at all"}]
+    )
+    orchestrator, store = _harness(tmp_path, agent_runner=agent)
+    goal = _goal(
+        objective={"metric": "loss", "mode": "min", "target": 1e-12},
+        analysis={"review_between_rounds": True},
+    )
+
+    report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
+
+    tickets = list_change_requests(store)
+    assert [t.campaign_id for t in tickets] == [report.campaign_id]
+    # Without a title from the agent, the ticket still names the campaign.
+    assert report.campaign_id in tickets[0].title or goal.name in tickets[0].title
+
+
+def test_a_defect_verdict_does_not_need_the_agent_to_fill_the_change_block(tmp_path):
+    agent = StubAgentRunner([{"verdict": "needs_change", "reason": "NaN everywhere"}])
+    orchestrator, store = _harness(tmp_path, agent_runner=agent)
+    goal = _goal(
+        objective={"metric": "loss", "mode": "min", "target": 1e-12},
+        analysis={"review_between_rounds": True},
+    )
+
+    report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
+
+    assert report.change_request is not None
+    assert report.change_request["files"] == []
+    assert report.change_request["acceptance"] == ""

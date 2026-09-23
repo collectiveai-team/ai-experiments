@@ -47,7 +47,7 @@ success_criteria:           # what this campaign has to show; declare it now
   # require_separation: true        # needs aggregate: mean or bootstrap
   # require_beats_baseline: true    # needs baseline_metric
 workload:
-  entrypoint: "python train.py"
+  entrypoint: "uv run train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
   working_dir: .                # params without placeholders appended as --name value
 budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0,

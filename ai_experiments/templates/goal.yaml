@@ -57,7 +57,7 @@ success_criteria:
                           # objective.baseline_metric.
 
 workload:
-  entrypoint: python
+  entrypoint: "uv run"    # or "python3" if you do not use uv
   args: ["train.py"]
   working_dir: "."
 

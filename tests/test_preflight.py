@@ -347,6 +347,25 @@ def test_a_key_the_workload_cannot_parse_is_named_with_its_flag(tmp_path):
     assert "label_source" not in warnings[0]
 
 
+def test_the_probe_asks_the_workload_not_the_launcher(tmp_path):
+    """`uv run` and `python -m` are launchers; their help is not the answer.
+
+    With the script in `args` the entrypoint alone is an interpreter, and
+    `python --help` lists python's own long options -- enough to look like a
+    parser that declared something, and none of it the workload's. Every
+    search space key then reads as undeclared, on every campaign start.
+    """
+    goal = _goal_with(
+        tmp_path,
+        _ACCEPTS,
+        {"window_days": {"type": "choice", "values": [30]}},
+    )
+    goal.workload.args = [str(tmp_path / "train.py")]
+    goal.workload.entrypoint = sys.executable
+
+    assert workload_warnings(goal) == []
+
+
 def test_the_probe_respects_the_workload_flag_style(tmp_path):
     goal = _goal_with(
         tmp_path,

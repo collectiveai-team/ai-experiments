@@ -59,7 +59,10 @@ def workload_warnings(
 
     program = argv[0]
     if _resolves(program, working_dir):
-        return warnings + _flag_warnings(source, argv, working_dir)
+        # The args go into the probe too: `uv run` and `python -m` are
+        # launchers, and `uv run --help` answers for uv, not for the workload
+        # the campaign will actually start.
+        return warnings + _flag_warnings(source, [*argv, *workload.args], working_dir)
     if os.sep in program or program.startswith("."):
         warnings.append(
             f"entrypoint {program!r} is not an executable file "
@@ -101,6 +104,11 @@ def _flag_warnings(
     prints nothing recognizable, a workload that ignores ``--help``. Absence
     of evidence is not evidence the flags are wrong, and a false warning on
     every campaign start would teach people to ignore the real one.
+
+    ``argv`` must be the whole command line, entrypoint *and* args. Probing
+    the entrypoint alone reads the launcher's help -- `uv run --help` lists
+    uv's options, none of which are the workload's, so every search space key
+    looks undeclared.
     """
     if not isinstance(source, GoalSpec) or not source.search_space:
         return []
