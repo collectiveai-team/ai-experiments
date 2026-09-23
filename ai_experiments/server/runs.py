@@ -14,7 +14,15 @@ from fastapi import APIRouter, HTTPException
 
 from ai_experiments.backends.factory import backend_for_run
 from ai_experiments.monitoring.rules import diagnose_run
-from ai_experiments.schemas import CancelAck, DiagnosisReport, MetricPoint, RunEvent, RunStatus
+from ai_experiments.responses import CancelAck
+
+# Route return types: FastAPI evaluates them at registration, so they stay runtime imports.
+from ai_experiments.schemas import (  # noqa: TC001
+    DiagnosisReport,
+    MetricPoint,
+    RunEvent,
+    RunStatus,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable

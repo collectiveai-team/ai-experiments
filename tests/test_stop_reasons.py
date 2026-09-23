@@ -25,6 +25,7 @@ ORCHESTRATOR_SOURCE = Path(orchestrator.__file__)
 DECIDERS = (
     "exhausted_reason",
     "objective_contract_broken",
+    "all_trials_failing_reason",
     "target_reached_reason",
     "max_hours_reason",
     "gpu_hours_reason",

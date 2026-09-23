@@ -10,7 +10,7 @@ from ai_experiments.leaderboard import leaderboard_rows
 
 # FastAPI resolves the response annotation at runtime to build the response
 # model, so this one cannot move under TYPE_CHECKING.
-from ai_experiments.schemas import LeaderboardRow  # noqa: TC001
+from ai_experiments.responses import LeaderboardRow  # noqa: TC001
 
 if TYPE_CHECKING:
     from ai_experiments.store.campaign import CampaignStore

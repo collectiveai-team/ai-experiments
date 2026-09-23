@@ -7,7 +7,9 @@ stay inside the sandbox, and a variant that cannot start never costs a round.
 
 from __future__ import annotations
 
+import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -174,10 +176,56 @@ def test_discarding_a_variant_removes_only_that_variant(tmp_path):
     keep = materialize_variant(tmp_path / "campaign", source, [])
     drop = materialize_variant(tmp_path / "campaign", source, [])
 
-    discard_variant(drop)
+    discarded = discard_variant(drop)
 
     assert not (variants_root(tmp_path / "campaign") / drop.variant_id).exists()
     assert (variants_root(tmp_path / "campaign") / keep.variant_id).exists()
+    assert discarded.discarded is True
+    assert discarded.discard_error == ""
+
+
+def test_a_directory_that_survives_the_delete_is_reported_not_swallowed(tmp_path, monkeypatch):
+    """A rejected variant left on disk is one the campaign believes it discarded.
+
+    Saying so is the difference between a leak and a known one.
+    """
+    source = _workload(tmp_path)
+    record = materialize_variant(tmp_path / "campaign", source, [])
+
+    def refuse(path):
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(shutil, "rmtree", refuse)
+    discarded = discard_variant(record)
+
+    assert discarded.discarded is False
+    assert "Device or resource busy" in discarded.discard_error
+    assert Path(record.root).exists()
+
+
+def test_the_delete_is_retried_once(tmp_path, monkeypatch):
+    """A subprocess of the smoke command can still be writing when the check returns.
+
+    The smoke command runs inside the copy.
+    """
+    source = _workload(tmp_path)
+    record = materialize_variant(tmp_path / "campaign", source, [])
+    real = shutil.rmtree
+    calls = []
+
+    def flaky(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError(39, "Directory not empty")
+        real(path)
+
+    monkeypatch.setattr(shutil, "rmtree", flaky)
+    discarded = discard_variant(record)
+
+    assert len(calls) == 2
+    assert discarded.discarded is True
+    assert discarded.discard_error == ""
+    assert not Path(record.root).exists()
 
 
 def test_a_trial_manifest_points_at_the_variant(tmp_path):

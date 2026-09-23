@@ -10,7 +10,6 @@ launch the first batch.
 from __future__ import annotations
 
 import contextlib
-import json
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -19,8 +18,8 @@ from ai_experiments.agents.runner import AgentRunner, CliAgentRunner
 from ai_experiments.agents.strategy import AgentDecision, AgentStrategy
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.backends.factory import get_backend
+from ai_experiments.improve.admission import admit_variant, variant_dir
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
-from ai_experiments.improve.variants import variants_root
 from ai_experiments.planner.analysis import (
     best_trial,
     summarize_campaign,
@@ -28,7 +27,7 @@ from ai_experiments.planner.analysis import (
 from ai_experiments.planner.planner import build_trial_manifest, plan_next_params
 from ai_experiments.planner.strategies import get_strategy
 from ai_experiments.planner.validation import validate_params
-from ai_experiments.preflight import workload_warnings
+from ai_experiments.preflight import goal_warnings, workload_warnings
 from ai_experiments.recovery import recover_lost_trials
 from ai_experiments.schemas import (
     CampaignState,
@@ -49,6 +48,7 @@ from ai_experiments.trial_sync import refresh_trials, update_best
 
 if TYPE_CHECKING:
     from ai_experiments.daemon import TickReport
+    from ai_experiments.improve.variants import VariantEdit, VariantRecord
     from ai_experiments.store import FilesystemRunStore
 
 BackendFactory = Callable[[GoalSpec], ExperimentBackend]
@@ -110,16 +110,21 @@ class CampaignOrchestrator:
         # the server or the daemon never passes through the CLI's check, and a
         # workload that cannot start would otherwise fail max_trials times
         # with nothing saying why up front (#32).
-        warnings = workload_warnings(goal)
-        if warnings:
-            self.campaign_store.append_event(
-                state.campaign_id,
-                RunEvent(
-                    level="warning",
-                    message="workload may not start",
-                    details={"warnings": warnings},
-                ),
-            )
+        # Two different defects, two different events: one says the trials
+        # will not run, the other says they will run and settle nothing.
+        for message, warnings in (
+            ("workload may not start", workload_warnings(goal)),
+            ("goal may not settle anything", goal_warnings(goal)),
+        ):
+            if warnings:
+                self.campaign_store.append_event(
+                    state.campaign_id,
+                    RunEvent(
+                        level="warning",
+                        message=message,
+                        details={"warnings": warnings},
+                    ),
+                )
         return self.advance(state.campaign_id)
 
     def stop(self, campaign_id: str, reason: str = "user_requested") -> CampaignState:
@@ -189,12 +194,44 @@ class CampaignOrchestrator:
         )
         return new_goal
 
-    def suggest(self, campaign_id: str, params: dict[str, Any], note: str = "") -> TrialRecord:
+    def add_variant(
+        self,
+        campaign_id: str,
+        edits: list[VariantEdit],
+        *,
+        hypothesis: str = "",
+        rationale: str = "",
+        parent: str | None = None,
+    ) -> VariantRecord:
+        """Materialize a code variant of the workload and smoke-check it.
+
+        The smoke command's exit code, not the proposer, decides whether the
+        variant may cost trials; see `admit_variant`.
+        """
+        return admit_variant(
+            self.campaign_store,
+            campaign_id,
+            edits,
+            hypothesis=hypothesis,
+            rationale=rationale,
+            parent=parent,
+        )
+
+    def suggest(
+        self,
+        campaign_id: str,
+        params: dict[str, Any],
+        note: str = "",
+        variant_id: str | None = None,
+    ) -> TrialRecord:
         """Queue an agent/human-suggested trial; submitted on the next advance.
 
         A suggestion is a proposal, not an override: it is rejected when the
         campaign can no longer run it, when the params are not in the search
-        space, or when the trial budget is already committed (#13).
+        space, or when the trial budget is already committed (#13). Naming a
+        ``variant_id`` runs it against that variant's copy of the workload —
+        and only if the variant cleared its smoke check, since a round spent
+        on code that cannot start teaches nothing.
         """
         state = self.campaign_store.read_state(campaign_id)
         if state.status not in {"running", "paused"}:
@@ -210,10 +247,23 @@ class CampaignOrchestrator:
                 f"{goal.budget.max_trials}); raise max_trials with "
                 "`iax campaign edit` to make room"
             )
+        if variant_id is not None:
+            variant = self.campaign_store.read_variant(campaign_id, variant_id)
+            if variant is None:
+                raise ValueError(
+                    f"unknown variant {variant_id}; `iax campaign variants "
+                    f"{campaign_id}` lists the ones this campaign has"
+                )
+            if variant.smoke_ok is False:
+                raise ValueError(
+                    f"variant {variant_id} failed its smoke check and was "
+                    "discarded; propose a fixed one instead of running it"
+                )
         trial = TrialRecord(
             trial_id=f"t{len(state.trials):03d}",
             params=params,
             source="agent",
+            variant_id=variant_id,
         )
         state.trials.append(trial)
         self.campaign_store.write_state(state)
@@ -221,7 +271,12 @@ class CampaignOrchestrator:
             campaign_id,
             RunEvent(
                 message="trial suggested",
-                details={"trial_id": trial.trial_id, "params": params, "note": note},
+                details={
+                    "trial_id": trial.trial_id,
+                    "params": params,
+                    "note": note,
+                    "variant_id": variant_id,
+                },
             ),
         )
         return trial
@@ -361,19 +416,34 @@ class CampaignOrchestrator:
             state.campaign_id,
             RunEvent(message="campaign finished", details={"reason": reason}),
         )
+        if reason == "all_trials_failing":
+            # The reason alone sends the reader to the runs directory. The
+            # error is the only thing that tells them what to fix.
+            self.campaign_store.append_event(
+                state.campaign_id,
+                RunEvent(
+                    level="error",
+                    message="campaign gave up: every trial failed",
+                    details={
+                        "failed_trials": len([t for t in state.trials if t.status == "failed"]),
+                        "workload_error": self._last_trial_error(state),
+                    },
+                ),
+            )
         self._write_summary(state, goal)
         return state
 
     # -- internals -------------------------------------------------------------
 
+    def _last_trial_error(self, state: CampaignState) -> str | None:
+        """Return what the workload said on its way out, for the giving-up event."""
+        for trial in reversed(state.trials):
+            if trial.status == "failed" and trial.error:
+                return trial.error
+        return None
+
     def _variant_dir(self, campaign_id: str, variant_id: str | None) -> str | None:
-        """Where a trial's workload variant lives, if it has one."""
-        if not variant_id:
-            return None
-        root = variants_root(self.campaign_store.campaign_dir(campaign_id)) / variant_id
-        if not root.is_dir():
-            raise ValueError(f"variant {variant_id} is missing from {root}")
-        return str(root)
+        return variant_dir(self.campaign_store, campaign_id, variant_id)
 
     def _rounds(self, campaign_id: str) -> RoundLog:
         return RoundLog(self.campaign_store.campaign_dir(campaign_id))
@@ -600,29 +670,9 @@ class CampaignOrchestrator:
         path.write_text(summary.model_dump_json(indent=2))
 
     def _request_agent_review(self, state: CampaignState, goal: GoalSpec) -> None:
-        """Drop a review request for an agent session.
+        from ai_experiments.monitoring.escalation import request_campaign_review
 
-        Analysis beyond the built-in strategy (e.g. reshaping the search space) costs tokens,
-        so it is opt-in via ``analysis.agent_review`` and file-based.
-        """
-        from ai_experiments.monitoring.escalation import CAMPAIGN_PREFIX, CampaignReview
-
-        escalations = self.run_store.root / "_escalations"
-        escalations.mkdir(parents=True, exist_ok=True)
-        review = CampaignReview(
-            campaign_id=state.campaign_id,
-            # Serialised, not the model: `CampaignReview.summary` is a plain dict so a
-            # review written by an older iax still reads back after a summary field moves.
-            summary=summarize_campaign(state, goal).model_dump(mode="json"),
-            note=(
-                "Review trial history; queue better trials via "
-                "`iax campaign suggest <campaign_id> --params '{...}'` "
-                "or stop via `iax campaign stop <campaign_id>`."
-            ),
-        )
-        (escalations / f"{CAMPAIGN_PREFIX}{state.campaign_id}.json").write_text(
-            json.dumps(review.model_dump(mode="json"), indent=2)
-        )
+        request_campaign_review(self.run_store, state, goal)
 
 
 def _default_address_resolver(goal: GoalSpec) -> str | None:

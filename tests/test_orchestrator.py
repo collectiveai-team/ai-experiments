@@ -399,3 +399,96 @@ def test_agent_review_round_keeps_the_escalation_inbox_readable(tmp_path):
     review = items[0]
     assert isinstance(review, CampaignReview)
     assert review.summary["campaign_id"] == state.campaign_id
+
+
+class FailingBackend(FakeBackend):
+    """Every workload dies the same way, the way a mis-spelled flag dies."""
+
+    MESSAGE = "train.py: error: unrecognized arguments: --x 0.5"
+
+    def inspect(self, run_id: str) -> RunStatus:
+        status = self.store.read_status(run_id)
+        if status.status in {"submitted", "running"}:
+            status = self.store.update_status(
+                run_id,
+                status="failed",
+                error=f"workload exited with code 2: {self.MESSAGE}",
+                completed_at=utc_now(),
+            )
+        return status
+
+
+def _failing(tmp_path) -> tuple[CampaignOrchestrator, FailingBackend]:
+    store = FilesystemRunStore(tmp_path / "runs")
+    backend = FailingBackend(store)
+    return (
+        CampaignOrchestrator(
+            store, CampaignStore(store.root), backend_factory=lambda goal: backend
+        ),
+        backend,
+    )
+
+
+def test_a_campaign_whose_every_trial_fails_gives_up_early(tmp_path):
+    """A broken workload fails identically every time.
+
+    Spending the whole budget to learn that costs real compute and ends as a
+    "successful" budget_exhausted with no best trial.
+    """
+    orchestrator, _ = _failing(tmp_path)
+    state = orchestrator.start(_goal(budget=BudgetSpec(max_trials=40, max_parallel=2)))
+
+    for _ in range(40):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status in {"completed", "failed"}:
+            break
+
+    assert state.status == "failed"
+    assert state.stop_reason == "all_trials_failing"
+    assert len(state.trials) < 40
+
+
+def test_the_halt_carries_what_the_workload_actually_said(tmp_path):
+    """The reason is useless without the error; that is the whole point."""
+    orchestrator, _ = _failing(tmp_path)
+    state = orchestrator.start(_goal(budget=BudgetSpec(max_trials=40, max_parallel=2)))
+
+    for _ in range(40):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status in {"completed", "failed"}:
+            break
+
+    events = orchestrator.campaign_store.read_events(state.campaign_id)
+    gave_up = [e for e in events if e.level == "error"]
+    assert gave_up
+    assert FailingBackend.MESSAGE in str(gave_up[-1].details)
+
+
+def test_a_campaign_that_recovers_is_not_halted(tmp_path):
+    """Some failures are flaky. Only an unbroken streak means broken."""
+    store = FilesystemRunStore(tmp_path / "runs")
+    backend = FakeBackend(store)
+    calls = {"n": 0}
+    original = backend.inspect
+
+    def flaky(run_id: str) -> RunStatus:
+        calls["n"] += 1
+        status = store.read_status(run_id)
+        if calls["n"] <= 2 and status.status in {"submitted", "running"}:
+            return store.update_status(
+                run_id, status="failed", error="transient", completed_at=utc_now()
+            )
+        return original(run_id)
+
+    backend.inspect = flaky  # type: ignore[method-assign]
+    orchestrator = CampaignOrchestrator(
+        store, CampaignStore(store.root), backend_factory=lambda goal: backend
+    )
+    state = orchestrator.start(_goal(budget=BudgetSpec(max_trials=8, max_parallel=1)))
+
+    for _ in range(30):
+        state = orchestrator.advance(state.campaign_id)
+        if state.status in {"completed", "failed"}:
+            break
+
+    assert state.stop_reason != "all_trials_failing"

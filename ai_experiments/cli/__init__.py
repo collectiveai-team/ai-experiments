@@ -23,9 +23,10 @@ from ai_experiments.cli_support import (
     not_found,
     report,
 )
+from ai_experiments.schemas import GoalSpec
 
 if TYPE_CHECKING:
-    from ai_experiments.schemas import ExperimentManifest, GoalSpec
+    from ai_experiments.schemas import ExperimentManifest
     from ai_experiments.store import FilesystemRunStore
 
 app = typer.Typer(
@@ -157,9 +158,13 @@ def _preflight(source: ExperimentManifest | GoalSpec, strict: bool, refusal: str
     warnings by default: a Ray workload resolves its entrypoint on the
     cluster, so a binary missing here can still be right (#32).
     """
-    from ai_experiments.preflight import WARNING_PREFIX, workload_warnings
+    from ai_experiments.preflight import WARNING_PREFIX, goal_warnings, workload_warnings
 
     warnings = workload_warnings(source)
+    if isinstance(source, GoalSpec):
+        # A goal carries a second kind of defect the manifest cannot have:
+        # one that makes the campaign run fine and prove nothing.
+        warnings = warnings + goal_warnings(source)
     for warning in warnings:
         typer.echo(f"{WARNING_PREFIX}{warning}", err=True)
     if warnings and strict:
@@ -177,4 +182,5 @@ from ai_experiments.cli import (  # noqa: E402,F401
     runs,
     scaffold,
     serving,
+    variants,
 )

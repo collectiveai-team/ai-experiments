@@ -22,7 +22,8 @@ from ai_experiments.cli_support import (
     invalid_input,
     not_found,
 )
-from ai_experiments.schemas import ExperimentManifest, ReproBundleInfo
+from ai_experiments.responses import ReproBundleInfo
+from ai_experiments.schemas import ExperimentManifest
 from ai_experiments.store import FilesystemRunStore
 
 if TYPE_CHECKING:
@@ -60,9 +61,10 @@ def submit(
 ) -> None:
     try:
         manifest = ExperimentManifest.from_yaml(config)
+    except FileNotFoundError as exc:
+        not_found("manifest", str(config), hint=str(exc))
     except Exception as exc:
-        typer.echo(f"Error: submit failed: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        invalid_input(f"invalid manifest {config}: {exc}")
     # Before the run exists: a refused submit must leave no run behind.
     _preflight(manifest, strict, "workload has warnings and --strict is set")
     try:

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from ai_experiments.planner.analysis import best_trial, extract_objective
 from ai_experiments.schemas import RunEvent, utc_now
-from ai_experiments.stopping import ACTIVE_TRIAL_STATES, trial_gpu_hours
+from ai_experiments.stopping import ACTIVE_TRIAL_STATES, trial_gpu_hours, trial_wall_hours
 
 if TYPE_CHECKING:
     from ai_experiments.backends.base import ExperimentBackend
@@ -113,13 +113,13 @@ def _record_finish(
     """Write a finished run's cost, score and outcome onto its trial."""
     trial.completed_at = run_status.completed_at or utc_now()
     trial.error = run_status.error
-    trial.gpu_hours = trial_gpu_hours(
-        goal,
-        run_status.started_at or run_status.submitted_at,
-        trial.completed_at,
-    )
+    started = run_status.started_at or run_status.submitted_at
+    trial.gpu_hours = trial_gpu_hours(goal, started, trial.completed_at)
+    trial.wall_hours = trial_wall_hours(started, trial.completed_at)
     reading = extract_objective(run_store, run_id, goal.objective)
     trial.objective_value = reading.value
+    trial.objective_stderr = reading.stderr
+    trial.objective_observations = reading.n_observations
     trial.final_metrics = reading.final_metrics
     miss = reading.miss_message(goal.objective.metric)
     if miss and trial.status == "completed":

@@ -19,6 +19,13 @@ manual_test/
 team.json
 *.pyc
 *.pyo
+
+# El link privado del dataset y el artefacto descargado nunca se versionan.
+examples/maintenance_events/dataset.local.toml
+examples/maintenance_events/.cache/
+
+# Run artifacts: iax writes 2 MB of features per trial here.
+outputs/
 .env
 !.env.schema
 .tmp/

@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ai_experiments.planner.search_space import active_space
 from ai_experiments.schemas import (
     ChoiceParam,
     IntParam,
@@ -48,6 +49,16 @@ def validate_params(  # ast-grep-ignore: no-dict-return-annotation
     if unknown:
         violations.append(
             f"unknown parameter(s) {unknown}; the search space defines {sorted(space)}"
+        )
+    # A conditional dimension is not a dimension of *this* assignment, so it is
+    # neither required nor allowed here: sending it anyway records a parameter
+    # the run never reads.
+    space = active_space(space, params)
+    inactive = sorted(set(params) - set(space) - set(unknown))
+    if inactive:
+        violations.append(
+            f"parameter(s) {inactive} do not apply to this assignment; their "
+            "`when` condition does not hold"
         )
     missing = sorted(set(space) - set(params))
     if missing:

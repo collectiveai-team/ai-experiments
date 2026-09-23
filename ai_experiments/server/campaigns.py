@@ -14,7 +14,10 @@ from fastapi import APIRouter, HTTPException
 
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import CampaignDetail, CampaignState
+from ai_experiments.responses import CampaignDetail
+
+# A route return type: FastAPI evaluates it at registration, so it stays a runtime import.
+from ai_experiments.schemas import CampaignState  # noqa: TC001
 
 if TYPE_CHECKING:
     from collections.abc import Callable

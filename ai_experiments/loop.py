@@ -29,13 +29,13 @@ from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.monitoring.escalation import ChangeRequest, record_change_request
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import (
+from ai_experiments.responses import (  # noqa: TC001  # LoopReport field types, resolved at class creation
     BestTrialSummary,
     CampaignHistoryEntry,
-    CampaignState,
-    GoalSpec,
-    ObjectiveSpec,
+    CampaignVerdict,
+    SuccessReport,
 )
+from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -74,6 +74,13 @@ class LoopReport(BaseModel):
     #: in a test without restating the whole objective.
     objective: ObjectiveSpec | None = None
     best: BestTrialSummary | None = None
+    #: Whether the best trial is actually distinguishable from the runner-up
+    #: and from its baseline. A caller that reads `best` alone reports the
+    #: winner of a raffle; see `campaign_verdict`.
+    verdict: CampaignVerdict | None = None
+    #: Whether the campaign cleared the bar its goal declared. ``met`` is
+    #: ``None`` when the goal declared none, which is not a pass.
+    success: SuccessReport | None = None
     history: list[CampaignHistoryEntry] = Field(default_factory=list)
     reviews: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -256,6 +263,8 @@ def _report(
         change_request=change.model_dump(mode="json") if change is not None else None,
         objective=summary.objective,
         best=summary.best,
+        verdict=summary.verdict,
+        success=summary.success,
         history=summary.history,
         reviews=reviews,
     )

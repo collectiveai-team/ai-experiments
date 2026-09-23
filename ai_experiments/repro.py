@@ -23,7 +23,8 @@ from importlib import metadata
 from pathlib import Path
 
 from ai_experiments.core.logger import get_logger
-from ai_experiments.schemas import ReproContext, utc_now
+from ai_experiments.responses import ReproContext
+from ai_experiments.schemas import utc_now
 
 log = get_logger(__name__)
 

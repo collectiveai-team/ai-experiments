@@ -158,6 +158,7 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "INP001"]
+"examples/maintenance_events/tests/**" = ["S101", "INP001"]   # the example's own suite, same rules as tests/
 "examples/**" = ["INP001"]   # standalone scripts, deliberately not a package
 "ai_experiments/templates/**" = ["INP001"]   # scaffolded-file source, copied out by `iax new`, never imported
 "ai_experiments/planner/**" = ["S311"]   # search sampling, not security
@@ -183,6 +184,9 @@ project-excludes = [
   "**/.venv/**/*",
   "**/.uv_cache/**/*",
   ".agents/**",
+  # A standalone workload with its own dependencies (pandas, scikit-learn); it is
+  # checked by its own test suite, not resolved against the harness's interpreter.
+  "examples/maintenance_events/**",
 ]
 use-ignore-files = false
 disable-project-excludes-heuristics = true
@@ -218,6 +222,8 @@ disable-project-excludes-heuristics = true
 # CES-109: module→distribution mappings deptry cannot infer, plus the dev extra.
 [tool.deptry]
 known_first_party = ["ai_experiments"]
+# A standalone workload with its own pyproject.toml and lock; its imports are declared there.
+extend_exclude = ["examples/maintenance_events"]
 pep621_dev_dependency_groups = ["dev"]
 
 [tool.deptry.package_module_name_map]

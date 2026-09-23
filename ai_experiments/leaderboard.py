@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import LeaderboardRow
+from ai_experiments.responses import LeaderboardRow
 
 if TYPE_CHECKING:
     from ai_experiments.store.campaign import CampaignStore

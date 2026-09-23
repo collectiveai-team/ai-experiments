@@ -21,6 +21,7 @@ from ai_experiments.store import FilesystemRunStore
 
 if TYPE_CHECKING:
     from ai_experiments.daemon import MonitorDaemon
+    from ai_experiments.loop import LoopReport
     from ai_experiments.schemas import CampaignState
 
 
@@ -148,31 +149,27 @@ def loop_goal(
         # report already names the submit errors; the code says start the
         # cluster, not widen the goal.
         raise typer.Exit(code=EXIT_BACKEND_UNAVAILABLE)
+    if report.success is not None and report.success.declared:
+        # A goal that wrote down what success means is the authority on
+        # whether it happened. `target_reached` only says the loop stopped
+        # early, which a lucky single observation can also do.
+        if not report.success.met:
+            raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
+        return
     if not report.target_reached:
         raise typer.Exit(code=EXIT_GOAL_NOT_REACHED)
 
 
-def _print_loop_report(report) -> None:
+def _print_loop_report(report: LoopReport) -> None:
+    from ai_experiments.planner.analysis import result_lines
+
     typer.echo(f"{report.campaign_id}: {report.status} ({report.stop_reason})")
     typer.echo(
         f"  Loop:    {report.rounds} rounds, {report.trials} trials, "
         f"{report.agent_calls} agent calls, {report.elapsed_seconds:g}s"
     )
-    objective = report.objective
-    metric = objective.metric if objective else "objective"
-    if report.best and report.best.objective_value is not None:
-        typer.echo(f"  Best:    {report.best.trial_id} {metric}={report.best.objective_value:.6g}")
-        typer.echo(f"           params={report.best.params}")
-    else:
-        typer.echo("  Best:    no trial produced a usable objective value")
-    target = objective.target if objective else None
-    mode = objective.mode if objective else ""
-    if report.target_reached:
-        typer.echo(f"  Target:  reached ({metric} {mode} {target})")
-    elif target is not None:
-        typer.echo(f"  Target:  NOT reached (wanted {metric} {mode} {target})")
-    else:
-        typer.echo("  Target:  none set, so the loop ran to its budget")
+    _print_best(report, result_lines(report))
+    _print_target(report)
     for review in report.reviews:
         if review.get("verdict"):
             typer.echo(f"  Review:  {review['verdict']} — {review.get('reason', '')}")
@@ -188,6 +185,30 @@ def _print_loop_report(report) -> None:
         typer.echo(f"  Blocked: {report.change_request['title']}")
         typer.echo("           no parameter fixes this; the ticket is in `iax escalations`")
     typer.echo(f"  Rounds:  iax campaign rounds {report.campaign_id}")
+
+
+def _print_best(report: LoopReport, lines: list[str]) -> None:
+    """Print the verdict lines and the params, or the one line that says nothing scored."""
+    if report.best is None or not lines:
+        typer.echo("  Best:    no trial produced a usable objective value")
+        return
+    typer.echo(f"  Best:    {lines[0]}")
+    for line in lines[1:]:
+        typer.echo(f"           {line}")
+    typer.echo(f"           params={report.best.params}")
+
+
+def _print_target(report: LoopReport) -> None:
+    objective = report.objective
+    metric = objective.metric if objective else "objective"
+    target = objective.target if objective else None
+    mode = objective.mode if objective else ""
+    if report.target_reached:
+        typer.echo(f"  Target:  reached ({metric} {mode} {target})")
+    elif target is not None:
+        typer.echo(f"  Target:  NOT reached (wanted {metric} {mode} {target})")
+    else:
+        typer.echo("  Target:  none set, so the loop ran to its budget")
 
 
 def _tick_until_finished(

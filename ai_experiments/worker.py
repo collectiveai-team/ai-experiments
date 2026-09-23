@@ -32,6 +32,7 @@ from ai_experiments.schemas import (
 from ai_experiments.store import FilesystemRunStore
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from types import FrameType
 
 HEARTBEAT_SECONDS = 15
@@ -41,6 +42,23 @@ app = typer.Typer(add_completion=False)
 #: States the supervisor may still write a final status over. Anything else is
 #: already terminal and must not be rewritten by the failure contract.
 NON_TERMINAL_STATES = {"submitted", "running", "unknown"}
+
+
+#: Variables that describe *the harness's* environment, not the workload's.
+#: `uv`, `poetry` and `conda` all read VIRTUAL_ENV, and a workload that
+#: manages its own environment either warns and ignores it or, worse,
+#: resolves against the wrong interpreter. A workload that genuinely wants
+#: one sets it in ``workload.env``.
+_HARNESS_ONLY_VARS = ("VIRTUAL_ENV",)
+
+
+def workload_env(  # ast-grep-ignore: no-dict-return-annotation
+    base: Mapping[str, str], manifest: ExperimentManifest
+) -> dict[str, str]:
+    """Build the environment the workload runs in: ours, minus what is ours alone."""
+    env = {k: v for k, v in base.items() if k not in _HARNESS_ONLY_VARS}
+    env.update(manifest.workload.env)
+    return env
 
 
 class _Supervisor:
@@ -102,9 +120,7 @@ class _Supervisor:
 
         command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
-        # child-process env propagation, not config
-        env = os.environ.copy()  # ast-grep-ignore: settings-module
-        env.update(manifest.workload.env)
+        env = workload_env(os.environ, manifest)
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)
         artifacts_dir = run_dir / "artifacts"

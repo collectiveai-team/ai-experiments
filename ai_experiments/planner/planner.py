@@ -6,7 +6,12 @@ import json
 from typing import Any
 
 from ai_experiments.planner.strategies import get_strategy
-from ai_experiments.schemas import ExperimentManifest, GoalSpec, TrialRecord
+from ai_experiments.schemas import (
+    ExperimentManifest,
+    FlagStyle,
+    GoalSpec,
+    TrialRecord,
+)
 
 
 def plan_next_params(goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
@@ -27,8 +32,13 @@ def build_trial_manifest(
 
     Params are injected three ways so any workload style works:
     - ``{name}`` placeholders in ``workload.args`` are substituted;
-    - params without a placeholder are appended as ``--name value`` args;
+    - params without a placeholder are appended as ``--name value`` args,
+      spelled per ``workload.flag_style`` (see `flag_for`);
     - the full assignment is exported as ``IAX_PARAMS`` (JSON) in the env.
+
+    Only the appended flags are translated. A ``{name}`` placeholder and the
+    ``IAX_PARAMS`` payload both keep the search space's own spelling, because
+    those name the parameter rather than a command-line option.
 
     ``working_dir`` redirects the trial at a materialized workload variant, so
     a round that changed code runs the changed code without touching the
@@ -46,7 +56,7 @@ def build_trial_manifest(
         args.append(rendered)
     for name in sorted(params):
         if name not in substituted:
-            args.extend([f"--{name}", _format_value(params[name])])
+            args.extend([flag_for(name, goal.workload.flag_style), _format_value(params[name])])
 
     env = dict(goal.workload.env)
     env["IAX_PARAMS"] = json.dumps(params)
@@ -72,6 +82,17 @@ def build_trial_manifest(
             **({"variant_id": variant_id} if variant_id else {}),
         },
     )
+
+
+def flag_for(name: str, style: FlagStyle = "hyphen") -> str:
+    """Spell the command-line flag a search space key is sent as.
+
+    Search space keys are Python identifiers (``label_source``); argument
+    parsers declare ``--label-source``. argparse rejects any long option it
+    did not declare, so exactly one spelling can be sent — a workload that
+    genuinely wants the underscore sets ``flag_style: underscore``.
+    """
+    return f"--{name.replace('_', '-')}" if style == "hyphen" else f"--{name}"
 
 
 def _format_value(value: Any) -> str:

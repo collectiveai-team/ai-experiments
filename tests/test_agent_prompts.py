@@ -84,3 +84,63 @@ def test_review_brief_asks_for_a_verdict():
 
     assert '"verdict"' in brief
     assert "change_goal" in brief
+
+
+def test_the_brief_says_the_score_is_a_lift_when_it_is_one():
+    """Tell the agent it is moving a lift, not a published PR-AUC.
+
+    An agent told to maximise `pr_auc` will reason about published PR-AUCs and propose whatever
+    raises the base rate. The number it is actually moving is the lift over the trial's own
+    baseline.
+    """
+    goal = GOAL.model_copy(
+        update={
+            "objective": GOAL.objective.model_copy(
+                update={
+                    "metric": "pr_auc",
+                    "baseline_metric": "baseline_pr_auc",
+                    "mode": "max",
+                    "aggregate": "mean",
+                    "target": None,
+                }
+            )
+        }
+    )
+
+    brief = round_brief(goal, _summary([]), max_trials=3)
+
+    assert "baseline_pr_auc" in brief
+    assert "averaged" in brief
+
+
+def test_the_brief_spells_out_which_keys_only_apply_to_some_trials():
+    """Tell the agent which keys a trial actually reads.
+
+    Without this the agent proposes every key for every trial, and the orchestrator rejects the
+    assignment it just paid an agent call for.
+    """
+    goal = GOAL.model_copy(
+        update={
+            "search_space": GoalSpec(
+                goal="g",
+                name="n",
+                objective={"metric": "val_loss", "mode": "min"},
+                search_space={
+                    "model": {"type": "choice", "values": ["hist_gb", "logreg"]},
+                    "max_leaf_nodes": {
+                        "type": "int",
+                        "low": 8,
+                        "high": 64,
+                        "when": {"model": ["hist_gb"]},
+                    },
+                },
+                workload={"entrypoint": "python train.py"},
+            ).search_space
+        }
+    )
+
+    brief = round_brief(goal, _summary([]), max_trials=3)
+
+    assert "max_leaf_nodes" in brief
+    assert "`when`" in brief or "when" in brief
+    assert "omit" in brief

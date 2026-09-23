@@ -26,6 +26,7 @@ from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ai_experiments.schemas import CampaignState, GoalSpec
     from ai_experiments.store import FilesystemRunStore
 
 EscalationAction = Literal["none", "invoke_agent", "budget_exhausted", "cooling_down"]
@@ -322,4 +323,32 @@ def _run_agent_command(
         verdict="inconclusive",
         reason="agent output was not a JSON verdict",
         raw_output=output[-2000:],
+    )
+
+
+def request_campaign_review(
+    run_store: FilesystemRunStore, state: CampaignState, goal: GoalSpec
+) -> None:
+    """Drop a review request for an agent session.
+
+    Analysis beyond the built-in strategy (e.g. reshaping the search space) costs
+    tokens, so it is opt-in via ``analysis.agent_review`` and file-based.
+    """
+    from ai_experiments.planner.analysis import summarize_campaign
+
+    escalations = run_store.root / "_escalations"
+    escalations.mkdir(parents=True, exist_ok=True)
+    review = CampaignReview(
+        campaign_id=state.campaign_id,
+        # Serialised, not the model: `CampaignReview.summary` is a plain dict so a
+        # review written by an older iax still reads back after a summary field moves.
+        summary=summarize_campaign(state, goal).model_dump(mode="json"),
+        note=(
+            "Review trial history; queue better trials via "
+            "`iax campaign suggest <campaign_id> --params '{...}'` "
+            "or stop via `iax campaign stop <campaign_id>`."
+        ),
+    )
+    (escalations / f"{CAMPAIGN_PREFIX}{state.campaign_id}.json").write_text(
+        json.dumps(review.model_dump(mode="json"), indent=2)
     )

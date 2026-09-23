@@ -35,17 +35,25 @@ def _orchestrator(runs_dir: Path | None):
 @campaign_app.command("validate", cls=IaxCommand)
 def campaign_validate(
     config: Path = typer.Argument(..., help="Path to goal YAML"),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero when the goal draws any warning"
+    ),
 ) -> None:
     try:
         goal = GoalSpec.from_yaml(config)
     except Exception as exc:
         invalid_input(f"invalid goal {config}: {exc}")
+    _preflight(goal, strict, "goal has warnings and --strict is set")
     typer.echo(f"Goal valid: {config}")
     typer.echo(f"  Goal:      {goal.goal}")
     typer.echo(
         f"  Objective: {goal.objective.mode} {goal.objective.metric}"
+        + (f" minus {goal.objective.baseline_metric}" if goal.objective.baseline_metric else "")
+        + f", {goal.objective.aggregate} of the observations"
         + (f" (target {goal.objective.target})" if goal.objective.target is not None else "")
     )
+    criteria = goal.success_criteria
+    typer.echo(f"  Success:   {criteria.model_dump(exclude_defaults=True) or 'not declared'}")
     typer.echo(f"  Budget:    {goal.budget.max_trials} trials, {goal.budget.max_parallel} parallel")
     typer.echo(f"  Strategy:  {goal.strategy.name}")
     typer.echo(f"  Backend:   {goal.backend}")
@@ -112,7 +120,7 @@ def campaign_status(
     runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    from ai_experiments.planner.analysis import summarize_campaign
+    from ai_experiments.planner.analysis import result_lines, summarize_campaign
     from ai_experiments.store.campaign import CampaignStore
 
     store = FilesystemRunStore(runs_dir)
@@ -133,8 +141,11 @@ def campaign_status(
     typer.echo(f"  Trials: {summary.trials_by_status}")
     typer.echo(f"  Loop:   round {summary.rounds}, last advanced {summary.last_advanced_at}")
     cost = summary.estimated_cost
+    # Wall time first: on a CPU box the gpu-hours line alone says the campaign
+    # was free, and the next budget decision is made against that number.
     typer.echo(
-        f"  Spend:  {summary.gpu_hours:g} gpu-hours"
+        f"  Spend:  {summary.wall_hours * 3600:.0f}s of machine time, "
+        f"{summary.gpu_hours:g} gpu-hours"
         + (f" (~${cost})" if cost is not None else "")
         + (
             f" of {goal.budget.max_gpu_hours:g} budgeted"
@@ -144,7 +155,10 @@ def campaign_status(
     )
     best = summary.best
     if best and best.objective_value is not None:
-        typer.echo(f"  Best:   {best.trial_id} {goal.objective.metric}={best.objective_value:.6g}")
+        lines = result_lines(summary)
+        typer.echo(f"  Best:   {lines[0]}")
+        for line in lines[1:]:
+            typer.echo(f"          {line}")
         typer.echo(f"          params={best.params}")
 
 
@@ -249,6 +263,9 @@ def campaign_suggest(
         ..., "--params", help="Trial params as JSON, e.g. '{\"lr\": 0.001}'"
     ),
     note: str = typer.Option("", "--note", help="Why this trial is worth running"),
+    variant: str | None = typer.Option(
+        None, "--variant", help="Run against this code variant instead of the workload"
+    ),
     runs_dir: Path | None = typer.Option(None, "--runs-dir"),
     output_json: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -261,13 +278,16 @@ def campaign_suggest(
         invalid_input(f"invalid --params: {exc}")
     _require_campaign(FilesystemRunStore(runs_dir), campaign_id)
     try:
-        trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note)
+        trial = _orchestrator(runs_dir).suggest(campaign_id, parsed, note=note, variant_id=variant)
     except ValueError as exc:
         invalid_input(f"suggestion rejected: {exc}")
     if output_json:
         _echo_json(trial)
     else:
-        typer.echo(f"Queued {trial.trial_id} with params {trial.params}")
+        typer.echo(
+            f"Queued {trial.trial_id} with params {trial.params}"
+            + (f" against variant {variant}" if variant else "")
+        )
 
 
 @campaign_app.command("trials", cls=IaxCommand)

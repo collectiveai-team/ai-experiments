@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import yaml
 from pydantic import (
     BaseModel,
-    ConfigDict,
     Field,
     field_validator,
     model_validator,
@@ -43,6 +42,15 @@ ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
 BackendName = Literal["local", "ray"]
 
 
+#: How a search space key becomes a command-line flag. Keys are Python
+#: identifiers, so a two-word parameter is ``label_source``; the CLI
+#: convention every argument parser follows spells it ``--label-source``.
+FlagStyle = Literal["hyphen", "underscore"]
+
+#: How a run's observations collapse into one objective value.
+Aggregate = Literal["best", "mean", "bootstrap"]
+
+
 class WorkloadSpec(ConfigModel):
     """Executable workload for a training experiment."""
 
@@ -50,6 +58,9 @@ class WorkloadSpec(ConfigModel):
     args: list[str] = Field(default_factory=list)
     working_dir: str = "."
     env: dict[str, str] = Field(default_factory=dict)
+    #: Exactly one spelling is sent. Emitting both "to be safe" is what
+    #: breaks argparse, which rejects any long option it did not declare.
+    flag_style: FlagStyle = "hyphen"
 
 
 class ResourceSpec(ConfigModel):
@@ -237,7 +248,26 @@ class DiagnosisReport(BaseModel):
 # --- Goal / campaign layer -------------------------------------------------
 
 
-class ChoiceParam(ConfigModel):
+class ParamBase(ConfigModel):
+    """What every search space dimension can say about itself."""
+
+    #: This dimension changes the data or the labels a trial is evaluated
+    #: on, not just how the model is fit. Trials that differ on it are
+    #: scored on different problems, so their raw metrics are not
+    #: comparable and the objective needs a ``baseline_metric`` to become
+    #: a lift. ``window_days``, ``resample_freq`` and a choice of label
+    #: source are all of this kind; a learning rate is not.
+    changes_data: bool = False
+    #: Draw this dimension only for trials where the named parameters take
+    #: one of the listed values, as in ``{"model": ["hist_gb"]}``. A space
+    #: without it hands every model every other model's knobs: those trials
+    #: are duplicates the deduplicator cannot see, and their spread reads as
+    #: evidence that the knobs do nothing. Conditions may only name
+    #: unconditional keys — see :meth:`GoalSpec.conditions_resolve`.
+    when: dict[str, list[Any]] = Field(default_factory=dict)
+
+
+class ChoiceParam(ParamBase):
     type: Literal["choice"]
     values: list[Any]
 
@@ -249,7 +279,7 @@ class ChoiceParam(ConfigModel):
         return value
 
 
-class UniformParam(ConfigModel):
+class UniformParam(ParamBase):
     type: Literal["uniform"]
     low: float
     high: float
@@ -261,7 +291,7 @@ class UniformParam(ConfigModel):
         return self
 
 
-class LogUniformParam(ConfigModel):
+class LogUniformParam(ParamBase):
     type: Literal["loguniform"]
     low: float
     high: float
@@ -275,7 +305,7 @@ class LogUniformParam(ConfigModel):
         return self
 
 
-class IntParam(ConfigModel):
+class IntParam(ParamBase):
     type: Literal["int"]
     low: int
     high: int
@@ -295,8 +325,57 @@ ParamSpec = Annotated[
 
 class ObjectiveSpec(ConfigModel):
     metric: str
+    #: A metric that is a property of the trial's *data* rather than its
+    #: model: a class base rate, a naive forecast, last release's number.
+    #: When set, a trial scores ``metric - baseline_metric`` taken from the
+    #: same observation, so trials evaluated on different slices stay
+    #: comparable. Without it, a search space dimension that moves the
+    #: baseline is rewarded for moving it.
+    baseline_metric: str | None = None
     mode: Literal["min", "max"] = "min"
     target: float | None = None
+    #: How a run's many observations become one score. Epochs are successive
+    #: states of one model, so ``best`` is the answer. Folds are independent
+    #: evaluations of the *same* configuration, and there ``best`` is
+    #: max-of-k: biased upward by exactly the noise the folds exist to
+    #: measure. ``mean`` averages them and reports the standard error, so the
+    #: campaign can tell a real lead from a lucky fold. ``bootstrap`` is for
+    #: observations that are resamples of *one* evaluation: their spread is
+    #: already the standard error of the statistic, so dividing it by the
+    #: square root of their count would shrink the interval by exactly the
+    #: factor the resampling exists to expose.
+    aggregate: Aggregate = "best"
+
+
+class SuccessCriteria(ConfigModel):
+    """What this campaign has to show before its result counts.
+
+    ``objective.target`` is the value the campaign *stops* at; this is the bar
+    the result has to clear to be believed, and it is written before anything
+    runs so that afterwards the answer is arithmetic instead of an argument.
+    A goal that declares none gets ``met: null`` — not a pass.
+    """
+
+    #: The objective value the best trial has to reach, read in the
+    #: objective's own direction.
+    min_objective: float | None = None
+    #: How many observations that value has to be averaged over. A winner
+    #: resting on one evaluation has measured the evaluation, not the model.
+    min_observations: int | None = None
+    #: The best trial must be distinguishable from the runner-up at 95%.
+    #: Unmeasurable counts as unmet: the criterion asks for evidence.
+    require_separation: bool = False
+    #: The best trial's interval must clear its declared baseline.
+    require_beats_baseline: bool = False
+
+    @property
+    def declared(self) -> bool:
+        return (
+            self.min_objective is not None
+            or self.min_observations is not None
+            or self.require_separation
+            or self.require_beats_baseline
+        )
 
 
 class BudgetSpec(ConfigModel):
@@ -305,6 +384,10 @@ class BudgetSpec(ConfigModel):
     max_hours: float | None = None
     max_gpu_hours: float | None = None
     gpu_hour_rate: float | None = None  # currency per GPU-hour, for cost display
+    #: Consecutive failed trials, with nothing ever scored, before the
+    #: campaign gives up. A workload the harness cannot talk to fails
+    #: identically every time, so the rest of the budget buys nothing.
+    halt_after_failures: int = 8
 
     @model_validator(mode="after")
     def positive_budget(self) -> BudgetSpec:
@@ -312,6 +395,8 @@ class BudgetSpec(ConfigModel):
             raise ValueError("max_trials must be >= 1")
         if self.max_parallel < 1:
             raise ValueError("max_parallel must be >= 1")
+        if self.halt_after_failures < 1:
+            raise ValueError("halt_after_failures must be >= 1")
         return self
 
 
@@ -383,6 +468,9 @@ class GoalSpec(ConfigModel):
     objective: ObjectiveSpec
     search_space: dict[str, ParamSpec]
     workload: WorkloadSpec
+    #: The bar the result has to clear to count. Declaring none is
+    #: allowed and is reported as such; it is not a pass.
+    success_criteria: SuccessCriteria = Field(default_factory=SuccessCriteria)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     agent: AgentSpec = Field(default_factory=AgentSpec)
@@ -421,6 +509,31 @@ class GoalSpec(ConfigModel):
             self.monitoring.objective_metric = self.objective.metric
         return self
 
+    @model_validator(mode="after")
+    def conditions_resolve(self) -> GoalSpec:
+        """Require every ``when`` to name a key that exists and is drawn first.
+
+        Restricting conditions to one level keeps the sampling order obvious
+        — unconditional keys, then everything that depends on them — and
+        costs nothing anyone has asked for. A typo'd condition would
+        otherwise silently never hold, quietly deleting a dimension from the
+        search.
+        """
+        for name, spec in self.search_space.items():
+            for other in spec.when:
+                if other not in self.search_space:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which the space does not define — typo?"
+                    )
+                if self.search_space[other].when:
+                    raise ValueError(
+                        f"search space key '{name}' is conditional on "
+                        f"'{other}', which is itself conditional; conditions "
+                        "may only name unconditional keys"
+                    )
+        return self
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> GoalSpec:
         return load_config(cls, path)
@@ -450,8 +563,18 @@ class TrialRecord(BaseModel):
     run_id: str | None = None
     status: TrialState = "planned"
     objective_value: float | None = None
+    #: Standard error of ``objective_value`` when the objective averages its
+    #: observations, and ``None`` when nothing measured the spread. A score
+    #: without it cannot be compared to another score honestly.
+    objective_stderr: float | None = None
+    #: How many observations the score was computed from.
+    objective_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
     gpu_hours: float | None = None
+    #: How long the trial actually occupied the machine. Recorded whether
+    #: or not there are GPUs, because a CPU campaign that reports only
+    #: `gpu_hours` reports that it cost nothing.
+    wall_hours: float | None = None
     created_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     error: str | None = None
@@ -470,189 +593,3 @@ class CampaignState(BaseModel):
     rounds: int = 0
     #: Agent invocations spent on this campaign, capped by ``GoalSpec.agent.max_calls``.
     agent_calls: int = 0
-
-
-# --- Server / CLI response models ------------------------------------------
-
-
-class HealthStatus(BaseModel):
-    """The `/api/health` body.
-
-    `mutations` tells a client whether this bind will accept cancel/stop/
-    pause/resume at all, so a dashboard can grey the buttons out instead of
-    discovering the 403 after the operator clicks (#24).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: str
-    runs_root: str
-    mutations: Literal["allowed", "read-only"]
-
-
-class CancelAck(BaseModel):
-    """The `/api/runs/{run_id}/cancel` body."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    cancelled: bool
-
-
-class ReproContext(BaseModel):
-    """Reproducibility bundle captured at submit time (`repro/context.json`), and nothing else.
-
-    This is exactly what `capture_repro` writes and `read_repro` reads back — no presentation-only
-    fields. `extra="ignore"` (not `"forbid"`) is deliberate: this model validates a file written by
-    whatever version of `capture_repro` ran at submit time, which may be older or newer than the
-    version of this code reading it back. Forbidding extras would turn a future field addition into
-    a crash for every older reader that opens an existing run directory; ignoring extras keeps that
-    read forward-compatible. All fields are optional, tolerating a hand-authored or partial bundle
-    that predates a field being added.
-
-    Forward-compatible here means "does not crash", not "does not lose data": an unknown key is
-    dropped, so a field written by a newer `capture_repro` is invisible to an older reader and to
-    `GET /api/runs/{run_id}/repro`, which serialises this model. `capture_repro` writes exactly
-    the fields declared below, so no shipped bundle is affected today.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    captured_at: str | None = None
-    git_sha: str | None = None
-    git_branch: str | None = None
-    git_dirty: bool | None = None
-    python: str | None = None
-    platform: str | None = None
-    working_dir: str | None = None
-
-
-class RunReproDetail(ReproContext):
-    """The `/api/runs/{run_id}/repro` body: the persisted context plus whether a diff was captured.
-
-    `has_diff` is presentation-only — `server/app.py` derives it from whether `diff.patch` exists
-    on disk, it is never part of the persisted bundle — so it lives on this composed model, not on
-    `ReproContext` itself. `extra="forbid"` is fine here: unlike `ReproContext`, this model is only
-    ever constructed in code, never parsed back off disk.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    has_diff: bool
-
-
-class ReproBundleInfo(ReproContext):
-    """`iax repro`'s output: the persisted context plus where the bundle lives on disk.
-
-    `bundle_dir` is presentation-only — the CLI fills it in after `read_repro` loads the bundle
-    back — so it lives on this composed model, not on `ReproContext` itself. `extra="forbid"` is
-    fine here for the same reason as `RunReproDetail`: only ever constructed in code.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    bundle_dir: str
-
-
-class CampaignHistoryEntry(BaseModel):
-    """One row of `CampaignSummary.history`: a trial an agent can learn from.
-
-    A failure teaches as much as a score, so a trial qualifies on either a
-    non-None `objective_value` or a non-None `error`; `status` and `error`
-    are what tell the two apart.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    trial_id: str
-    status: TrialState
-    objective_value: float | None
-    params: dict[str, Any]
-    error: str | None = None
-
-
-class BestTrialSummary(BaseModel):
-    """`CampaignSummary.best`: the best-scoring trial so far, or absent if none has scored."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    trial_id: str
-    run_id: str | None
-    objective_value: float | None
-    params: dict[str, Any]
-
-
-class BudgetSummary(BaseModel):
-    """`CampaignSummary.budget`: the budget fields relevant to progress display."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_trials: int
-    max_gpu_hours: float | None
-    gpu_hour_rate: float | None
-
-
-class CampaignSummary(BaseModel):
-    """`summarize_campaign`'s return: budget/objective snapshot, trial history, best trial."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    campaign_id: str
-    name: str
-    goal: str
-    status: CampaignStatus
-    stop_reason: str | None
-    created_at: str
-    last_advanced_at: str
-    gpu_hours: float
-    estimated_cost: float | None
-    budget: BudgetSummary
-    objective: ObjectiveSpec
-    rounds: int
-    agent_calls: int
-    trials_by_status: dict[str, int]
-    trials_total: int
-    best: BestTrialSummary | None
-    history: list[CampaignHistoryEntry]
-
-
-class CampaignDetail(BaseModel):
-    """The `/api/campaigns/{campaign_id}` body."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    state: CampaignState
-    summary: CampaignSummary
-
-
-class ArtifactEntry(BaseModel):
-    """One row of the `/api/runs/{run_id}/artifacts` listing.
-
-    Returned directly by `FilesystemRunStore.list_artifacts`; the server
-    handler passes the list through rather than re-validating raw dicts.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    path: str
-    size_bytes: int
-    modified_at: str
-
-
-class LeaderboardRow(BaseModel):
-    """One row of the `/api/leaderboard` body."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    campaign_id: str
-    name: str
-    status: CampaignStatus
-    metric: str
-    mode: Literal["min", "max"]
-    best_value: float
-    best_params: dict[str, Any]
-    best_run_id: str | None
-    trials: int
-    gpu_hours: float
-    estimated_cost: float | None
-    updated_at: str

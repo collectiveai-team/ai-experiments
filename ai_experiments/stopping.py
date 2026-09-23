@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 ACTIVE_TRIAL_STATES: set[TrialState] = {"submitted", "running"}
 
 #: Stop reasons that mean the campaign broke rather than finished.
-FAILURE_STOP_REASONS = {"objective_not_reported", "backend_unavailable"}
+FAILURE_STOP_REASONS = {"objective_not_reported", "backend_unavailable", "all_trials_failing"}
 
 #: How many trials may complete without a usable objective before the
 #: campaign is declared broken instead of merely unlucky.
@@ -51,6 +51,7 @@ STOP_REASONS: dict[str, str] = {
     "search_space_exhausted": "the planner ran out of points; widen the goal",
     "backend_unavailable": "no trial could be submitted; start the cluster",
     "objective_not_reported": "trials ran but never reported the objective metric",
+    "all_trials_failing": "every trial died without scoring; read the error and fix the workload",
     AGENT_STOP_REASON: "the reviewing agent judged the campaign hopeless",
     "user_requested": "`iax campaign stop`",
 }
@@ -70,6 +71,7 @@ def stop_reason(state: CampaignState, goal: GoalSpec, gpu_hours_spent: float) ->
     """
     return (
         objective_contract_broken(state)
+        or all_trials_failing_reason(state, goal)
         or target_reached_reason(state, goal)
         or max_hours_reason(state, goal)
         or gpu_hours_reason(goal, gpu_hours_spent)
@@ -108,6 +110,27 @@ def objective_contract_broken(state: CampaignState) -> str | None:
     if any(t.objective_value is not None for t in completed):
         return None
     return "objective_not_reported"
+
+
+def all_trials_failing_reason(state: CampaignState, goal: GoalSpec) -> str | None:
+    """Stop when the workload has never once run to a score.
+
+    `objective_contract_broken` covers trials that *complete* without
+    reporting; this covers the louder case, where they do not complete at
+    all. A workload the harness cannot talk to -- a flag its parser
+    rejects, a missing dataset, an import error -- fails identically on
+    every trial, so the rest of the budget buys nothing but a longer wait
+    for the same message.
+
+    Deliberately not a streak: one trial that scored means the workload
+    does work, and the failures are the interesting kind.
+    """
+    if any(t.objective_value is not None for t in state.trials):
+        return None
+    failed = [t for t in state.trials if t.status == "failed"]
+    if len(failed) < goal.budget.halt_after_failures:
+        return None
+    return "all_trials_failing"
 
 
 def target_reached_reason(state: CampaignState, goal: GoalSpec) -> str | None:
@@ -169,6 +192,23 @@ def budget_exhausted_reason(state: CampaignState, goal: GoalSpec) -> str | None:
     return None
 
 
+def trial_wall_hours(started: datetime | None, completed: datetime | None) -> float | None:
+    """How long a trial occupied the machine, GPUs or not.
+
+    A campaign whose only spend figure is `gpu_hours` reports that eight
+    minutes of saturated CPU cost nothing, and every budget decision
+    downstream is made against that number. `None` means "not answerable
+    yet": a trial that has not started cannot be costed.
+    """
+    if started is None or completed is None:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=timezone.utc)
+    return max((completed - started).total_seconds(), 0.0) / 3600
+
+
 def trial_gpu_hours(
     goal: GoalSpec, started: datetime | None, completed: datetime | None
 ) -> float | None:
@@ -177,11 +217,7 @@ def trial_gpu_hours(
     `None` means "not answerable yet" — a trial that reserves GPUs but has not
     started cannot be costed. A goal that asks for no GPUs always costs 0.0.
     """
-    if goal.resources.gpus <= 0 or started is None or completed is None:
-        return 0.0 if goal.resources.gpus <= 0 else None
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    if completed.tzinfo is None:
-        completed = completed.replace(tzinfo=timezone.utc)
-    hours = max((completed - started).total_seconds(), 0.0) / 3600
-    return hours * goal.resources.gpus
+    if goal.resources.gpus <= 0:
+        return 0.0
+    hours = trial_wall_hours(started, completed)
+    return None if hours is None else hours * goal.resources.gpus

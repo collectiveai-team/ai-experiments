@@ -389,6 +389,7 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "status",
         "stop_reason",
         "gpu_hours",
+        "wall_hours",
         "estimated_cost",
         "budget",
         "objective",
@@ -396,6 +397,8 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "trials_by_status",
         "trials_total",
         "best",
+        "verdict",
+        "success",
         "history",
         "created_at",
         "last_advanced_at",
@@ -405,6 +408,9 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "trial_id": "t000",
         "run_id": None,
         "objective_value": 0.5,
+        "stderr": None,
+        "n_observations": 0,
+        "ci95": None,
         "params": {"x": 0.5},
     }
     assert body["summary"]["history"] == [
@@ -423,11 +429,19 @@ def test_campaign_detail_response_shape_is_stable(client, store):
         "max_gpu_hours": goal.budget.max_gpu_hours,
         "gpu_hour_rate": goal.budget.gpu_hour_rate,
     }
-    assert set(body["summary"]["objective"]) == {"metric", "mode", "target"}
+    assert set(body["summary"]["objective"]) == {
+        "metric",
+        "baseline_metric",
+        "mode",
+        "target",
+        "aggregate",
+    }
     assert body["summary"]["objective"] == {
         "metric": goal.objective.metric,
+        "baseline_metric": goal.objective.baseline_metric,
         "mode": goal.objective.mode,
         "target": goal.objective.target,
+        "aggregate": goal.objective.aggregate,
     }
 
 

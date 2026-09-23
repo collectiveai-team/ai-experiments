@@ -22,7 +22,7 @@ if not report.target_reached:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -33,9 +33,12 @@ from ai_experiments.loop import run_loop as _run_loop
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schema_errors import describe
-from ai_experiments.schemas import CampaignSummary, GoalSpec, TrialRecord
+from ai_experiments.schemas import GoalSpec, TrialRecord
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+
+if TYPE_CHECKING:
+    from ai_experiments.responses import CampaignSummary
 
 __all__ = [
     "IaxError",

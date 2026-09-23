@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from ai_experiments.schemas import ArtifactEntry, RunReproDetail
+from ai_experiments.responses import ArtifactEntry, RunReproDetail
 from ai_experiments.server.runs import ensure_run
 
 if TYPE_CHECKING:

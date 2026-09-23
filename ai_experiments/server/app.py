@@ -25,7 +25,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
-from ai_experiments.schemas import HealthStatus
+from ai_experiments.responses import HealthStatus
 from ai_experiments.server.artifacts import build_artifacts_router
 from ai_experiments.server.campaigns import build_campaigns_router
 from ai_experiments.server.clusters import build_clusters_router

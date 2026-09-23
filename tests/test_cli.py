@@ -238,6 +238,8 @@ def test_cli_command_surface_is_stable():
         "suggest",
         "trials",
         "validate",
+        "variant",
+        "variants",
     ]
     cluster_group = root.commands["cluster"]
     assert isinstance(cluster_group, typer.core.TyperGroup)
