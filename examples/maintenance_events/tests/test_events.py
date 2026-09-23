@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pandas as pd
-
 from prepare.events import merge_events, read_mapro_events
 
 FIXTURE = Path(__file__).parent / "fixtures" / "eventos_sample.csv"
@@ -47,9 +46,7 @@ def test_merge_marks_the_overlap_as_both():
 
 
 def test_merge_keeps_one_row_per_date():
-    mapro = pd.DataFrame(
-        {"date": [pd.Timestamp("2024-01-05")], "duration_hours": [2.0]}
-    )
+    mapro = pd.DataFrame({"date": [pd.Timestamp("2024-01-05")], "duration_hours": [2.0]})
     operator = pd.DataFrame(
         {
             "date": [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-05")],
@@ -64,8 +61,11 @@ def test_merge_keeps_one_row_per_date():
 
 
 def _write_operator_log(path):
-    """Reproduce la forma real de la bitácora: dos filas de encabezado con celdas
-    combinadas, ``Derecho`` rotulado en la columna 4 pero cargado en la 3."""
+    """Reproduce la forma real de la bitácora.
+
+    Dos filas de encabezado con celdas combinadas, ``Derecho`` rotulado en la columna 4 pero cargado
+    en la 3.
+    """
     import openpyxl
 
     book = openpyxl.Workbook()
@@ -84,12 +84,8 @@ def _write_operator_log(path):
         ]
     )
     sheet.append([None, None, "Izquierdo", None, "Derecho", None, None, "X", None])
-    sheet.append(
-        ["Sarmiento/Liberal", "2023-11-01", 5, 3.0, None, None, None, "X", None]
-    )
-    sheet.append(
-        ["Carmona/Viola", "2023-12-25", 4, 2.0, None, "Urfalino", None, None, "x"]
-    )
+    sheet.append(["Sarmiento/Liberal", "2023-11-01", 5, 3.0, None, None, None, "X", None])
+    sheet.append(["Carmona/Viola", "2023-12-25", 4, 2.0, None, "Urfalino", None, None, "x"])
     sheet.append(["Stroscio", "2024-01-08", 2, 1.0, None, None, None, "x", None])
     book.save(path)
     return path
@@ -119,9 +115,7 @@ def test_operator_log_never_returns_names(tmp_path):
 
 
 def test_merge_leaves_scheduled_unknown_when_only_mapro_saw_the_event():
-    mapro = pd.DataFrame(
-        {"date": [pd.Timestamp("2022-08-17")], "duration_hours": [3.0]}
-    )
+    mapro = pd.DataFrame({"date": [pd.Timestamp("2022-08-17")], "duration_hours": [3.0]})
     operator = pd.DataFrame(
         {
             "date": [pd.Timestamp("2024-06-02")],

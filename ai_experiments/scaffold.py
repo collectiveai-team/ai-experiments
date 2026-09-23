@@ -10,12 +10,14 @@ than at the user's first `iax validate`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 
 from ai_experiments.schemas import ExperimentManifest, GoalSpec
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.store import FilesystemRunStore
 
 TemplateKind = Literal["manifest", "goal", "workload"]
 
@@ -40,7 +42,7 @@ class ScaffoldError(Exception):
 
 
 def render(kind: TemplateKind) -> str:
-    """The template text for ``kind``, proven to parse against its schema."""
+    """Return the template text for ``kind``, proven to parse against its schema."""
     try:
         text = (_TEMPLATE_DIR / TEMPLATES[kind]).read_text()
     except KeyError:
@@ -60,9 +62,7 @@ def _check(kind: str, text: str) -> None:
     try:
         model(**(yaml.safe_load(text) or {}))
     except Exception as exc:  # pragma: no cover - guards a packaging mistake
-        raise ScaffoldError(
-            f"the '{kind}' template no longer validates: {exc}"
-        ) from exc
+        raise ScaffoldError(f"the '{kind}' template no longer validates: {exc}") from exc
 
 
 def resolve_target(kind: TemplateKind, path: Path) -> Path:

@@ -11,10 +11,10 @@ __all__ = [
     "build_trial_manifest",
     "campaign_verdict",
     "extract_objective",
-    "result_lines",
     "grid_points",
     "perturb",
     "plan_next_params",
+    "result_lines",
     "sample",
     "summarize_campaign",
 ]

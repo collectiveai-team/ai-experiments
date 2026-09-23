@@ -41,8 +41,11 @@ TERMINAL = {"completed", "failed", "cancelled"}
 
 @pytest.fixture(scope="module")
 def completed_ray_run(tmp_path_factory, ray_address, mlflow_uri):
-    """One real Ray job, submitted once and reused: a live submit plus job
-    startup costs ~15s, and every assertion below inspects the same run."""
+    """One real Ray job, submitted once and reused.
+
+    A live submit plus job startup costs ~15s, and every assertion below inspects the
+    same run.
+    """
     work = tmp_path_factory.mktemp("ray_workload")
     (work / "train.py").write_text(WORKLOAD)
     store = FilesystemRunStore(work / "runs", capture_repro=False)
@@ -69,7 +72,15 @@ def completed_ray_run(tmp_path_factory, ray_address, mlflow_uri):
             break
         time.sleep(3)
 
-    return {
+    # A grab-bag of this fixture's own local objects (store/backend/handle/
+    # statuses), read back only by the sibling test functions below via
+    # string keys within this module. A NamedTuple would genuinely be better
+    # here -- a fixed 5-key bag read by subscript is this rule's paradigm
+    # case -- but this module can't be exercised in this environment (no
+    # reachable Ray cluster), so the conversion is deferred, not dismissed:
+    # pyrefly still checks this file whether or not the service is up, so the
+    # payoff of typing it is static and available now.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "store": store,
         "backend": backend,
         "handle": handle,
@@ -89,8 +100,11 @@ def test_submit_preserves_the_mlflow_linkage(completed_ray_run):
 
 
 def test_submit_writes_a_ray_status_not_the_store_fallback(completed_ray_run):
-    """begin_tracking used to create status.json through read_status's
-    "file not found" fallback, briefly labelling a Ray run backend="local"."""
+    """Regression guard for a status.json mislabelling bug.
+
+    begin_tracking used to create status.json through read_status's "file not found"
+    fallback, briefly labelling a Ray run backend="local".
+    """
     at_submit = completed_ray_run["at_submit"]
     assert at_submit.backend == "ray"
     assert at_submit.error is None
@@ -99,15 +113,11 @@ def test_submit_writes_a_ray_status_not_the_store_fallback(completed_ray_run):
 
 def test_the_real_ray_job_completes(completed_ray_run):
     final = completed_ray_run["final"]
-    assert final.status == "completed", (
-        f"ray reported {final.details.get('ray_status')}"
-    )
+    assert final.status == "completed", f"ray reported {final.details.get('ray_status')}"
 
 
 def test_metrics_are_harvested_from_real_ray_job_logs(completed_ray_run):
-    metrics = completed_ray_run["store"].read_metrics(
-        completed_ray_run["handle"].run_id
-    )
+    metrics = completed_ray_run["store"].read_metrics(completed_ray_run["handle"].run_id)
     assert [p.step for p in metrics] == [1, 2, 3]
     assert metrics[-1].values["val_loss"] == pytest.approx(1 / 3, rel=1e-3)
 
@@ -178,6 +188,4 @@ def test_cancelling_a_failed_ray_job_preserves_the_failure(
 
     MonitorDaemon(store).tick()
     run = mlflow_api("runs/get", run_id=mlflow_run_id)["run"]
-    assert run["info"]["status"] == "FAILED", (
-        "MLflow says KILLED for a job that failed on its own"
-    )
+    assert run["info"]["status"] == "FAILED", "MLflow says KILLED for a job that failed on its own"

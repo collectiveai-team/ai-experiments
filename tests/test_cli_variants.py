@@ -115,9 +115,7 @@ def test_variants_are_listed_with_their_smoke_verdict(tmp_path):
         ],
     )
 
-    result = runner.invoke(
-        app, ["campaign", "variants", campaign_id, "--runs-dir", str(runs)]
-    )
+    result = runner.invoke(app, ["campaign", "variants", campaign_id, "--runs-dir", str(runs)])
 
     assert result.exit_code == 0, result.output
     assert "smoke ok" in result.output
@@ -183,8 +181,10 @@ def test_a_suggestion_can_name_a_variant(tmp_path):
 
 
 def test_a_rejected_variant_left_on_disk_names_the_directory(tmp_path, monkeypatch):
-    """`and was discarded` has to be true when it is printed. When the delete
-    fails, the caller is told where the leftover is instead."""
+    """`and was discarded` has to be true when it is printed.
+
+    When the delete fails, the caller is told where the leftover is instead.
+    """
     import shutil
 
     campaign_id, runs = _campaign(tmp_path, smoke="import sys; sys.exit(3)")
@@ -212,7 +212,5 @@ def test_a_rejected_variant_left_on_disk_names_the_directory(tmp_path, monkeypat
     assert "could not be removed" in result.output
     assert "Device or resource busy" in result.output
 
-    listed = runner.invoke(
-        app, ["campaign", "variants", campaign_id, "--runs-dir", str(runs)]
-    )
+    listed = runner.invoke(app, ["campaign", "variants", campaign_id, "--runs-dir", str(runs)])
     assert "left on disk" in listed.output

@@ -13,12 +13,12 @@ from ai_experiments.server.app import create_app
 from ai_experiments.store import FilesystemRunStore
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(tmp_path) -> FilesystemRunStore:
     return FilesystemRunStore(tmp_path / "runs", capture_repro=False)
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(store) -> TestClient:
     return TestClient(create_app(store))
 
@@ -42,10 +42,33 @@ def _seed_run(store: FilesystemRunStore) -> str:
     return run_id
 
 
+def _seed_campaign(store: FilesystemRunStore):
+    """Create a fresh running campaign with no trials; return (campaign_store, state)."""
+    from ai_experiments.schemas import BudgetSpec, GoalSpec, ObjectiveSpec, WorkloadSpec
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec(
+        goal="characterize",
+        name="characterize",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload=WorkloadSpec(entrypoint="python t.py"),
+        budget=BudgetSpec(max_trials=1),
+    )
+    state = campaign_store.create_campaign(goal)
+    return campaign_store, state
+
+
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_health_response_shape_is_stable(client):
+    body = client.get("/api/health").json()
+    assert set(body) == {"status", "runs_root", "mutations"}
 
 
 def test_dashboard_served(client):
@@ -73,6 +96,50 @@ def test_runs_listing_and_detail(client, store):
     }
 
 
+def test_run_detail_body_matches_the_stored_status(client, store):
+    run_id = _seed_run(store)
+
+    response = client.get(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.json() == store.read_status(run_id).model_dump(mode="json")
+
+
+def test_runs_listing_body_matches_the_stored_statuses(client, store):
+    run_id = _seed_run(store)
+
+    response = client.get("/api/runs")
+
+    assert response.status_code == 200
+    assert response.json() == [store.read_status(run_id).model_dump(mode="json")]
+
+
+def test_run_events_body_matches_the_stored_events(client, store):
+    from ai_experiments.schemas import RunEvent
+
+    run_id = _seed_run(store)
+    store.append_event(run_id, RunEvent(level="info", message="started"))
+
+    response = client.get(f"/api/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        e.model_dump(mode="json") for e in store.read_events(run_id, tail=200)
+    ]
+
+
+def test_run_diagnosis_body_matches_diagnose_run(client, store):
+    from ai_experiments.monitoring.rules import diagnose_run
+
+    run_id = _seed_run(store)
+    expected = diagnose_run(store, run_id).model_dump(mode="json")
+
+    response = client.get(f"/api/runs/{run_id}/diagnosis")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_unknown_run_is_404(client):
     assert client.get("/api/runs/run_nope").status_code == 404
     assert client.post("/api/runs/run_nope/cancel").status_code == 404
@@ -85,6 +152,14 @@ def test_cancel_run(client, store):
 
     assert response.status_code == 200
     assert store.read_status(run_id).status == "cancelled"
+
+
+def test_run_cancel_response_shape_is_stable(client, store):
+    run_id = _seed_run(store)
+
+    body = client.post(f"/api/runs/{run_id}/cancel").json()
+
+    assert body == {"run_id": run_id, "cancelled": True}
 
 
 def test_campaigns_empty(client):
@@ -110,6 +185,22 @@ def test_artifacts_listing_and_download(client, store):
     assert download.content == b"weights"
 
 
+def test_run_artifacts_body_shape_is_stable(client, store):
+    run_id = _seed_run(store)
+    artifacts = store.artifacts_dir(run_id)
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "model.bin").write_bytes(b"weights")
+
+    response = client.get(f"/api/runs/{run_id}/artifacts")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert set(body[0]) == {"path", "size_bytes", "modified_at"}
+    assert body[0]["path"] == "model.bin"
+    assert body[0]["size_bytes"] == 7
+
+
 def test_artifact_path_traversal_blocked(client, store):
     run_id = _seed_run(store)
 
@@ -133,6 +224,27 @@ def test_repro_endpoint(client, store):
 
     shutil.rmtree(store.run_dir(missing) / "repro", ignore_errors=True)
     assert client.get(f"/api/runs/{missing}/repro").status_code == 404
+
+
+def test_run_repro_response_shape_for_a_real_capture(tmp_path):
+    """A real `capture_repro` bundle (not the hand-written fixture above)."""
+    real_store = FilesystemRunStore(tmp_path / "runs", capture_repro=True)
+    real_client = TestClient(create_app(real_store))
+    run_id = _seed_run(real_store)
+
+    body = real_client.get(f"/api/runs/{run_id}/repro").json()
+
+    assert set(body) == {
+        "captured_at",
+        "git_sha",
+        "git_branch",
+        "git_dirty",
+        "python",
+        "platform",
+        "working_dir",
+        "has_diff",
+    }
+    assert isinstance(body["has_diff"], bool)
 
 
 def test_leaderboard_ranks_campaigns(client, store):
@@ -178,6 +290,170 @@ def test_leaderboard_ranks_campaigns(client, store):
     assert json.loads(json.dumps(rows[0]["best_params"])) == {"x": 0.1}
 
 
+def test_leaderboard_response_shape_is_stable(client, store):
+    from ai_experiments.schemas import (
+        BudgetSpec,
+        GoalSpec,
+        ObjectiveSpec,
+        TrialRecord,
+        WorkloadSpec,
+    )
+    from ai_experiments.store.campaign import CampaignStore
+
+    campaign_store = CampaignStore(store.root)
+    goal = GoalSpec(
+        goal="campaign shape",
+        name="shape",
+        objective=ObjectiveSpec(metric="loss", mode="min"),
+        search_space={"x": {"type": "uniform", "low": 0.0, "high": 1.0}},
+        workload=WorkloadSpec(entrypoint="python t.py"),
+        budget=BudgetSpec(max_trials=1, gpu_hour_rate=2.5),
+    )
+    state = campaign_store.create_campaign(goal)
+    state.trials.append(
+        TrialRecord(
+            trial_id="t000",
+            params={"x": 0.5},
+            status="completed",
+            objective_value=0.5,
+            gpu_hours=1.0,
+        )
+    )
+    state.best_trial_id = "t000"
+    state.status = "completed"
+    campaign_store.write_state(state)
+
+    rows = client.get("/api/leaderboard").json()
+
+    assert len(rows) == 1
+    assert set(rows[0]) == {
+        "campaign_id",
+        "name",
+        "status",
+        "metric",
+        "mode",
+        "best_value",
+        "best_params",
+        "best_run_id",
+        "trials",
+        "gpu_hours",
+        "estimated_cost",
+        "updated_at",
+    }
+    assert rows[0]["campaign_id"] == state.campaign_id
+    assert rows[0]["name"] == "shape"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["metric"] == "loss"
+    assert rows[0]["mode"] == "min"
+    assert rows[0]["best_value"] == 0.5
+    assert rows[0]["best_params"] == {"x": 0.5}
+    assert rows[0]["best_run_id"] is None
+    assert rows[0]["trials"] == 1
+    assert rows[0]["gpu_hours"] == 1.0
+    assert rows[0]["estimated_cost"] == 2.5
+
+
+def test_campaigns_listing_body_matches_the_stored_states(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.get("/api/campaigns")
+
+    assert response.status_code == 200
+    assert response.json() == [campaign_store.read_state(state.campaign_id).model_dump(mode="json")]
+
+
+def test_campaign_detail_response_shape_is_stable(client, store):
+    from ai_experiments.schemas import TrialRecord
+
+    campaign_store, state = _seed_campaign(store)
+    state.trials.append(
+        TrialRecord(
+            trial_id="t000",
+            params={"x": 0.5},
+            status="completed",
+            objective_value=0.5,
+            gpu_hours=1.0,
+        )
+    )
+    state.best_trial_id = "t000"
+    campaign_store.write_state(state)
+
+    body = client.get(f"/api/campaigns/{state.campaign_id}").json()
+
+    assert set(body) == {"state", "summary"}
+    assert body["state"] == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+    assert set(body["summary"]) == {
+        "campaign_id",
+        "name",
+        "goal",
+        "status",
+        "stop_reason",
+        "gpu_hours",
+        "wall_hours",
+        "estimated_cost",
+        "budget",
+        "objective",
+        "rounds",
+        "trials_by_status",
+        "trials_total",
+        "best",
+        "verdict",
+        "success",
+        "history",
+        "created_at",
+        "last_advanced_at",
+        "agent_calls",
+    }
+    assert body["summary"]["best"] == {
+        "trial_id": "t000",
+        "run_id": None,
+        "objective_value": 0.5,
+        "stderr": None,
+        "n_observations": 0,
+        "ci95": None,
+        "params": {"x": 0.5},
+    }
+    assert body["summary"]["history"] == [
+        {
+            "trial_id": "t000",
+            "status": "completed",
+            "objective_value": 0.5,
+            "params": {"x": 0.5},
+            "error": None,
+        }
+    ]
+    goal = campaign_store.read_goal(state.campaign_id)
+    assert set(body["summary"]["budget"]) == {"max_trials", "max_gpu_hours", "gpu_hour_rate"}
+    assert body["summary"]["budget"] == {
+        "max_trials": goal.budget.max_trials,
+        "max_gpu_hours": goal.budget.max_gpu_hours,
+        "gpu_hour_rate": goal.budget.gpu_hour_rate,
+    }
+    assert set(body["summary"]["objective"]) == {
+        "metric",
+        "baseline_metric",
+        "mode",
+        "target",
+        "aggregate",
+    }
+    assert body["summary"]["objective"] == {
+        "metric": goal.objective.metric,
+        "baseline_metric": goal.objective.baseline_metric,
+        "mode": goal.objective.mode,
+        "target": goal.objective.target,
+        "aggregate": goal.objective.aggregate,
+    }
+
+
+def test_campaign_stop_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/stop")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+
+
 def test_campaign_pause_resume_endpoints(client, store):
     from ai_experiments.schemas import (
         BudgetSpec,
@@ -207,6 +483,35 @@ def test_campaign_pause_resume_endpoints(client, store):
 
     resumed = client.post(f"/api/campaigns/{state.campaign_id}/resume")
     assert resumed.status_code == 200
+
+
+def test_campaign_pause_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
+
+
+def test_campaign_pause_conflict_body_shape(client, store):
+    _campaign_store, state = _seed_campaign(store)
+    client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    assert response.status_code == 409
+    assert set(response.json()) == {"detail"}
+
+
+def test_campaign_resume_body_matches_persisted_state(client, store):
+    campaign_store, state = _seed_campaign(store)
+    client.post(f"/api/campaigns/{state.campaign_id}/pause")
+
+    response = client.post(f"/api/campaigns/{state.campaign_id}/resume")
+
+    assert response.status_code == 200
+    assert response.json() == campaign_store.read_state(state.campaign_id).model_dump(mode="json")
 
 
 def test_clusters_endpoint(client, tmp_path, monkeypatch):
@@ -244,7 +549,7 @@ def test_clusters_endpoint_without_config(client, monkeypatch, tmp_path):
         ("127.0.0.1", True),
         ("::1", True),
         ("localhost", True),
-        ("0.0.0.0", False),
+        ("0.0.0.0", False),  # noqa: S104  # exercising the is_loopback() classifier, not a bind
         ("192.168.1.40", False),
         ("::", False),
         ("dashboard.internal", False),
@@ -265,25 +570,11 @@ def _mutations(store, run_id: str, campaign_id: str) -> list[str]:
     ]
 
 
-def _seed_campaign(store) -> str:
-    from ai_experiments.schemas import GoalSpec
-    from ai_experiments.store.campaign import CampaignStore
-
-    goal = GoalSpec(
-        goal="minimize loss",
-        name="served",
-        objective={"metric": "loss"},
-        search_space={"lr": {"type": "choice", "values": [0.1]}},
-        workload={"entrypoint": "true"},
-    )
-    return CampaignStore(store.root).create_campaign(goal).campaign_id
-
-
 def test_a_networked_dashboard_refuses_every_mutation(store):
     """Anyone who can route to the port could otherwise cancel a week of work."""
     run_id = _seed_run(store)
-    campaign_id = _seed_campaign(store)
-    client = TestClient(create_app(store, host="0.0.0.0"))
+    campaign_id = _seed_campaign(store)[1].campaign_id
+    client = TestClient(create_app(store, host="0.0.0.0"))  # noqa: S104  # test fixture value
 
     for path in _mutations(store, run_id, campaign_id):
         response = client.post(path)
@@ -295,7 +586,7 @@ def test_a_networked_dashboard_refuses_every_mutation(store):
 
 def test_a_networked_dashboard_still_serves_every_read(store):
     run_id = _seed_run(store)
-    client = TestClient(create_app(store, host="0.0.0.0"))
+    client = TestClient(create_app(store, host="0.0.0.0"))  # noqa: S104  # test fixture value
 
     assert client.get("/api/runs").status_code == 200
     assert client.get(f"/api/runs/{run_id}").status_code == 200
@@ -305,7 +596,9 @@ def test_a_networked_dashboard_still_serves_every_read(store):
 
 def test_the_operator_can_ask_for_networked_mutations_by_name(store):
     run_id = _seed_run(store)
-    client = TestClient(create_app(store, host="0.0.0.0", allow_remote_mutations=True))
+    client = TestClient(
+        create_app(store, host="0.0.0.0", allow_remote_mutations=True)  # noqa: S104  # test fixture value
+    )
 
     assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
     assert client.get("/api/health").json()["mutations"] == "allowed"

@@ -6,7 +6,7 @@ import pytest
 
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import ExperimentManifest, TrackingSpec, WorkloadSpec
+from ai_experiments.schemas import BackendName, ExperimentManifest, TrackingSpec, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -26,8 +26,12 @@ class FakeRayClient:
         assert job_id == "ray-job-1"
         return self.status
 
-    def get_job_info(self, job_id: str) -> dict:
+    def get_job_info(self, job_id: str) -> dict:  # ast-grep-ignore: no-dict-return-annotation
+        # Imitates Ray's JobSubmissionClient.get_job_info() shape, which
+        # _job_info_dict then converts; modeling this fake would make it
+        # diverge from the third-party API it stands in for.
         assert job_id == "ray-job-1"
+        # ast-grep-ignore: no-dict-literal-return
         return {"status": self.status, "message": self.message}
 
     def get_job_logs(self, job_id: str) -> str:
@@ -158,7 +162,7 @@ def test_ray_backend_resolves_address_precedence(
 # trusting the order of calls inside submit.
 
 
-def _tracked_manifest(tmp_path, backend: str) -> ExperimentManifest:
+def _tracked_manifest(tmp_path, backend: BackendName) -> ExperimentManifest:
     return ExperimentManifest(
         experiment="mlflow-linkage",
         backend=backend,
@@ -167,14 +171,12 @@ def _tracked_manifest(tmp_path, backend: str) -> ExperimentManifest:
     )
 
 
-def test_ray_submit_preserves_the_mlflow_linkage(tmp_path):
-    from test_tracking import FakeMlflowModule
-
+def test_ray_submit_preserves_the_mlflow_linkage(tmp_path, fake_mlflow_module_factory):
     store = FilesystemRunStore(tmp_path / "runs")
     client = FakeRayClient(status="RUNNING")
     backend = RayBackend(store=store, client_factory=lambda _address: client)
 
-    with patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()):
+    with patch("ai_experiments.tracking._load_mlflow", return_value=fake_mlflow_module_factory()):
         handle = backend.submit(_tracked_manifest(tmp_path, "ray"))
 
     status = store.read_status(handle.run_id)
@@ -187,14 +189,12 @@ def test_ray_submit_preserves_the_mlflow_linkage(tmp_path):
     assert status.external_id == "ray-job-1"
 
 
-def test_local_submit_preserves_the_mlflow_linkage(tmp_path):
-    from test_tracking import FakeMlflowModule
-
+def test_local_submit_preserves_the_mlflow_linkage(tmp_path, fake_mlflow_module_factory):
     store = FilesystemRunStore(tmp_path / "runs")
     backend = LocalBackend(store=store)
 
     with (
-        patch("ai_experiments.tracking._load_mlflow", return_value=FakeMlflowModule()),
+        patch("ai_experiments.tracking._load_mlflow", return_value=fake_mlflow_module_factory()),
         patch("subprocess.Popen"),
     ):
         handle = backend.submit(_tracked_manifest(tmp_path, "local"))
@@ -209,11 +209,13 @@ def test_local_submit_preserves_the_mlflow_linkage(tmp_path):
 
 
 def test_ray_cancel_does_not_rewrite_a_job_that_already_failed(tmp_path):
-    """A Ray run has no local supervisor, so its stored status is only as
-    fresh as the last inspect. Cancelling used to stamp `cancelled` over a job
-    that had failed on its own -- and the MLflow mirror then reported KILLED,
-    "someone stopped this on purpose", in the one place an operator looks to
-    find out why training died."""
+    """A Ray run has no local supervisor, so its stored status is only as fresh as the last inspect.
+
+    Cancelling used to stamp `cancelled` over a job that had failed on its
+    own -- and the MLflow mirror then reported KILLED, "someone stopped this
+    on purpose", in the one place an operator looks to find out why training
+    died.
+    """
     store = FilesystemRunStore(tmp_path / "runs")
     client = FakeRayClient(status="RUNNING")
     backend = RayBackend(store=store, client_factory=lambda _address: client)

@@ -67,13 +67,14 @@ class CliAgentRunner:
         self._calls += 1
         started = time.monotonic()
         try:
-            completed = subprocess.run(
+            completed = subprocess.run(  # noqa: S603  # operator-configured agent CLI
                 self.argv,
                 input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
                 cwd=str(self.cwd) if self.cwd else None,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             result = AgentResult(
@@ -139,17 +140,14 @@ class StubAgentRunner:
         return AgentResult(ok=True, payload=reply, raw="")
 
 
-def _interpret(
-    completed: subprocess.CompletedProcess[str], duration: float
-) -> AgentResult:
+def _interpret(completed: subprocess.CompletedProcess[str], duration: float) -> AgentResult:
     output = completed.stdout or ""
     tail = output[-4000:]
     if completed.returncode != 0:
         return AgentResult(
             raw=tail,
             error=(
-                f"agent exited {completed.returncode}: "
-                f"{(completed.stderr or '').strip()[-500:]}"
+                f"agent exited {completed.returncode}: {(completed.stderr or '').strip()[-500:]}"
             ),
             exit_code=completed.returncode,
             duration_seconds=duration,

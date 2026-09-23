@@ -47,7 +47,7 @@ def _space():
 
 def test_a_conditional_dimension_is_drawn_only_when_its_condition_holds():
     space = _space()
-    rng = random.Random(0)
+    rng = random.Random(0)  # noqa: S311  # test fixture, not security
 
     draws = [sample(space, rng) for _ in range(50)]
 
@@ -66,8 +66,10 @@ def test_the_active_space_is_what_a_given_assignment_actually_has():
 
 
 def test_a_grid_does_not_multiply_out_knobs_the_model_ignores():
-    """The logreg half of the grid is one point per learning rate, not one
-    per (learning rate x leaf count) it will never read."""
+    """The logreg half of the grid is one point per learning rate.
+
+    Not one per (learning rate x leaf count) it will never read.
+    """
     points = grid_points(_space(), resolution=2)
 
     logreg = [p for p in points if p["model"] == "logreg"]
@@ -78,11 +80,12 @@ def test_a_grid_does_not_multiply_out_knobs_the_model_ignores():
 
 
 def test_perturbing_across_the_condition_drops_and_adds_the_dimension():
-    """A neighbour that flips `model` has to stop carrying a dead knob, and
-    one that flips back has to draw it fresh rather than resurrect a stale
-    value."""
+    """A neighbour that flips `model` stops carrying a dead knob.
+
+    One that flips back has to draw it fresh rather than resurrect a stale value.
+    """
     space = _space()
-    rng = random.Random(1)
+    rng = random.Random(1)  # noqa: S311  # test fixture, not security
 
     moved = [
         perturb(
@@ -105,9 +108,10 @@ def test_an_assignment_missing_an_inactive_key_is_valid():
 
 
 def test_an_assignment_that_sets_an_inactive_key_is_rejected():
-    """Sending `--max-leaf-nodes` to a logistic regression is the bug the
-    condition exists to prevent; accepting it silently puts a parameter in the
-    trial record that had no effect on the run."""
+    """Sending `--max-leaf-nodes` to a logistic regression is the bug the condition prevents.
+
+    Accepting it silently puts a parameter in the trial record that had no effect on the run.
+    """
     with pytest.raises(ParamValidationError) as excinfo:
         validate_params(
             _space(),
@@ -143,9 +147,10 @@ def test_a_condition_on_a_key_the_space_does_not_define_is_refused():
 
 
 def test_a_condition_on_a_conditional_key_is_refused():
-    """One level deep keeps the sampling order obvious: unconditional keys
-    first, then everything that depends on them. Chains would need a
-    topological sort and a cycle check for no use anyone has asked for.
+    """One level deep keeps the sampling order obvious.
+
+    Unconditional keys first, then everything that depends on them. Chains would need a topological
+    sort and a cycle check for no use anyone has asked for.
     """
     with pytest.raises(ValueError, match="itself conditional"):
         GoalSpec(

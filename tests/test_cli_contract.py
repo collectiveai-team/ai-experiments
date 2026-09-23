@@ -52,9 +52,7 @@ UNKNOWN_RUN_COMMANDS = [
 
 @pytest.mark.parametrize("command", UNKNOWN_RUN_COMMANDS, ids=lambda c: c[0])
 def test_unknown_run_is_a_json_not_found(tmp_path, command):
-    result = runner.invoke(
-        app, [*command, "--runs-dir", str(tmp_path / "runs"), "--json"]
-    )
+    result = runner.invoke(app, [*command, "--runs-dir", str(tmp_path / "runs"), "--json"])
 
     assert result.exit_code == EXIT_NOT_FOUND
     payload = json.loads(result.stdout)
@@ -72,9 +70,7 @@ UNKNOWN_CAMPAIGN_COMMANDS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "command", UNKNOWN_CAMPAIGN_COMMANDS, ids=lambda c: "-".join(c)
-)
+@pytest.mark.parametrize("command", UNKNOWN_CAMPAIGN_COMMANDS, ids="-".join)
 def test_unknown_campaign_is_a_json_not_found(tmp_path, command):
     result = runner.invoke(
         app, [*command, "camp_nope", "--runs-dir", str(tmp_path / "runs"), "--json"]
@@ -132,7 +128,8 @@ def test_suggest_reports_every_search_space_violation_as_json(tmp_path):
     assert result.exit_code == EXIT_INVALID_INPUT
     payload = json.loads(result.stdout)
     assert payload["code"] == "invalid_input"
-    assert "x" in payload["error"] and "typo" in payload["error"]
+    assert "x" in payload["error"]
+    assert "typo" in payload["error"]
 
 
 def test_malformed_params_json_is_invalid_input(tmp_path):

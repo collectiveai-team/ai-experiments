@@ -14,9 +14,7 @@ from ai_experiments.schemas import (
 )
 
 
-def plan_next_params(
-    goal: GoalSpec, trials: list[TrialRecord], count: int
-) -> list[dict[str, Any]]:
+def plan_next_params(goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
     if count <= 0:
         return []
     return get_strategy(goal.strategy.name).plan(goal, trials, count)
@@ -58,9 +56,7 @@ def build_trial_manifest(
         args.append(rendered)
     for name in sorted(params):
         if name not in substituted:
-            args.extend(
-                [flag_for(name, goal.workload.flag_style), _format_value(params[name])]
-            )
+            args.extend([flag_for(name, goal.workload.flag_style), _format_value(params[name])])
 
     env = dict(goal.workload.env)
     env["IAX_PARAMS"] = json.dumps(params)
@@ -89,7 +85,7 @@ def build_trial_manifest(
 
 
 def flag_for(name: str, style: FlagStyle = "hyphen") -> str:
-    """The command-line flag a search space key is sent as.
+    """Spell the command-line flag a search space key is sent as.
 
     Search space keys are Python identifiers (``label_source``); argument
     parsers declare ``--label-source``. argparse rejects any long option it

@@ -35,18 +35,16 @@ def _run(tmp_path, points: list[dict[str, float]]):
 def test_the_best_observation_is_the_score(tmp_path):
     store, run_id = _run(tmp_path, [{"pr_auc": 0.4}, {"pr_auc": 0.7}, {"pr_auc": 0.5}])
 
-    reading = extract_objective(
-        store, run_id, ObjectiveSpec(metric="pr_auc", mode="max")
-    )
+    reading = extract_objective(store, run_id, ObjectiveSpec(metric="pr_auc", mode="max"))
 
     assert reading.value == 0.7
 
 
 def test_a_baseline_makes_trials_on_different_data_comparable(tmp_path):
-    """Raw PR-AUC is not comparable when a search space dimension moves the
-    base rate: the trial with more positives starts higher without being
-    more predictable. The score is the lift over the baseline the trial
-    itself reported.
+    """Score the lift over the baseline the trial itself reported.
+
+    Raw PR-AUC is not comparable when a search space dimension moves the base rate: the trial with
+    more positives starts higher without being more predictable.
     """
     store, run_id = _run(tmp_path, [{"pr_auc": 0.58, "baseline_pr_auc": 0.50}])
 
@@ -114,8 +112,7 @@ def test_a_trial_that_never_reported_the_baseline_does_not_score(tmp_path):
 
 
 def test_folds_are_averaged_not_maximized(tmp_path):
-    """Two kinds of run report many observations, and they need opposite
-    aggregations.
+    """Two kinds of run report many observations, and they need opposite aggregations.
 
     Epochs are successive states of one model, so the best is the answer.
     Folds are independent evaluations of the *same* configuration, so the
@@ -123,9 +120,7 @@ def test_folds_are_averaged_not_maximized(tmp_path):
     measure. `aggregate: mean` is how a cross-validated workload says which
     kind it is.
     """
-    store, run_id = _run(
-        tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}]
-    )
+    store, run_id = _run(tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}])
 
     reading = extract_objective(
         store, run_id, ObjectiveSpec(metric="pr_auc", mode="max", aggregate="mean")
@@ -137,9 +132,7 @@ def test_folds_are_averaged_not_maximized(tmp_path):
 
 def test_an_averaged_score_carries_how_much_the_folds_disagreed(tmp_path):
     """A mean without its spread is the number that hides a dead fold."""
-    store, run_id = _run(
-        tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}]
-    )
+    store, run_id = _run(tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}])
 
     reading = extract_objective(
         store, run_id, ObjectiveSpec(metric="pr_auc", mode="max", aggregate="mean")
@@ -173,9 +166,7 @@ def test_bootstrap_replicates_keep_their_spread_undivided(tmp_path):
     count is a computational knob, so the interval would get narrower the
     longer the workload was willing to run.
     """
-    store, run_id = _run(
-        tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}]
-    )
+    store, run_id = _run(tmp_path, [{"pr_auc": 0.30}, {"pr_auc": 0.90}, {"pr_auc": 0.60}])
 
     reading = extract_objective(
         store, run_id, ObjectiveSpec(metric="pr_auc", mode="max", aggregate="bootstrap")
@@ -188,8 +179,10 @@ def test_bootstrap_replicates_keep_their_spread_undivided(tmp_path):
 
 
 def test_more_replicates_do_not_narrow_the_interval(tmp_path):
-    """The guarantee that makes `bootstrap` safe to declare: a workload
-    cannot buy confidence by resampling more."""
+    """A workload cannot buy confidence by resampling more.
+
+    This is the guarantee that makes `bootstrap` safe to declare.
+    """
     few, few_id = _run(tmp_path / "few", [{"m": 0.4}, {"m": 0.6}] * 5)
     many, many_id = _run(tmp_path / "many", [{"m": 0.4}, {"m": 0.6}] * 50)
     spec = ObjectiveSpec(metric="m", mode="max", aggregate="bootstrap")
@@ -197,7 +190,8 @@ def test_more_replicates_do_not_narrow_the_interval(tmp_path):
     thin = extract_objective(few, few_id, spec)
     thick = extract_objective(many, many_id, spec)
 
-    assert thin.stderr is not None and thick.stderr is not None
+    assert thin.stderr is not None
+    assert thick.stderr is not None
     assert abs(thin.stderr - thick.stderr) < 0.01
     assert thick.n_observations == 100
 
@@ -241,7 +235,7 @@ def test_taking_the_best_is_still_the_default(tmp_path):
 
 
 def _campaign(scored: list[tuple[str, float, float | None]], **objective_kwargs):
-    """A finished campaign whose trials already carry their readings."""
+    """Build a finished campaign whose trials already carry their readings."""
     goal = GoalSpec(
         name="c",
         goal="find the best window",
@@ -269,18 +263,20 @@ def _campaign(scored: list[tuple[str, float, float | None]], **objective_kwargs)
 
 
 def test_a_lead_inside_the_noise_is_not_a_winner():
-    """The campaign's headline is the whole product of a run, and 24 trials
-    of a noisy objective produce a max that beats the runner-up by less than
-    a fold's worth of variation roughly always. Whether that gap is real is
-    arithmetic, not judgement, so the harness does it.
+    """Decide in code whether the winner's lead over the runner-up is real.
+
+    The campaign's headline is the whole product of a run, and 24 trials of a noisy objective
+    produce a max that beats the runner-up by less than a fold's worth of variation roughly always.
+    Whether that gap is real is arithmetic, not judgement, so the harness does it.
     """
     state, goal = _campaign([("t1", 0.12, 0.07), ("t2", 0.10, 0.07)], aggregate="mean")
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["best"]["trial_id"] == "t1"
-    assert summary["verdict"]["separated"] is False
-    assert summary["verdict"]["runner_up_trial_id"] == "t2"
+    assert summary.best is not None
+    assert summary.best.trial_id == "t1"
+    assert summary.verdict.separated is False
+    assert summary.verdict.runner_up_trial_id == "t2"
 
 
 def test_a_lead_outside_the_noise_is_a_winner():
@@ -288,18 +284,21 @@ def test_a_lead_outside_the_noise_is_a_winner():
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["separated"] is True
-    assert abs(summary["verdict"]["margin"] - 0.80) < 1e-9
+    assert summary.verdict.separated is True
+    assert summary.verdict.margin is not None
+    assert abs(summary.verdict.margin - 0.80) < 1e-9
 
 
 def test_separation_is_unknown_when_nobody_measured_it():
-    """`best` objectives report no spread, so the answer is "not measured",
-    which is a different thing from "the lead is not real"."""
+    """`best` objectives report no spread, so the answer is "not measured".
+
+    That is a different thing from "the lead is not real".
+    """
     state, goal = _campaign([("t1", 0.9, None), ("t2", 0.1, None)])
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["separated"] is None
+    assert summary.verdict.separated is None
 
 
 def test_a_single_trial_has_no_runner_up_to_be_separated_from():
@@ -307,21 +306,25 @@ def test_a_single_trial_has_no_runner_up_to_be_separated_from():
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["runner_up_trial_id"] is None
-    assert summary["verdict"]["separated"] is None
+    assert summary.verdict.runner_up_trial_id is None
+    assert summary.verdict.separated is None
 
 
 def test_a_lift_whose_interval_contains_zero_does_not_beat_the_baseline():
-    """With a baseline the objective *is* the lift, so "better than doing
-    nothing" is the question the interval answers."""
+    """With a baseline the objective *is* the lift.
+
+    "Better than doing nothing" is then the question the interval answers.
+    """
     state, goal = _campaign(
         [("t1", 0.1189, 0.0737)], baseline_metric="baseline_pr_auc", aggregate="mean"
     )
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["beats_baseline"] is False
-    lo, hi = summary["best"]["ci95"]
+    assert summary.verdict.beats_baseline is False
+    assert summary.best is not None
+    assert summary.best.ci95 is not None
+    lo, hi = summary.best.ci95
     assert lo < 0 < hi
 
 
@@ -332,7 +335,7 @@ def test_a_lift_clear_of_zero_beats_the_baseline():
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["beats_baseline"] is True
+    assert summary.verdict.beats_baseline is True
 
 
 def test_without_a_baseline_there_is_nothing_to_beat():
@@ -340,27 +343,30 @@ def test_without_a_baseline_there_is_nothing_to_beat():
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["verdict"]["beats_baseline"] is None
+    assert summary.verdict.beats_baseline is None
 
 
 def test_the_summary_says_which_baseline_the_score_is_measured_against():
-    """A reader who sees `pr_auc: 0.12` and does not see that it is a lift
-    will compare it against published PR-AUCs and conclude the model is bad.
+    """Name the scale, so a lift is not read as a raw PR-AUC.
+
+    A reader who sees `pr_auc: 0.12` and does not see that it is a lift will compare it against
+    published PR-AUCs and conclude the model is bad.
     """
     state, goal = _campaign([("t1", 0.12, 0.01)], baseline_metric="baseline_pr_auc")
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["objective"]["baseline_metric"] == "baseline_pr_auc"
-    assert summary["objective"]["aggregate"] == "best"
+    assert summary.objective.baseline_metric == "baseline_pr_auc"
+    assert summary.objective.aggregate == "best"
 
 
 # --- saying it out loud ---------------------------------------------------
 
 
 def test_the_result_lines_refuse_to_announce_a_winner_inside_the_noise():
-    """A report that prints only `Best: t1 pr_auc=0.12` is how a max-of-24
-    becomes a headline. The line that follows it is the finding.
+    """The line after the headline is the finding.
+
+    A report that prints only `Best: t1 pr_auc=0.12` is how a max-of-24 becomes a headline.
     """
     state, goal = _campaign(
         [("t1", 0.12, 0.07), ("t2", 0.10, 0.07)],
@@ -389,8 +395,10 @@ def test_the_result_lines_say_so_when_the_lead_is_real():
 
 
 def test_the_result_lines_stay_quiet_about_what_was_never_measured():
-    """An epoch-scored campaign has no interval, and inventing a verdict for
-    it would be the same overclaim in the other direction."""
+    """An epoch-scored campaign has no interval, so no verdict is invented for it.
+
+    Inventing one would be the same overclaim in the other direction.
+    """
     state, goal = _campaign([("t1", 0.9, None), ("t2", 0.1, None)])
 
     lines = result_lines(summarize_campaign(state, goal))
@@ -416,32 +424,29 @@ def _with_criteria(scored, criteria, **objective_kwargs):
 
 
 def test_a_campaign_that_declares_nothing_cannot_be_said_to_have_succeeded():
-    """The honest answer to "did it work?" for a goal that never said what
-    working means is not "yes" and not "no" — it is that nobody wrote it
-    down. Silence here is how a max-of-24 becomes a headline.
+    """A goal that never said what working means gets neither "yes" nor "no".
+
+    The honest answer to "did it work?" is that nobody wrote it down. Silence here is how a max-
+    of-24 becomes a headline.
     """
     summary = _with_criteria([("t1", 0.9, 0.01)], {}, aggregate="mean")
 
-    assert summary["success"]["declared"] is False
-    assert summary["success"]["met"] is None
+    assert summary.success.declared is False
+    assert summary.success.met is None
 
 
 def test_the_score_has_to_clear_the_bar_that_was_set():
-    summary = _with_criteria(
-        [("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean"
-    )
+    summary = _with_criteria([("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean")
 
-    assert summary["success"]["met"] is False
-    assert any("0.05" in reason for reason in summary["success"]["unmet"])
+    assert summary.success.met is False
+    assert any("0.05" in reason for reason in summary.success.unmet)
 
 
 def test_a_score_over_the_bar_meets_the_criteria():
-    summary = _with_criteria(
-        [("t1", 0.30, 0.001)], {"min_objective": 0.05}, aggregate="mean"
-    )
+    summary = _with_criteria([("t1", 0.30, 0.001)], {"min_objective": 0.05}, aggregate="mean")
 
-    assert summary["success"]["met"] is True
-    assert summary["success"]["unmet"] == []
+    assert summary.success.met is True
+    assert summary.success.unmet == []
 
 
 def test_a_bar_read_the_other_way_round_when_lower_is_better():
@@ -453,19 +458,18 @@ def test_a_bar_read_the_other_way_round_when_lower_is_better():
         }
     )
 
-    assert summarize_campaign(state, goal)["success"]["met"] is True
+    assert summarize_campaign(state, goal).success.met is True
 
 
 def test_proof_that_was_never_collected_does_not_count_as_proof():
-    """Demanding separation from a campaign that measured no spread fails —
-    the criterion asks for evidence, and "not measured" is not evidence.
-    """
-    summary = _with_criteria(
-        [("t1", 0.9, None), ("t2", 0.1, None)], {"require_separation": True}
-    )
+    """Demanding separation from a campaign that measured no spread fails.
 
-    assert summary["success"]["met"] is False
-    assert any("never measured" in reason for reason in summary["success"]["unmet"])
+    The criterion asks for evidence, and "not measured" is not evidence.
+    """
+    summary = _with_criteria([("t1", 0.9, None), ("t2", 0.1, None)], {"require_separation": True})
+
+    assert summary.success.met is False
+    assert any("never measured" in reason for reason in summary.success.unmet)
 
 
 def test_a_winner_inside_the_noise_fails_the_separation_criterion():
@@ -475,7 +479,7 @@ def test_a_winner_inside_the_noise_fails_the_separation_criterion():
         aggregate="mean",
     )
 
-    assert summary["success"]["met"] is False
+    assert summary.success.met is False
 
 
 def test_a_lift_that_does_not_clear_the_baseline_fails_that_criterion():
@@ -486,36 +490,31 @@ def test_a_lift_that_does_not_clear_the_baseline_fails_that_criterion():
         aggregate="mean",
     )
 
-    assert summary["success"]["met"] is False
-    assert any("baseline" in reason for reason in summary["success"]["unmet"])
+    assert summary.success.met is False
+    assert any("baseline" in reason for reason in summary.success.unmet)
 
 
 def test_one_lucky_fold_is_not_enough_observations():
-    """A 24-trial campaign whose winner rests on a single evaluation has
-    measured the evaluation, not the model."""
+    """A winner resting on a single evaluation has measured the evaluation, not the model."""
     state, goal = _campaign([("t1", 0.9, None)], aggregate="mean")
     state.trials[0].objective_observations = 1
-    goal = goal.model_copy(
-        update={"success_criteria": SuccessCriteria(min_observations=5)}
-    )
+    goal = goal.model_copy(update={"success_criteria": SuccessCriteria(min_observations=5)})
 
     summary = summarize_campaign(state, goal)
 
-    assert summary["success"]["met"] is False
-    assert any("1 observation" in reason for reason in summary["success"]["unmet"])
+    assert summary.success.met is False
+    assert any("1 observation" in reason for reason in summary.success.unmet)
 
 
 def test_criteria_cannot_be_met_by_a_campaign_with_no_scored_trial():
     summary = _with_criteria([], {"min_objective": 0.05})
 
-    assert summary["success"]["met"] is False
-    assert any("no trial" in reason for reason in summary["success"]["unmet"])
+    assert summary.success.met is False
+    assert any("no trial" in reason for reason in summary.success.unmet)
 
 
 def test_the_result_lines_state_the_verdict_on_the_criteria():
-    summary = _with_criteria(
-        [("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean"
-    )
+    summary = _with_criteria([("t1", 0.04, 0.001)], {"min_objective": 0.05}, aggregate="mean")
 
     lines = result_lines(summary)
 

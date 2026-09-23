@@ -154,4 +154,5 @@ def test_the_brief_the_agent_sees_names_the_goal_and_the_history():
 
     brief = runner.prompts[0]
     assert "Get loss under 0.05" in brief
-    assert "t000" in brief and "workload exited 1" in brief
+    assert "t000" in brief
+    assert "workload exited 1" in brief

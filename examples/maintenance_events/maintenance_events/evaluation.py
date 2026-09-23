@@ -31,7 +31,7 @@ no a "¿cuánto va a rendir el mes que viene?".
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,9 @@ from sklearn.metrics import (
     precision_recall_curve,
     roc_auc_score,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 MIN_TRAIN = 30
 
@@ -62,7 +65,7 @@ class FoldResult:
     recall_at_p50: float | None
     baseline: float | None
 
-    def as_metric(self) -> dict[str, float | None]:
+    def as_metric(self) -> dict[str, float | None]:  # ast-grep-ignore: no-dict-return-annotation
         """El fold como observación del objetivo.
 
         ``objective.aggregate: mean`` promedia las observaciones y calcula el
@@ -121,9 +124,7 @@ def walk_forward_splits(
     for fold in range(n_folds):
         train_stop = block * (fold + 1)
         test_start = train_stop
-        while (
-            test_start < n and (as_of[test_start] - as_of[train_stop - 1]) <= gap_days
-        ):
+        while test_start < n and (as_of[test_start] - as_of[train_stop - 1]) <= gap_days:
             test_start += 1
         test_stop = min(test_start + block, n)
         if train_stop < MIN_TRAIN or test_start >= test_stop:
@@ -132,9 +133,7 @@ def walk_forward_splits(
     return splits
 
 
-def _recall_at_precision(
-    y_true: np.ndarray, scores: np.ndarray, floor: float = 0.5
-) -> float:
+def _recall_at_precision(y_true: np.ndarray, scores: np.ndarray, floor: float = 0.5) -> float:
     precision, recall, _ = precision_recall_curve(y_true, scores)
     eligible = recall[precision >= floor]
     return float(eligible.max()) if eligible.size else 0.0
@@ -151,65 +150,14 @@ def evaluate(
     folds: list[FoldResult] = []
     oof_index: list[np.ndarray] = []
     oof_scores: list[np.ndarray] = []
-    for i, (train_idx, test_idx) in enumerate(
-        walk_forward_splits(as_of, n_folds, horizon_days)
-    ):
-        y_train = y.iloc[train_idx].to_numpy()
-        y_test = y.iloc[test_idx].to_numpy()
-        positives = int(y_test.sum())
+    for i, (train_idx, test_idx) in enumerate(walk_forward_splits(as_of, n_folds, horizon_days)):
+        fold, scores = _score_fold(X, y, as_of, make_model, i, train_idx, test_idx)
+        folds.append(fold)
+        if scores is not None:
+            oof_index.append(test_idx)
+            oof_scores.append(scores)
 
-        base = FoldResult(
-            index=i,
-            train_end=as_of[train_idx[-1]],
-            test_start=as_of[test_idx[0]],
-            test_end=as_of[test_idx[-1]],
-            n_train=len(train_idx),
-            n_test=len(test_idx),
-            positives=positives,
-            pr_auc=None,
-            auroc=None,
-            recall_at_p50=None,
-            baseline=None,
-        )
-        if positives == 0 or len(np.unique(y_train)) < 2:
-            folds.append(base)
-            continue
-
-        model = make_model()
-        model.fit(X.iloc[train_idx], y_train)
-        scores = model.predict_proba(X.iloc[test_idx])[:, 1]
-
-        base.pr_auc = float(average_precision_score(y_test, scores))
-        base.auroc = (
-            float(roc_auc_score(y_test, scores)) if len(np.unique(y_test)) > 1 else None
-        )
-        base.recall_at_p50 = _recall_at_precision(y_test, scores)
-        base.baseline = float(y_test.mean())
-        oof_index.append(test_idx)
-        oof_scores.append(scores)
-        folds.append(base)
-
-    scored = [f for f in folds if f.pr_auc is not None]
-    # Nada acá se llama `pr_auc` ni `baseline_pr_auc`: el resumen es una línea
-    # más de stdout, y si repitiera las claves objetivo sería una observación
-    # extra — el promedio contado dos veces y un error estándar más chico que
-    # el real. Lo que resume ya lo calcula el arnés.
-    summary = {
-        "mean_pr_auc": float(np.mean([f.pr_auc for f in scored])) if scored else 0.0,
-        "pr_auc_std": float(np.std([f.pr_auc for f in scored], ddof=1))
-        if len(scored) > 1
-        else 0.0,
-        "auroc": float(np.mean([f.auroc for f in scored if f.auroc is not None]))
-        if scored
-        else 0.0,
-        "recall_at_p50": float(np.mean([f.recall_at_p50 for f in scored]))
-        if scored
-        else 0.0,
-        "mean_baseline": float(np.mean([f.baseline for f in scored]))
-        if scored
-        else 0.0,
-        "valid_folds": len(scored),
-    }
+    summary = _summarize_folds([f for f in folds if f.pr_auc is not None])
     if oof_index:
         order = np.concatenate(oof_index)
         pooled = OutOfFold(
@@ -222,6 +170,71 @@ def evaluate(
     summary["pooled_windows"] = len(pooled)
     summary["pooled_positives"] = pooled.positives
     return folds, summary, pooled
+
+
+def _score_fold(
+    X: pd.DataFrame,
+    y: pd.Series,
+    as_of: pd.DatetimeIndex,
+    make_model: Callable[[], object],
+    index: int,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+) -> tuple[FoldResult, np.ndarray | None]:
+    """Un fold: sus métricas y los scores out-of-fold, o ``None`` si no se pudo puntuar."""
+    y_train = y.iloc[train_idx].to_numpy()
+    y_test = y.iloc[test_idx].to_numpy()
+    positives = int(y_test.sum())
+    fold = FoldResult(
+        index=index,
+        train_end=as_of[train_idx[-1]],
+        test_start=as_of[test_idx[0]],
+        test_end=as_of[test_idx[-1]],
+        n_train=len(train_idx),
+        n_test=len(test_idx),
+        positives=positives,
+        pr_auc=None,
+        auroc=None,
+        recall_at_p50=None,
+        baseline=None,
+    )
+    if positives == 0 or len(np.unique(y_train)) < 2:
+        return fold, None
+    model = make_model()
+    model.fit(X.iloc[train_idx], y_train)
+    scores = model.predict_proba(X.iloc[test_idx])[:, 1]
+    fold.pr_auc = float(average_precision_score(y_test, scores))
+    fold.auroc = float(roc_auc_score(y_test, scores)) if len(np.unique(y_test)) > 1 else None
+    fold.recall_at_p50 = _recall_at_precision(y_test, scores)
+    fold.baseline = float(y_test.mean())
+    return fold, scores
+
+
+def _summarize_folds(  # ast-grep-ignore: no-dict-return-annotation
+    scored: list[FoldResult],
+) -> dict[str, float]:
+    """El resumen final, como una línea más de stdout.
+
+    Nada acá se llama `pr_auc` ni `baseline_pr_auc`: si repitiera las claves
+    objetivo sería una observación extra — el promedio contado dos veces y un
+    error estándar más chico que el real. Lo que resume ya lo calcula el arnés.
+    """
+    pr_aucs = [f.pr_auc for f in scored]
+    aurocs = [f.auroc for f in scored if f.auroc is not None]
+    # A metric payload keyed by metric name: one more stdout line, not a boundary model.
+    # ast-grep-ignore: no-dict-literal-return
+    return {
+        "mean_pr_auc": _mean(pr_aucs),
+        "pr_auc_std": float(np.std(pr_aucs, ddof=1)) if len(scored) > 1 else 0.0,
+        "auroc": float(np.mean(aurocs)) if scored else 0.0,
+        "recall_at_p50": _mean([f.recall_at_p50 for f in scored]),
+        "mean_baseline": _mean([f.baseline for f in scored]),
+        "valid_folds": len(scored),
+    }
+
+
+def _mean(values: list[float | None]) -> float:
+    return float(np.mean(values)) if values else 0.0
 
 
 def moving_blocks(n: int, block: int, rng: np.random.Generator) -> np.ndarray:

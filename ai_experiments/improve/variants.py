@@ -23,7 +23,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
-from datetime import datetime
+from datetime import datetime  # noqa: TC003  # pydantic resolves this field at runtime
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -85,7 +85,7 @@ def variants_root(campaign_dir: str | Path) -> Path:
 
 
 def resolve_edit_path(root: Path, relative: str, spec: VariantSpec) -> Path:
-    """The absolute path an edit may write, or raise.
+    """Return the absolute path an edit may write, or raise.
 
     ``root`` must already exist and be resolved, so that a symlink planted
     inside the copy cannot redirect a write outside it.
@@ -159,18 +159,17 @@ def smoke_check(record: VariantRecord, spec: VariantSpec) -> VariantRecord:
     if not spec.smoke_command:
         return record
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # noqa: S603  # user-configured smoke command
             spec.smoke_command,
             cwd=record.root,
             capture_output=True,
             text=True,
             timeout=spec.smoke_timeout_seconds,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         record.smoke_ok = False
-        record.smoke_output = (
-            f"smoke check timed out after {spec.smoke_timeout_seconds}s"
-        )
+        record.smoke_output = f"smoke check timed out after {spec.smoke_timeout_seconds}s"
         return record
     except OSError as exc:
         record.smoke_ok = False
@@ -201,9 +200,7 @@ def discard_variant(record: VariantRecord) -> VariantRecord:
         except OSError as exc:
             error = str(exc)
     gone = not root.exists()
-    return record.model_copy(
-        update={"discarded": gone, "discard_error": "" if gone else error}
-    )
+    return record.model_copy(update={"discarded": gone, "discard_error": "" if gone else error})
 
 
 def _ignore(directory: str, names: list[str]) -> set[str]:

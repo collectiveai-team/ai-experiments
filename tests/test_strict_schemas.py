@@ -11,25 +11,28 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
-from pydantic import BaseModel
 
 from ai_experiments import scaffold
 from ai_experiments.api import goal_from_dict
 from ai_experiments.cli_support import IaxError
+from ai_experiments.config_loading import load_stored
 from ai_experiments.schema_errors import _model_in
 from ai_experiments.schemas import (
     ExperimentManifest,
     GoalSpec,
     MonitorPolicy,
-    load_stored,
 )
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
-GOAL: dict[str, object] = {
+GOAL: dict[str, Any] = {
     "goal": "minimize loss",
     "name": "strict",
     "objective": {"metric": "loss", "mode": "min", "target": 0.1},
@@ -44,15 +47,21 @@ def _write(tmp_path: Path, data: dict[str, object]) -> Path:
     return path
 
 
-def _manifest(**extra: object) -> dict[str, object]:
-    return {"experiment": "strict", "workload": {"entrypoint": "true"}, **extra}
+def _manifest(**extra: Any) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+    # The untyped YAML payload an agent-authored manifest would parse into;
+    # typing it here would test the model instead of the parsing this exercises.
+    return {  # ast-grep-ignore: no-dict-literal-return
+        "experiment": "strict",
+        "workload": {"entrypoint": "true"},
+        **extra,
+    }
 
 
 def test_the_readme_shaped_typo_is_refused_and_named(tmp_path):
     """The exact file the README used to teach: `monitor:`/`stuck_after_seconds`."""
     path = _write(tmp_path, _manifest(monitor={"stuck_after_seconds": 60}))
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match="monitor: unknown field") as caught:
         ExperimentManifest.from_yaml(path)
 
     message = str(caught.value)
@@ -71,7 +80,7 @@ def test_an_unrecognizable_key_lists_the_fields_that_do_exist(tmp_path):
     """No near match means the author needs the menu, not a guess."""
     path = _write(tmp_path, _manifest(gpu_quota=4))
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match="gpu_quota: unknown field") as caught:
         ExperimentManifest.from_yaml(path)
 
     message = str(caught.value)
@@ -82,10 +91,10 @@ def test_an_unrecognizable_key_lists_the_fields_that_do_exist(tmp_path):
 
 def test_a_goal_reports_every_bad_key_at_once(tmp_path):
     """An agent that fixes one key per round burns a round per typo."""
-    bad = dict(GOAL, budget={"max_trails": 4}, stratagem={"name": "grid"})
+    bad: dict[str, Any] = dict(GOAL, budget={"max_trails": 4}, stratagem={"name": "grid"})
     path = _write(tmp_path, bad)
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match=r"budget\.max_trails: unknown field") as caught:
         GoalSpec.from_yaml(path)
 
     message = str(caught.value)
@@ -98,9 +107,7 @@ def test_a_goal_an_agent_composed_in_memory_gets_the_same_message():
         goal_from_dict(dict(GOAL, objective={"metric": "loss", "targt": 0.1}))
 
     assert caught.value.code == "invalid_input"
-    assert "objective.targt: unknown field; did you mean 'target'?" in (
-        caught.value.message
-    )
+    assert "objective.targt: unknown field; did you mean 'target'?" in (caught.value.message)
 
 
 @pytest.mark.parametrize("dead_key", ["checks", "no_event_after_minutes"])
@@ -108,7 +115,7 @@ def test_a_removed_monitoring_key_says_it_was_removed(tmp_path, dead_key):
     """ "Unknown field" would send the author looking for the right spelling."""
     path = _write(tmp_path, _manifest(monitoring={dead_key: ["anything"]}))
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match=rf"{re.escape(dead_key)}: removed") as caught:
         ExperimentManifest.from_yaml(path)
 
     message = str(caught.value)
@@ -199,9 +206,7 @@ def test_no_template_comment_offers_a_field_that_does_not_exist(tmp_path, kind):
     assert offered <= _every_field(model)
 
 
-@pytest.mark.parametrize(
-    "path", sorted(EXAMPLES.glob("goal_*.yaml")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("path", sorted(EXAMPLES.glob("goal_*.yaml")), ids=lambda p: p.name)
 def test_every_shipped_example_validates(path):
     assert GoalSpec.from_yaml(path).search_space
 

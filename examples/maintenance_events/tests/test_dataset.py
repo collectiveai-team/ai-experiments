@@ -4,7 +4,6 @@ import zipfile
 
 import pandas as pd
 import pytest
-
 from maintenance_events import dataset as ds
 
 
@@ -36,7 +35,7 @@ def _make_artifact(tmp_path):
 
 def test_missing_configuration_explains_what_to_do(tmp_path, monkeypatch):
     monkeypatch.delenv("MAINTENANCE_EVENTS_URL", raising=False)
-    with pytest.raises(ds.DatasetNotConfigured, match="dataset.local.toml"):
+    with pytest.raises(ds.DatasetNotConfigured, match=r"dataset\.local\.toml"):
         ds.resolve_source(project_dir=tmp_path)
 
 

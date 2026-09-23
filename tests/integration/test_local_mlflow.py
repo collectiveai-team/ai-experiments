@@ -54,8 +54,7 @@ print("workload logged to mlflow directly", flush=True)
 FAILING = "import sys; print('boom', flush=True); sys.exit(3)"
 SLEEPER = "import time; print('sleeping', flush=True); time.sleep(300)"
 OOM_KILLED = (
-    "import os, signal; print('training', flush=True); "
-    "os.kill(os.getpid(), signal.SIGKILL)"
+    "import os, signal; print('training', flush=True); os.kill(os.getpid(), signal.SIGKILL)"
 )
 
 
@@ -94,7 +93,15 @@ def completed_local_run(tmp_path_factory, mlflow_uri):
     at_submit = store.read_status(handle.run_id)
     final = _wait_terminal(store, handle.run_id)
     report = MonitorDaemon(store).tick()
-    return {
+    # A grab-bag of this fixture's own local objects (store/handle/statuses/
+    # report), read back only by the sibling test functions below via string
+    # keys within this module. A NamedTuple would genuinely be better here --
+    # a fixed 5-key bag read by subscript is this rule's paradigm case -- but
+    # this module can't be exercised in this environment (no reachable
+    # MLflow server), so the conversion is deferred, not dismissed: pyrefly
+    # still checks this file whether or not the service is up, so the payoff
+    # of typing it is static and available now.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "store": store,
         "handle": handle,
         "at_submit": at_submit,
@@ -115,9 +122,7 @@ def test_a_real_detached_worker_runs_the_workload(completed_local_run):
     assert final.exit_code == 0
     assert final.error is None
 
-    metrics = completed_local_run["store"].read_metrics(
-        completed_local_run["handle"].run_id
-    )
+    metrics = completed_local_run["store"].read_metrics(completed_local_run["handle"].run_id)
     assert [p.step for p in metrics] == [1, 2, 3]
 
 
@@ -138,8 +143,10 @@ def test_daemon_mirrors_a_completed_run_as_finished(completed_local_run, mlflow_
 
 
 def test_run_artifacts_are_uploaded_to_mlflow(completed_local_run, mlflow_api):
-    """The documented answer to "artifacts stay on the cluster": route them
-    through MLflow's artifact store."""
+    """The documented answer to "artifacts stay on the cluster".
+
+    Route them through MLflow's artifact store.
+    """
     mlflow_run_id = completed_local_run["at_submit"].details["mlflow_run_id"]
 
     listing = mlflow_api("artifacts/list", run_id=mlflow_run_id)
@@ -155,8 +162,10 @@ def test_mlflow_is_synced_only_once(completed_local_run):
 
 
 def test_workload_attaches_to_the_harness_mlflow_run(tmp_path, mlflow_uri, mlflow_api):
-    """MLFLOW_RUN_ID handoff: the workload's own writes must land on the run
-    the harness created, not a second one."""
+    """MLFLOW_RUN_ID handoff.
+
+    The workload's own writes must land on the run the harness created, not a second one.
+    """
     store, handle = _run(tmp_path, mlflow_uri, MLFLOW_AWARE_TRAINER, "mlflow_aware")
     mlflow_run_id = store.read_status(handle.run_id).details["mlflow_run_id"]
 

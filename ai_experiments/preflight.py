@@ -129,7 +129,7 @@ def _flag_warnings(
 
 
 def _declared_options(argv: list[str], working_dir: Path) -> set[str]:
-    """The long options this workload's ``--help`` mentions."""
+    """Collect the long options this workload's ``--help`` mentions."""
     try:
         completed = subprocess.run(  # noqa: S603 - the user's own entrypoint
             [*argv, "--help"],
@@ -154,36 +154,46 @@ def goal_warnings(goal: GoalSpec) -> list[str]:
     are the failures that only show up at the end, when the campaign has a
     best trial and no rule that says whether that number was the point.
     """
-    warnings: list[str] = []
+    return [
+        *_objective_warnings(goal),
+        *_criteria_warnings(goal),
+        *_variant_warnings(goal),
+    ]
+
+
+def _objective_warnings(goal: GoalSpec) -> list[str]:
+    """Warn when a search that moves the data has no baseline to stay comparable."""
+    objective = goal.objective
+    if objective.baseline_metric is not None:
+        return []
+    moving = sorted(name for name, spec in goal.search_space.items() if spec.changes_data)
+    if not moving:
+        return []
+    return [
+        f"{', '.join(moving)} change the data a trial is scored on, but "
+        f"objective '{objective.metric}' has no baseline_metric; trials "
+        "on different slices are not comparable and the search will "
+        "reward the easiest slice"
+    ]
+
+
+def _criteria_warnings(goal: GoalSpec) -> list[str]:
+    """Criteria that are missing, or that the objective can never satisfy."""
     objective = goal.objective
     criteria = goal.success_criteria
-
+    warnings: list[str] = []
     if not criteria.declared:
         warnings.append(
             "this goal declares no success_criteria, so the campaign will "
             "report a best trial without saying whether it is good enough; "
             "decide the bar now, not after seeing the number"
         )
-
-    if objective.baseline_metric is None:
-        moving = sorted(
-            name for name, spec in goal.search_space.items() if spec.changes_data
-        )
-        if moving:
-            warnings.append(
-                f"{', '.join(moving)} change the data a trial is scored on, but "
-                f"objective '{objective.metric}' has no baseline_metric; trials "
-                "on different slices are not comparable and the search will "
-                "reward the easiest slice"
-            )
-
     if criteria.require_separation and objective.aggregate not in ("mean", "bootstrap"):
         warnings.append(
             "success_criteria.require_separation needs an interval, which "
             "only objective.aggregate='mean' or 'bootstrap' produces; as "
             "written the criterion can never be met"
         )
-
     if criteria.min_observations is not None and objective.aggregate == "bootstrap":
         warnings.append(
             "success_criteria.min_observations counts observations, and under "
@@ -193,26 +203,30 @@ def goal_warnings(goal: GoalSpec) -> list[str]:
             "can satisfy by looping more is not a criterion — let the workload "
             "report no objective when its evidence is too thin instead"
         )
-
     if criteria.require_beats_baseline and objective.baseline_metric is None:
         warnings.append(
             "success_criteria.require_beats_baseline has no baseline to beat: "
             "objective.baseline_metric is not set, so the criterion can never "
             "be met"
         )
+    return warnings
 
-    if goal.variants.enabled:
-        if not goal.variants.smoke_command:
-            warnings.append(
-                "variants.enabled is on with no variants.smoke_command; a "
-                "variant that cannot start would be handed a whole round of "
-                "trials that all fail the same way"
-            )
-        if not goal.variants.editable_paths:
-            warnings.append(
-                "variants.enabled is on with no variants.editable_paths, so a "
-                "variant may rewrite any file in the workload — including the "
-                "evaluation it is scored by; name the files that may change"
-            )
 
+def _variant_warnings(goal: GoalSpec) -> list[str]:
+    """Code variants with nothing standing between an edit and a round of trials."""
+    if not goal.variants.enabled:
+        return []
+    warnings: list[str] = []
+    if not goal.variants.smoke_command:
+        warnings.append(
+            "variants.enabled is on with no variants.smoke_command; a "
+            "variant that cannot start would be handed a whole round of "
+            "trials that all fail the same way"
+        )
+    if not goal.variants.editable_paths:
+        warnings.append(
+            "variants.enabled is on with no variants.editable_paths, so a "
+            "variant may rewrite any file in the workload — including the "
+            "evaluation it is scored by; name the files that may change"
+        )
     return warnings

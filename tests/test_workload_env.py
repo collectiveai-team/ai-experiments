@@ -20,9 +20,7 @@ def test_the_harness_virtualenv_does_not_follow_the_workload():
     own environment resolves against the wrong interpreter, or at best
     prints the warning on every trial of every campaign.
     """
-    env = workload_env(
-        {"VIRTUAL_ENV": "/harness/.venv", "PATH": "/usr/bin"}, _manifest()
-    )
+    env = workload_env({"VIRTUAL_ENV": "/harness/.venv", "PATH": "/usr/bin"}, _manifest())
 
     assert "VIRTUAL_ENV" not in env
     assert env["PATH"] == "/usr/bin"

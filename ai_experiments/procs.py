@@ -74,7 +74,7 @@ def _proc_available() -> bool:
 
 
 def _psutil():
-    """The optional psutil module, or None when it is not installed."""
+    """Return the optional psutil module, or None when it is not installed."""
     try:
         import psutil
     except ImportError:
@@ -113,7 +113,7 @@ def process_identity(pid: int) -> str | None:
 
 
 def _psutil_identity(pid: int) -> str | None:
-    """The same identity off Linux, when the optional extra is installed."""
+    """Return the same identity off Linux, when the optional extra is installed."""
     psutil = _psutil()
     if psutil is None:
         return None
@@ -129,7 +129,23 @@ def _psutil_identity(pid: int) -> str | None:
         return None
 
 
-def terminate_workload(
+def _report(  # ast-grep-ignore: no-dict-return-annotation
+    outcome: str,
+    base: dict[str, object] | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    """Build one termination report: ``base`` plus the outcome and its extras.
+
+    Every outcome funnels through here so the raw-mapping shape has a single
+    home. The report is persisted verbatim as a run event's ``details`` and as
+    ``status.details["workload_reap"]`` -- free-form JSON owned by the event
+    schema, not a contract this module defines -- so it stays a dict.
+    """
+    # ast-grep-ignore: no-dict-literal-return  # the one construction point, see above
+    return {**(base or {}), "outcome": outcome, **extra}
+
+
+def terminate_workload(  # ast-grep-ignore: no-dict-return-annotation
     pid: object,
     identity: object,
     grace_seconds: float = TERMINATE_GRACE_SECONDS,
@@ -137,7 +153,8 @@ def terminate_workload(
 ) -> dict[str, object]:
     """Terminate a workload whose supervisor is gone, if it can be identified.
 
-    Returns a report whose ``outcome`` is one of:
+    Returns a report (see :func:`_report` for why it is a raw mapping) whose
+    ``outcome`` is one of:
 
     ``not_recorded``
         No workload pid was ever recorded (the supervisor died before spawn).
@@ -156,22 +173,40 @@ def terminate_workload(
         Still alive after SIGKILL, or not ours to signal.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return {"outcome": "not_recorded"}
+        return _report("not_recorded")
     report: dict[str, object] = {"pid": pid}
     current = process_identity(pid)
     if current is None:
-        if identity_supported():
-            return {**report, "outcome": "already_exited"}
-        # This machine cannot identify any process, so "no identity" is not
-        # evidence that the pid is gone. Calling a live orphan `already_exited`
-        # would be the same lie the reaper exists to stop telling (#31).
-        outcome = "identity_unverifiable" if pid_alive(pid) else "already_exited"
-        return {**report, "outcome": outcome, "hint": IDENTITY_UNAVAILABLE_HINT}
+        return _exit_report(report, pid)
     if not isinstance(identity, str) or not identity:
-        return {**report, "outcome": "identity_unverifiable"}
+        return _report("identity_unverifiable", report)
     if current != identity:
-        return {**report, "outcome": "identity_mismatch"}
+        return _report("identity_mismatch", report)
+    return _signal_until_gone(report, pid, identity, grace_seconds, poll_seconds)
 
+
+def _exit_report(  # ast-grep-ignore: no-dict-return-annotation
+    report: dict[str, object],
+    pid: int,
+) -> dict[str, object]:
+    """Report a pid with no identity: gone, or unidentifiable on this machine."""
+    if identity_supported():
+        return _report("already_exited", report)
+    # This machine cannot identify any process, so "no identity" is not
+    # evidence that the pid is gone. Calling a live orphan `already_exited`
+    # would be the same lie the reaper exists to stop telling (#31).
+    outcome = "identity_unverifiable" if pid_alive(pid) else "already_exited"
+    return _report(outcome, report, hint=IDENTITY_UNAVAILABLE_HINT)
+
+
+def _signal_until_gone(  # ast-grep-ignore: no-dict-return-annotation
+    report: dict[str, object],
+    pid: int,
+    identity: str,
+    grace_seconds: float,
+    poll_seconds: float,
+) -> dict[str, object]:
+    """SIGTERM a confirmed workload, escalating to SIGKILL if it outlives grace."""
     # The workload's process group holds every process the run spawned (the
     # supervisor was started with start_new_session, so the group is the run's
     # own). Taking the pgid from a pid whose identity is confirmed is safe:
@@ -184,15 +219,15 @@ def terminate_workload(
         report["pgid"] = pgid
 
     if not _signal(pid, pgid, signal.SIGTERM):
-        return {**report, "outcome": "kill_failed", "error": "SIGTERM refused"}
+        return _report("kill_failed", report, error="SIGTERM refused")
     if _wait_for_exit(pid, identity, grace_seconds, poll_seconds):
-        return {**report, "outcome": "terminated"}
+        return _report("terminated", report)
 
     if not _signal(pid, pgid, signal.SIGKILL):
-        return {**report, "outcome": "kill_failed", "error": "SIGKILL refused"}
+        return _report("kill_failed", report, error="SIGKILL refused")
     if _wait_for_exit(pid, identity, grace_seconds, poll_seconds):
-        return {**report, "outcome": "killed"}
-    return {**report, "outcome": "kill_failed", "error": "alive after SIGKILL"}
+        return _report("killed", report)
+    return _report("kill_failed", report, error="alive after SIGKILL")
 
 
 def _signal(pid: int, pgid: int | None, sig: int) -> bool:
@@ -209,9 +244,7 @@ def _signal(pid: int, pgid: int | None, sig: int) -> bool:
     return True
 
 
-def _wait_for_exit(
-    pid: int, identity: str, grace_seconds: float, poll_seconds: float
-) -> bool:
+def _wait_for_exit(pid: int, identity: str, grace_seconds: float, poll_seconds: float) -> bool:
     deadline = time.monotonic() + grace_seconds
     while True:
         if process_identity(pid) != identity:

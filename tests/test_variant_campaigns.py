@@ -14,6 +14,7 @@ import sys
 import pytest
 
 from ai_experiments.improve.variants import VariantEdit
+from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import (
     BudgetSpec,
     GoalSpec,
@@ -25,8 +26,6 @@ from ai_experiments.schemas import (
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
 from tests.test_orchestrator import FakeBackend
-
-from ai_experiments.orchestrator import CampaignOrchestrator
 
 PASSES = "import pathlib, sys; sys.exit(0 if pathlib.Path('train.py').exists() else 1)"
 
@@ -74,7 +73,7 @@ def test_a_goal_that_did_not_enable_variants_refuses_one(tmp_path):
     orchestrator, _ = _orchestrator(tmp_path)
     state = orchestrator.start(_goal(tmp_path, enabled=False))
 
-    with pytest.raises(ValueError, match="variants.enabled"):
+    with pytest.raises(ValueError, match=r"variants\.enabled"):
         orchestrator.add_variant(
             state.campaign_id, [VariantEdit(path="train.py", content="LOSS = 0.5\n")]
         )
@@ -98,8 +97,10 @@ def test_an_accepted_variant_is_recorded_and_readable(tmp_path):
 
 
 def test_a_variant_that_fails_its_smoke_check_is_discarded_but_not_forgotten(tmp_path):
-    """The directory goes; the record stays, so the next proposal can read
-    why this one did not run."""
+    """The directory goes; the record stays.
+
+    So the next proposal can read why this one did not run.
+    """
     orchestrator, _ = _orchestrator(tmp_path)
     state = orchestrator.start(
         _goal(tmp_path, smoke_command=[sys.executable, "-c", "raise SystemExit(3)"])
@@ -122,9 +123,7 @@ def test_an_edit_outside_the_goals_allowlist_is_refused(tmp_path):
     state = orchestrator.start(_goal(tmp_path))
 
     with pytest.raises(ValueError, match="editable_paths"):
-        orchestrator.add_variant(
-            state.campaign_id, [VariantEdit(path="notes.txt", content="hi\n")]
-        )
+        orchestrator.add_variant(state.campaign_id, [VariantEdit(path="notes.txt", content="hi\n")])
 
 
 def test_a_suggested_trial_runs_against_the_variants_copy(tmp_path):
@@ -134,9 +133,7 @@ def test_a_suggested_trial_runs_against_the_variants_copy(tmp_path):
         state.campaign_id, [VariantEdit(path="train.py", content="LOSS = 0.5\n")]
     )
 
-    trial = orchestrator.suggest(
-        state.campaign_id, {"x": 1.0}, variant_id=record.variant_id
-    )
+    trial = orchestrator.suggest(state.campaign_id, {"x": 1.0}, variant_id=record.variant_id)
     orchestrator.advance(state.campaign_id)
 
     assert trial.variant_id == record.variant_id
@@ -162,6 +159,4 @@ def test_a_suggestion_naming_a_variant_that_failed_its_smoke_check_is_refused(tm
     )
 
     with pytest.raises(ValueError, match="smoke"):
-        orchestrator.suggest(
-            state.campaign_id, {"x": 1.0}, variant_id=record.variant_id
-        )
+        orchestrator.suggest(state.campaign_id, {"x": 1.0}, variant_id=record.variant_id)

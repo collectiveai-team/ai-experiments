@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from maintenance_events.features import build_feature_table
 from maintenance_events.windows import Window
 
@@ -24,9 +23,7 @@ def _history(hours=24 * 60, power=50.0, start="2024-01-01"):
 
 def _window(history, label=0, days_since=3.0):
     as_of = history.index.max() + pd.Timedelta(hours=1)
-    return Window(
-        as_of=as_of, history=history, label=label, days_since_last_event=days_since
-    )
+    return Window(as_of=as_of, history=history, label=label, days_since_last_event=days_since)
 
 
 def test_feature_table_is_numeric_and_aligned():
@@ -65,7 +62,9 @@ def test_window_with_too_few_valid_rows_is_dropped():
     history = _history()
     history["active_power"] = 0.0
     X, y, as_of = build_feature_table([_window(history)], offline_power_threshold=1.0)
-    assert X.empty and y.empty and len(as_of) == 0
+    assert X.empty
+    assert y.empty
+    assert len(as_of) == 0
 
 
 def test_sub_windows_produce_their_own_columns():
@@ -113,7 +112,5 @@ def test_vectorized_stats_match_the_pandas_reference():
     for column in ("a", "b"):
         clean = frame[column].dropna()
         hours = (clean.index - clean.index[0]).total_seconds().to_numpy() / 3600.0
-        assert got[f"{column}_slope"] == pytest.approx(
-            np.polyfit(hours, clean.to_numpy(), 1)[0]
-        )
+        assert got[f"{column}_slope"] == pytest.approx(np.polyfit(hours, clean.to_numpy(), 1)[0])
     assert np.isnan(got["c_slope"])

@@ -68,9 +68,7 @@ def test_a_variant_skips_git_and_virtualenvs(tmp_path):
 
     record = materialize_variant(tmp_path / "campaign", source, [])
 
-    assert not (
-        variants_root(tmp_path / "campaign") / record.variant_id / ".git"
-    ).exists()
+    assert not (variants_root(tmp_path / "campaign") / record.variant_id / ".git").exists()
 
 
 def test_a_new_file_can_be_created_inside_the_variant(tmp_path):
@@ -82,9 +80,7 @@ def test_a_new_file_can_be_created_inside_the_variant(tmp_path):
         [VariantEdit(path="pkg/loss.py", content="def loss():\n    return 0.0\n")],
     )
 
-    assert (
-        variants_root(tmp_path / "campaign") / record.variant_id / "pkg" / "loss.py"
-    ).exists()
+    assert (variants_root(tmp_path / "campaign") / record.variant_id / "pkg" / "loss.py").exists()
 
 
 @pytest.mark.parametrize(
@@ -128,9 +124,7 @@ def test_a_missing_source_directory_is_reported_not_guessed(tmp_path):
 def test_the_smoke_check_passes_a_variant_that_starts(tmp_path):
     source = _workload(tmp_path)
     record = materialize_variant(tmp_path / "campaign", source, [])
-    spec = VariantSpec(
-        enabled=True, smoke_command=[sys.executable, "-c", "import train"]
-    )
+    spec = VariantSpec(enabled=True, smoke_command=[sys.executable, "-c", "import train"])
 
     checked = smoke_check(record, spec)
 
@@ -145,9 +139,7 @@ def test_the_smoke_check_catches_a_variant_that_cannot_import(tmp_path):
         source,
         [VariantEdit(path="train.py", content="def broken(:\n")],
     )
-    spec = VariantSpec(
-        enabled=True, smoke_command=[sys.executable, "-c", "import train"]
-    )
+    spec = VariantSpec(enabled=True, smoke_command=[sys.executable, "-c", "import train"])
 
     checked = smoke_check(record, spec)
 
@@ -192,11 +184,11 @@ def test_discarding_a_variant_removes_only_that_variant(tmp_path):
     assert discarded.discard_error == ""
 
 
-def test_a_directory_that_survives_the_delete_is_reported_not_swallowed(
-    tmp_path, monkeypatch
-):
-    """A rejected variant left on disk is a variant the campaign believes it
-    discarded. Saying so is the difference between a leak and a known one."""
+def test_a_directory_that_survives_the_delete_is_reported_not_swallowed(tmp_path, monkeypatch):
+    """A rejected variant left on disk is one the campaign believes it discarded.
+
+    Saying so is the difference between a leak and a known one.
+    """
     source = _workload(tmp_path)
     record = materialize_variant(tmp_path / "campaign", source, [])
 
@@ -212,8 +204,10 @@ def test_a_directory_that_survives_the_delete_is_reported_not_swallowed(
 
 
 def test_the_delete_is_retried_once(tmp_path, monkeypatch):
-    """The smoke command runs inside the copy, so a subprocess of its own can
-    still be writing there when the check returns."""
+    """A subprocess of the smoke command can still be writing when the check returns.
+
+    The smoke command runs inside the copy.
+    """
     source = _workload(tmp_path)
     record = materialize_variant(tmp_path / "campaign", source, [])
     real = shutil.rmtree

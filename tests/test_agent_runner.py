@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -20,6 +20,9 @@ from ai_experiments.agents import (
     extract_json,
     unwrap_envelope,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_extract_json_finds_the_object_after_prose():
@@ -167,7 +170,7 @@ def test_cli_runner_resolves_a_preset_name():
 
 
 def test_cli_runner_rejects_an_empty_command():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="agent command must not be empty"):
         CliAgentRunner("   ")
 
 
@@ -181,9 +184,7 @@ def test_stub_runner_replays_replies_then_repeats_the_last_one():
 
 
 def test_stub_runner_accepts_raw_text_and_prebuilt_results():
-    runner = StubAgentRunner(
-        ['prose then {"trials": []}', AgentResult(error="simulated outage")]
-    )
+    runner = StubAgentRunner(['prose then {"trials": []}', AgentResult(error="simulated outage")])
 
     assert runner.run("a").payload == {"trials": []}
     assert not runner.run("b").ok

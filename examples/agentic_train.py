@@ -22,6 +22,7 @@ import os
 import random
 import sys
 import time
+from pathlib import Path
 
 #: Pretend device. The interesting configurations sit near this boundary.
 DEVICE_MEMORY_GB = 4.0
@@ -33,7 +34,7 @@ def memory_gb(width: int, depth: int, batch: int) -> float:
 
 
 def loss_surface(lr: float, width: int, depth: int) -> float:
-    """A capacity term and a learning-rate term. The optimum needs both."""
+    """Combine a capacity term and a learning-rate term; the optimum needs both."""
     capacity = 1.0 / (1.0 + math.log1p(width * depth) / 4.0)
     schedule = (math.log10(lr) + 2.6) ** 2 / 6.0
     return capacity + schedule
@@ -61,7 +62,8 @@ def main() -> None:
         raise RuntimeError(reason)
 
     target = loss_surface(args.lr, args.width, args.depth)
-    rng = random.Random(args.width * 1000 + args.depth)
+    # Deterministic noise for a toy analytic surface, not a security-sensitive draw.
+    rng = random.Random(args.width * 1000 + args.depth)  # noqa: S311
     loss = target + 2.0
 
     for step in range(args.steps):
@@ -72,7 +74,7 @@ def main() -> None:
 
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
     if artifacts:
-        with open(os.path.join(artifacts, "summary.json"), "w") as fh:
+        with (Path(artifacts) / "summary.json").open("w") as fh:
             json.dump({"loss": loss, "memory_gb": round(needed, 3)}, fh)
 
     print(f"final loss={loss:.6f} memory={needed:.2f}GB")

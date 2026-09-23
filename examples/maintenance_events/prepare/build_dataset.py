@@ -14,13 +14,15 @@ import argparse
 import hashlib
 import json
 import zipfile
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
-
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from prepare.events import merge_events, read_mapro_events, read_operator_log
 from prepare.signals import load_signals
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 MAPRO_FILE = "eventos condensador CC(in).csv"
 OPERATOR_FILE = "Limpieza condensador.xlsx"
@@ -36,9 +38,7 @@ def _sha256(path: Path) -> str:
 
 def _dataset_card(signals: pd.DataFrame, events: pd.DataFrame, version: str) -> str:
     coverage = (signals.notna().mean() * 100).round(1).to_dict()
-    rows = "\n".join(
-        f"  - `{name}`: {pct}% de cobertura" for name, pct in coverage.items()
-    )
+    rows = "\n".join(f"  - `{name}`: {pct}% de cobertura" for name, pct in coverage.items())
     return f"""# maintenance-events {version}
 
 Señales de proceso de un condensador de central térmica y el registro de sus
@@ -94,31 +94,25 @@ def build(raw_data_dir: Path, out_dir: Path, version: str = "v1") -> Path:
     manifest = {
         "name": "maintenance-events",
         "version": version,
-        "built_on": date.today().isoformat(),
+        "built_on": datetime.now(tz=UTC).date().isoformat(),
         "sha256": {p.name: _sha256(p) for p in (signals_path, events_path)},
         "signals": {
             "columns": list(signals.columns),
             "freq": "15min",
             "start": signals.index.min().isoformat(),
             "end": signals.index.max().isoformat(),
-            "coverage": {
-                c: round(float(signals[c].notna().mean()), 4) for c in signals.columns
-            },
+            "coverage": {c: round(float(signals[c].notna().mean()), 4) for c in signals.columns},
         },
         "counts": {
-            "signal_rows": int(len(signals)),
-            "events": int(len(events)),
+            "signal_rows": len(signals),
+            "events": len(events),
             "events_by_source": {
                 str(k): int(v) for k, v in events["source"].value_counts().items()
             },
         },
     }
-    (dataset_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True)
-    )
-    (dataset_dir / "dataset_card.md").write_text(
-        _dataset_card(signals, events, version)
-    )
+    (dataset_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    (dataset_dir / "dataset_card.md").write_text(_dataset_card(signals, events, version))
 
     archive = Path(out_dir) / f"maintenance-events-{version}.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:

@@ -13,7 +13,7 @@ from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import BudgetSpec, ExperimentManifest, RunEvent
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
-from tests.test_orchestrator import FakeBackend, _goal
+from tests.conftest import FakeBackend, _goal
 
 
 class CrashingCampaignStore(CampaignStore):
@@ -34,9 +34,7 @@ def _orchestrator(tmp_path, campaign_store=None):
     store = FilesystemRunStore(tmp_path / "runs")
     backend = FakeBackend(store)
     campaign_store = campaign_store or CampaignStore(store.root)
-    orchestrator = CampaignOrchestrator(
-        store, campaign_store, backend_factory=lambda goal: backend
-    )
+    orchestrator = CampaignOrchestrator(store, campaign_store, backend_factory=lambda goal: backend)
     return orchestrator, backend, store
 
 
@@ -49,10 +47,8 @@ def test_a_crash_after_submit_does_not_duplicate_the_trial(tmp_path):
     invisible in `campaign status`.
     """
     store = FilesystemRunStore(tmp_path / "runs")
-    campaign_store = CrashingCampaignStore(
-        store.root, crash_when=lambda state: bool(state.trials)
-    )
-    orchestrator, backend, store = _orchestrator(tmp_path, campaign_store)
+    campaign_store = CrashingCampaignStore(store.root, crash_when=lambda state: bool(state.trials))
+    orchestrator, _backend, store = _orchestrator(tmp_path, campaign_store)
     goal = _goal(budget=BudgetSpec(max_trials=2, max_parallel=1))
     state = campaign_store.create_campaign(goal)
 
@@ -71,7 +67,11 @@ def test_a_crash_after_submit_does_not_duplicate_the_trial(tmp_path):
     assert len(set(run_ids)) == len(run_ids)  # one run per trial, no orphan
 
 
-def _submitted_runs(campaign_store, campaign_id) -> dict[str, str]:
+def _submitted_runs(  # ast-grep-ignore: no-dict-return-annotation
+    campaign_store, campaign_id
+) -> dict[str, str]:
+    # A trial_id -> run_id lookup the test reads by key; a single mapping for
+    # the test's own assertions, not a boundary a dataclass would clarify.
     return {
         str(event.details["trial_id"]): str(event.details["run_id"])
         for event in campaign_store.read_events(campaign_id)
@@ -82,9 +82,7 @@ def _submitted_runs(campaign_store, campaign_id) -> dict[str, str]:
 def test_a_recovered_trial_keeps_its_params_and_still_scores(tmp_path):
     """The adopted run has to finish the campaign, not just stop the double."""
     store = FilesystemRunStore(tmp_path / "runs")
-    campaign_store = CrashingCampaignStore(
-        store.root, crash_when=lambda state: bool(state.trials)
-    )
+    campaign_store = CrashingCampaignStore(store.root, crash_when=lambda state: bool(state.trials))
     orchestrator, backend, store = _orchestrator(tmp_path, campaign_store)
     goal = _goal(budget=BudgetSpec(max_trials=3, max_parallel=1))
     state = campaign_store.create_campaign(goal)
@@ -113,14 +111,14 @@ def test_each_submit_is_persisted_before_the_next_one(tmp_path):
             super().write_state(state)
 
     campaign_store = RecordingStore(store.root)
-    orchestrator, backend, store = _orchestrator(tmp_path, campaign_store)
+    orchestrator, _backend, store = _orchestrator(tmp_path, campaign_store)
     goal = _goal(budget=BudgetSpec(max_trials=4, max_parallel=4))
     state = campaign_store.create_campaign(goal)
 
     orchestrator.advance(state.campaign_id)
 
     # one write per submit, each seeing one more run_id than the last
-    assert [1, 2, 3, 4] == [count for count in seen if count][:4]
+    assert [count for count in seen if count][:4] == [1, 2, 3, 4]
 
 
 class UnreachableBackend(FakeBackend):
@@ -133,9 +131,7 @@ def test_an_unreachable_backend_is_not_an_exhausted_search_space(tmp_path):
     store = FilesystemRunStore(tmp_path / "runs")
     campaign_store = CampaignStore(store.root)
     backend = UnreachableBackend(store)
-    orchestrator = CampaignOrchestrator(
-        store, campaign_store, backend_factory=lambda goal: backend
-    )
+    orchestrator = CampaignOrchestrator(store, campaign_store, backend_factory=lambda goal: backend)
     state = orchestrator.start(_goal())
 
     state = orchestrator.advance(state.campaign_id)
@@ -147,7 +143,7 @@ def test_an_unreachable_backend_is_not_an_exhausted_search_space(tmp_path):
 
 def test_a_search_space_that_really_is_exhausted_still_says_so(tmp_path):
     """The pin on the fix above."""
-    orchestrator, backend, store = _orchestrator(tmp_path)
+    orchestrator, _backend, _store = _orchestrator(tmp_path)
     goal = _goal(
         search_space={"x": {"type": "choice", "values": [1.0, 2.0]}},
         budget=BudgetSpec(max_trials=10, max_parallel=2),

@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
+from ai_experiments.config_loading import load_stored
 from ai_experiments.schemas import (
     CampaignState,
     GoalSpec,
     RunEvent,
-    load_stored,
     utc_now,
 )
 from ai_experiments.store.filesystem import atomic_write_text
 
-if TYPE_CHECKING:  # pragma: no cover - import cycle: variants imports schemas
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    # import cycle: variants imports schemas
     from ai_experiments.improve.variants import VariantRecord
 
 
@@ -104,9 +107,7 @@ class CampaignStore:
     def write_variant(self, campaign_id: str, record: VariantRecord) -> None:
         """Append the record, or replace the one with the same id."""
         records = [
-            item
-            for item in self.read_variants(campaign_id)
-            if item.variant_id != record.variant_id
+            item for item in self.read_variants(campaign_id) if item.variant_id != record.variant_id
         ]
         records.append(record)
         atomic_write_text(

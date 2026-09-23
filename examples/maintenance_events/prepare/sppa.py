@@ -66,7 +66,24 @@ def _to_float(cell: str, decimal: str) -> float:
 
 def parse_sppa_file(path: Path) -> pd.DataFrame:
     lines = Path(path).read_text(encoding=ENCODING).splitlines()
+    tags = _parse_tags(lines, path)
+    columns, decimal = _parse_columns(lines, path)
+    unknown = sorted(set(columns.values()) - set(tags))
+    if unknown:
+        raise SppaParseError(
+            f"{path}: la fila de columnas nombra Tag{unknown} sin definición en la cabecera"
+        )
+    order = sorted(columns.items())
+    names = [tags[number] for _, number in order]
+    timestamps, rows = _parse_rows(lines, order, decimal, path)
+    frame = pd.DataFrame(rows, columns=names, index=pd.DatetimeIndex(timestamps, name="timestamp"))
+    return frame.sort_index()
 
+
+def _parse_tags(  # ast-grep-ignore: no-dict-return-annotation
+    lines: list[str], path: Path
+) -> dict[int, str]:
+    """Tag number -> normalised tag name, from the file header."""
     tags: dict[int, str] = {}
     for line in lines:
         match = TAG_ROW.match(line)
@@ -74,33 +91,29 @@ def parse_sppa_file(path: Path) -> pd.DataFrame:
             tags[int(match.group(1))] = _normalize_tag(match.group(2))
     if not tags:
         raise SppaParseError(f"{path}: ninguna definición de tag en la cabecera")
+    return tags
 
-    columns: dict[int, int] = {}
-    decimal = ""
+
+def _parse_columns(lines: list[str], path: Path) -> tuple[dict[int, int], str]:
+    """Column position -> tag number, and the decimal separator the header announces."""
     for line in lines:
         header = COLUMN_ROW.match(line)
         if not header:
             continue
-        for position, cell in enumerate(line.split(";")):
-            cell_match = TAG_CELL.match(cell.strip())
-            if cell_match:
-                columns[position] = int(cell_match.group(1))
+        columns = {
+            position: int(cell_match.group(1))
+            for position, cell in enumerate(line.split(";"))
+            if (cell_match := TAG_CELL.match(cell.strip()))
+        }
         if columns:
-            decimal = DECIMAL_BY_KEYWORD[header.group(1)]
-            break
-    if not columns:
-        raise SppaParseError(
-            f"{path}: no se encontró la fila de columnas ';Tiempo;...;TagN;'"
-        )
+            return columns, DECIMAL_BY_KEYWORD[header.group(1)]
+    raise SppaParseError(f"{path}: no se encontró la fila de columnas ';Tiempo;...;TagN;'")
 
-    unknown = sorted(set(columns.values()) - set(tags))
-    if unknown:
-        raise SppaParseError(
-            f"{path}: la fila de columnas nombra Tag{unknown} sin definición en la cabecera"
-        )
 
-    order = sorted(columns.items())
-    names = [tags[number] for _, number in order]
+def _parse_rows(
+    lines: list[str], order: list[tuple[int, int]], decimal: str, path: Path
+) -> tuple[list[pd.Timestamp], list[list[float]]]:
+    """Every data row, as its timestamp and the values in column order."""
     timestamps: list[pd.Timestamp] = []
     rows: list[list[float]] = []
     for lineno, line in enumerate(lines, start=1):
@@ -114,11 +127,6 @@ def parse_sppa_file(path: Path) -> pd.DataFrame:
             raise SppaParseError(f"{path}:{lineno}: fila ilegible: {exc}") from exc
         timestamps.append(pd.Timestamp(f"{match.group(1)}.{match.group(2)}"))
         rows.append(values)
-
     if not rows:
         raise SppaParseError(f"{path}: ninguna fila de datos")
-
-    frame = pd.DataFrame(
-        rows, columns=names, index=pd.DatetimeIndex(timestamps, name="timestamp")
-    )
-    return frame.sort_index()
+    return timestamps, rows

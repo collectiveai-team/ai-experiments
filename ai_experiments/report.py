@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 from pathlib import Path
 from typing import Any
+
+from ai_experiments.schemas import MetricLine
+from ai_experiments.settings import get_settings
 
 METRIC_PREFIX = "IAX_METRIC "
 
@@ -34,7 +36,7 @@ def artifacts_dir() -> Path | None:
     None when running outside the harness (local backend sets it; on remote
     Ray clusters artifacts stay on the cluster's own storage).
     """
-    value = os.environ.get("IAX_ARTIFACTS_DIR")
+    value = get_settings().artifacts_dir
     if not value:
         return None
     path = Path(value)
@@ -51,12 +53,12 @@ def report_metric(step: int | None = None, **values: float) -> None:
     sys.stdout.flush()
 
 
-def parse_metric_line(line: str) -> dict[str, Any] | None:
+def parse_metric_line(line: str) -> MetricLine | None:
     """Parse an ``IAX_METRIC {...}`` stdout line into step + numeric values.
 
-    Returns ``{"step": int | None, "values": {name: float}}`` or None when the
-    line is not a metric line or carries no usable values. Non-finite floats
-    (nan/inf) are preserved — detecting them is the monitor's job.
+    Returns a ``MetricLine`` or None when the line is not a metric line or
+    carries no usable values. Non-finite floats (nan/inf) are preserved --
+    detecting them is the monitor's job.
     """
     stripped = line.strip()
     idx = stripped.find(METRIC_PREFIX.strip())
@@ -77,17 +79,29 @@ def parse_metric_line(line: str) -> dict[str, Any] | None:
 
     values: dict[str, float] = {}
     for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
+        coerced = _coerce_metric_value(value)
+        if coerced is not None:
+            values[str(key)] = coerced
     if not values and step is None:
         return None
-    return {"step": step, "values": values}
+    return MetricLine(step=step, values=values)
+
+
+def _coerce_metric_value(value: object) -> float | None:
+    """One metric value as a float, or None when it is not a usable number.
+
+    Bools are rejected before ints: `isinstance(True, int)` is True in Python, and a
+    reported flag is not a measurement.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
+            return float(lowered.replace("infinity", "inf"))
+    return None
 
 
 def is_finite(value: float) -> bool:

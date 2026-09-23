@@ -97,30 +97,23 @@ def test_validate_strict_passes_a_runnable_workload(tmp_path):
 
 
 def test_logs_worker_surfaces_the_supervisor_log(tmp_path):
-    """The supervisor's traceback used to be readable only by knowing the run
-    store's layout."""
+    """The supervisor's traceback used to be readable only by knowing the run store's layout."""
     runs_dir = tmp_path / "runs"
     path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
-    submitted = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(runs_dir), "--json"]
-    )
+    submitted = runner.invoke(app, ["submit", str(path), "--runs-dir", str(runs_dir), "--json"])
     assert submitted.exit_code == 0
     run_id = json.loads(submitted.stdout)["run_id"]
 
     state = None
     for _ in range(300):
-        status = runner.invoke(
-            app, ["status", run_id, "--runs-dir", str(runs_dir), "--json"]
-        )
+        status = runner.invoke(app, ["status", run_id, "--runs-dir", str(runs_dir), "--json"])
         state = json.loads(status.stdout)["status"]
         if state == "failed":
             break
         time.sleep(0.05)
     assert state == "failed"
 
-    result = runner.invoke(
-        app, ["logs", run_id, "--worker", "--runs-dir", str(runs_dir)]
-    )
+    result = runner.invoke(app, ["logs", run_id, "--worker", "--runs-dir", str(runs_dir)])
 
     assert result.exit_code == 0
     assert "FileNotFoundError" in result.stdout
@@ -132,9 +125,7 @@ def test_logs_worker_reports_a_missing_log(tmp_path):
     store = FilesystemRunStore(tmp_path / "runs", capture_repro=False)
     run_id, _ = store.create_run(_manifest(sys.executable, str(tmp_path)))
 
-    result = runner.invoke(
-        app, ["logs", run_id, "--worker", "--runs-dir", str(store.root)]
-    )
+    result = runner.invoke(app, ["logs", run_id, "--worker", "--runs-dir", str(store.root)])
 
     assert result.exit_code == 1
     assert "no worker log" in result.stderr
@@ -176,9 +167,7 @@ def test_submit_warns_on_stderr_and_still_submits(tmp_path):
 def test_submit_is_quiet_about_a_runnable_workload(tmp_path):
     path = _manifest_file(tmp_path, sys.executable, str(tmp_path))
 
-    result = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs")]
-    )
+    result = runner.invoke(app, ["submit", str(path), "--runs-dir", str(tmp_path / "runs")])
 
     assert result.exit_code == 0
     assert "Warning" not in result.stderr
@@ -188,9 +177,7 @@ def test_submit_strict_refuses_and_creates_no_run(tmp_path):
     runs_dir = tmp_path / "runs"
     path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
 
-    result = runner.invoke(
-        app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"]
-    )
+    result = runner.invoke(app, ["submit", str(path), "--runs-dir", str(runs_dir), "--strict"])
 
     assert result.exit_code == 2
     assert "is not on PATH" in result.stderr
@@ -220,9 +207,7 @@ def test_campaign_start_strict_refuses_and_creates_no_campaign(tmp_path):
     )
 
     assert result.exit_code == 2
-    listed = runner.invoke(
-        app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"]
-    )
+    listed = runner.invoke(app, ["campaign", "list", "--runs-dir", str(runs_dir), "--json"])
     assert json.loads(listed.stdout) == []
 
 
@@ -261,9 +246,7 @@ def test_a_runnable_campaign_records_no_warning(tmp_path):
         'p.add_argument("--x", type=float)\n'
         "p.parse_args()\n"
     )
-    goal = GoalSpec.from_yaml(
-        _goal_file(tmp_path, f"{sys.executable} {script}", str(tmp_path))
-    )
+    goal = GoalSpec.from_yaml(_goal_file(tmp_path, f"{sys.executable} {script}", str(tmp_path)))
 
     state = CampaignOrchestrator(store, campaign_store).start(goal)
 
@@ -294,6 +277,8 @@ def _goal_with(tmp_path, script: str, space: dict, **workload):
         BudgetSpec,
         GoalSpec,
         ObjectiveSpec,
+    )
+    from ai_experiments.schemas import (
         WorkloadSpec as W,
     )
 

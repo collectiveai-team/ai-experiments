@@ -26,17 +26,18 @@ file *by path* in an argv list. No interpolation, no `shell=True`.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import subprocess
-from pathlib import Path
-from typing import Literal
+from pathlib import Path  # noqa: TC003  # pydantic resolves HandoffPlan's fields at runtime
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from ai_experiments.monitoring.escalation import ChangeRequest
 from ai_experiments.schemas import utc_now
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.monitoring.escalation import ChangeRequest
+    from ai_experiments.store import FilesystemRunStore
 
 #: Where a hand-off keeps its issue file and its ledger entry.
 HANDOFF_DIR = "_handoffs"
@@ -80,7 +81,7 @@ def slug(text: str) -> str:
 
 
 def digest_of(request: ChangeRequest) -> str:
-    """A short, stable id for this defect, so a retry is recognisable."""
+    """Return a short, stable id for this defect, so a retry is recognisable."""
     if request.source_key:
         tail = request.source_key.rsplit(":", 1)[-1]
         if tail and tail != request.source_key:
@@ -105,8 +106,7 @@ def plan_handoff(
     worktree = root / f"{slug(request.campaign_id)}-{digest}"
     issue_path = directory / f"{stem}.md"
     rendered = [
-        part.replace("{issue}", str(issue_path)).replace("{branch}", branch)
-        for part in command
+        part.replace("{issue}", str(issue_path)).replace("{branch}", branch) for part in command
     ]
     return HandoffPlan(
         campaign_id=request.campaign_id,
@@ -205,8 +205,8 @@ def hand_off(
         return HandoffResult(
             plan=plan,
             status="already_handled",
-            created_at=str(previous.get("created_at", "")),
-            output=str(previous.get("output", "")),
+            created_at=previous.created_at if previous else "",
+            output=previous.output if previous else "",
             next_step=next_step,
         )
 
@@ -218,13 +218,11 @@ def hand_off(
 
     branch_error = _ensure_worktree(repo, plan.branch, plan.worktree, base)
     if branch_error:
-        result = HandoffResult(
-            plan=plan, status="failed", error=branch_error, next_step=next_step
-        )
+        result = HandoffResult(plan=plan, status="failed", error=branch_error, next_step=next_step)
         _write_ledger(plan, result)
         return result
 
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603  # operator-configured development flow
         plan.command,
         cwd=plan.worktree,
         capture_output=True,
@@ -260,8 +258,8 @@ def _ensure_worktree(repo: Path, branch: str, worktree: Path, base: str) -> str:
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
+    return subprocess.run(  # noqa: S603  # fixed argv, no caller string reaches the shell
+        ["git", "-C", str(repo), *args],  # noqa: S607  # git is resolved on PATH, as everywhere
         capture_output=True,
         text=True,
         check=False,
@@ -273,12 +271,18 @@ def _write_ledger(plan: HandoffPlan, result: HandoffResult) -> None:
     plan.ledger_path.write_text(result.model_dump_json(indent=2))
 
 
-def _read_ledger(path: Path) -> dict[str, object]:
+def _read_ledger(path: Path) -> HandoffResult | None:
+    """Read back the hand-off already recorded for this ticket, if there is one.
+
+    ``_write_ledger`` writes a :class:`HandoffResult`, so reading one back is a
+    model validation, not a dict lookup. A ledger a newer version wrote — or a
+    half-written one — is treated as absent: the caller falls back to empty
+    fields rather than reporting a shape it cannot vouch for.
+    """
     try:
-        loaded = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+        return HandoffResult.model_validate_json(path.read_text())
+    except (ValidationError, ValueError, OSError):
+        return None
 
 
 def _join(values: list[str]) -> str:

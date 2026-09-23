@@ -8,13 +8,17 @@ from ai_experiments.report import parse_metric_line
 def test_parses_step_and_values():
     parsed = parse_metric_line('IAX_METRIC {"step": 3, "loss": 0.5, "acc": 0.9}')
 
-    assert parsed == {"step": 3, "values": {"loss": 0.5, "acc": 0.9}}
+    assert parsed is not None
+    assert parsed.step == 3
+    assert parsed.values == {"loss": 0.5, "acc": 0.9}
 
 
 def test_parses_without_step():
     parsed = parse_metric_line('IAX_METRIC {"loss": 1.25}')
 
-    assert parsed == {"step": None, "values": {"loss": 1.25}}
+    assert parsed is not None
+    assert parsed.step is None
+    assert parsed.values == {"loss": 1.25}
 
 
 def test_ignores_non_metric_lines():
@@ -27,7 +31,7 @@ def test_handles_prefixed_output():
     parsed = parse_metric_line('[worker-1] IAX_METRIC {"step": 1, "loss": 2.0}')
 
     assert parsed is not None
-    assert parsed["values"] == {"loss": 2.0}
+    assert parsed.values == {"loss": 2.0}
 
 
 def test_preserves_non_finite_values():
@@ -35,11 +39,24 @@ def test_preserves_non_finite_values():
     parsed = parse_metric_line(line)
 
     assert parsed is not None
-    assert parsed["values"]["loss"] != parsed["values"]["loss"]  # NaN
+    assert parsed.values["loss"] != parsed.values["loss"]  # NaN
 
 
 def test_skips_non_numeric_values():
     parsed = parse_metric_line('IAX_METRIC {"step": 1, "phase": "warmup", "loss": 0.1}')
 
     assert parsed is not None
-    assert parsed["values"] == {"loss": 0.1}
+    assert parsed.values == {"loss": 0.1}
+
+
+def test_parses_non_finite_string_spellings():
+    parsed = parse_metric_line(
+        'IAX_METRIC {"a": "nan", "b": "inf", "c": "-inf", "d": "infinity", "e": "-infinity"}'
+    )
+
+    assert parsed is not None
+    assert parsed.values["a"] != parsed.values["a"]  # NaN
+    assert parsed.values["b"] == float("inf")
+    assert parsed.values["c"] == float("-inf")
+    assert parsed.values["d"] == float("inf")
+    assert parsed.values["e"] == float("-inf")

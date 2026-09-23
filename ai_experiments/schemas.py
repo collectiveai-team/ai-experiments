@@ -1,71 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Annotated, Any, Literal, TypeVar, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import yaml
 from pydantic import (
     BaseModel,
-    ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
-from ai_experiments.schema_errors import describe
+from ai_experiments.config_loading import (
+    REMOVED_MONITOR_KEYS,
+    ConfigModel,
+    load_config,
+)
 
-#: Keys older versions of iax defined, defaulted, documented -- and never read.
-#: They are rejected in a hand-written file and dropped from a stored one (#14).
-REMOVED_MONITOR_KEYS = ("checks", "no_event_after_minutes")
-
-
-class ConfigModel(BaseModel):
-    """Base for every model a human or an agent writes by hand.
-
-    An unknown key is an error, not a comment: silently dropping ``monitor:``
-    for ``monitoring:`` leaves the author sure they configured something they
-    did not. Models that only describe *stored* state stay permissive, so an
-    older file keeps loading after a field is added.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-
-ConfigT = TypeVar("ConfigT", bound=ConfigModel)
-
-
-def load_config(model: type[ConfigT], path: str | Path) -> ConfigT:
-    """Load a hand-written YAML config, reporting a bad key by name."""
-    with Path(path).open() as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a YAML mapping of fields")
-    try:
-        return model(**data)
-    except ValidationError as exc:
-        raise ValueError(describe(model, exc)) from exc
-
-
-def load_stored(model: type[ConfigT], path: str | Path) -> ConfigT:
-    """Load a config iax itself wrote, tolerating keys older versions emitted.
-
-    A run directory written before a field was removed still has to replay,
-    so the stored path drops those keys instead of refusing the file.
-    """
-    with Path(path).open() as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a YAML mapping of fields")
-    monitoring = data.get("monitoring")
-    if isinstance(monitoring, dict):
-        for key in REMOVED_MONITOR_KEYS:
-            monitoring.pop(key, None)
-    try:
-        return model(**data)
-    except ValidationError as exc:
-        raise ValueError(describe(model, exc)) from exc
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def utc_now() -> datetime:
@@ -258,6 +211,18 @@ class MetricPoint(BaseModel):
     values: dict[str, float] = Field(default_factory=dict)
 
 
+class MetricLine(BaseModel):
+    """One parsed ``IAX_METRIC`` stdout line, before it is stamped into a MetricPoint.
+
+    `step`/`values` are the fixed schema; `values` itself stays a raw
+    ``{name: float}`` map because the workload's own metric names are not
+    fixed. No timestamp here -- callers stamp that at observation time.
+    """
+
+    step: int | None = None
+    values: dict[str, float] = Field(default_factory=dict)
+
+
 class MonitorDecision(BaseModel):
     run_id: str
     decision: Literal[
@@ -353,7 +318,7 @@ class IntParam(ParamBase):
 
 
 ParamSpec = Annotated[
-    Union[ChoiceParam, UniformParam, LogUniformParam, IntParam],
+    ChoiceParam | UniformParam | LogUniformParam | IntParam,
     Field(discriminator="type"),
 ]
 
@@ -528,9 +493,12 @@ class GoalSpec(ConfigModel):
 
     @field_validator("search_space")
     @classmethod
-    def search_space_not_empty(
+    def search_space_not_empty(  # ast-grep-ignore: no-dict-return-annotation
         cls, value: dict[str, ParamSpec]
     ) -> dict[str, ParamSpec]:
+        # A pydantic field validator's signature must return exactly the type
+        # it validates -- search_space is itself a name -> ParamSpec mapping,
+        # not a fixed schema.
         if not value:
             raise ValueError("search_space needs at least one parameter")
         return value
@@ -543,7 +511,7 @@ class GoalSpec(ConfigModel):
 
     @model_validator(mode="after")
     def conditions_resolve(self) -> GoalSpec:
-        """A ``when`` has to name a key that exists and is drawn first.
+        """Require every ``when`` to name a key that exists and is drawn first.
 
         Restricting conditions to one level keeps the sampling order obvious
         — unconditional keys, then everything that depends on them — and
@@ -583,9 +551,7 @@ TrialState = Literal[
     "cancelled",
 ]
 
-CampaignStatus = Literal[
-    "running", "paused", "stopping", "completed", "stopped", "failed"
-]
+CampaignStatus = Literal["running", "paused", "stopping", "completed", "stopped", "failed"]
 
 
 class TrialRecord(BaseModel):

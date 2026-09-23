@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "pydantic>=2.6",
+  "pydantic-settings>=2.7",
   "pyyaml>=6.0",
+  "structlog>=25.1",
   "typer>=0.12.0",
 ]
 keywords = ["experiments", "training", "ray", "mlops", "monitoring"]
@@ -44,10 +46,14 @@ psutil = [
 ]
 dev = [
   "pytest>=8.0.0",
+  "pytest-randomly>=3.15",
   "httpx>=0.27.0",
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
-  "ruff>=0.4.0",
+  # Pinned exactly to the ruff-pre-commit rev in prek.toml: `uv run ruff` and the gate
+  # that blocks a commit must not disagree about what counts as a lint error. A floor is not
+  # enough: uv resolved >=0.15.22 straight to 0.16.8, reintroducing the skew.
+  "ruff==0.15.22",
   "psutil>=5.9.0",
 ]
 
@@ -64,5 +70,162 @@ packages = ["ai_experiments"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+  "unit: fast isolated tests, no external deps",
   "integration: exercises real Ray/MLflow services; skipped unless they are up (see tests/integration/compose.yaml)",
+  "e2e: end-to-end smoke tests",
 ]
+
+# MARK: Ruff
+[tool.ruff]
+line-length = 100
+
+# .agents/ is the vendored standards catalog, not this project's source. The snippets are
+# upstream template code kept byte-identical so they stay diffable against
+# collectiveai-team/scaffolding; linting or reformatting them here would destroy that and
+# report defects we cannot fix in this repo. Matches [tool.pyrefly] project-excludes below.
+# force-exclude so the prek hooks, which pass filenames explicitly, honour it too.
+extend-exclude = [".agents"]
+force-exclude = true
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "C4",
+  "C90",
+  "ICN",
+  "INP",
+  "PIE",
+  "PT",
+  "TC",
+  "PGH",
+  "NPY",
+  "PLE",
+  "PLW",
+  "FA",
+  "B",
+  "S",
+  "G",
+  "SIM",
+  "RET",
+  "DTZ",
+  "PTH",
+  "LOG",
+  "TID",
+  "UP",
+  "RUF",
+  "ERA001",
+  "D200",
+  "D205",
+  "D212",
+  "D300",
+  "D301",
+  "D400",
+  "D401",
+  "D403",
+  "D405",
+  "D406",
+  "D407",
+  "D408",
+  "D409",
+  "D410",
+  "D411",
+  "D412",
+  "D413",
+  "D414",
+  "D415",
+  "D417",
+  "D418",
+  "D419",
+  "PERF",
+]
+task-tags = ["TODO", "FIXME", "XXX", "MARK"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+# Ban relative imports (e.g. `from .module import ...`) in favor of absolute
+# package imports, so modules are unambiguous and easy to move.
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "INP001"]
+"examples/maintenance_events/tests/**" = ["S101", "INP001"]   # the example's own suite, same rules as tests/
+"examples/**" = ["INP001"]   # standalone scripts, deliberately not a package
+"ai_experiments/templates/**" = ["INP001"]   # scaffolded-file source, copied out by `iax new`, never imported
+"ai_experiments/planner/**" = ["S311"]   # search sampling, not security
+
+# Typer/FastAPI declare parameters via call-valued defaults; that is the framework's
+# idiom, not a mutable-default bug (B008).
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+  "typer.Option",
+  "typer.Argument",
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Path",
+  "fastapi.Body",
+]
+
+# MARK: Pyrefly
+[tool.pyrefly]
+project-excludes = [
+  "**/node_modules",
+  "**/__pycache__",
+  "**/venv/**/*",
+  "**/.venv/**/*",
+  "**/.uv_cache/**/*",
+  ".agents/**",
+  # A standalone workload with its own dependencies (pandas, scikit-learn); it is
+  # checked by its own test suite, not resolved against the harness's interpreter.
+  "examples/maintenance_events/**",
+]
+use-ignore-files = false
+disable-project-excludes-heuristics = true
+
+# MARK: import-linter (CES-5 layer direction, CES-17 api-boundary layout)
+# Commented skeleton — uncomment once the package actually has layers. Enforces the house import
+# direction: entrypoints -> api -> database/impl -> core (a higher layer may import lower ones,
+# never the reverse). Add `import-linter` to the dev group and run `uvx --from import-linter
+# lint-imports`.
+#
+# [tool.importlinter]
+# root_package = "ai_experiments"
+#
+# [[tool.importlinter.contracts]]
+# name = "Layered architecture (CES-5)"
+# type = "layers"
+# layers = [
+#   "ai_experiments.entrypoints",
+#   "ai_experiments.api",
+#   "ai_experiments.database | ai_experiments.impl",
+#   "ai_experiments.core",
+# ]
+#
+# # CES-17 api-boundary layout: the api package is the only inbound HTTP boundary; nothing
+# # outside api may import api.schemas/routers internals.
+# [[tool.importlinter.contracts]]
+# name = "API is the only inbound boundary (CES-17)"
+# type = "forbidden"
+# source_modules = ["ai_experiments.core", "ai_experiments.database"]
+# forbidden_modules = ["ai_experiments.api"]
+
+# MARK: deptry
+# CES-109: module→distribution mappings deptry cannot infer, plus the dev extra.
+[tool.deptry]
+known_first_party = ["ai_experiments"]
+# A standalone workload with its own pyproject.toml and lock; its imports are declared there.
+extend_exclude = ["examples/maintenance_events"]
+pep621_dev_dependency_groups = ["dev"]
+
+[tool.deptry.package_module_name_map]
+pyyaml = ["yaml"]
+mlflow-skinny = ["mlflow"]

@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from prepare.sppa import SppaParseError, parse_sppa_file
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sppa_sample.csv"
@@ -72,9 +71,7 @@ def test_english_export_quality_flag_becomes_nan():
 
 def test_file_without_column_row_raises(tmp_path):
     broken = tmp_path / "broken.csv"
-    broken.write_text(
-        ";;;;SPPA-T3000;;;;\n;;Tag1;13MAC01CP001||XQ01;;;;\n", encoding="latin-1"
-    )
+    broken.write_text(";;;;SPPA-T3000;;;;\n;;Tag1;13MAC01CP001||XQ01;;;;\n", encoding="latin-1")
     with pytest.raises(SppaParseError, match="no se encontró la fila de columnas"):
         parse_sppa_file(broken)
 

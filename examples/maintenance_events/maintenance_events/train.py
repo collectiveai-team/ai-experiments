@@ -54,9 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window-days", type=int, default=90)
     parser.add_argument("--resample-freq", default="1h")
-    parser.add_argument(
-        "--label-source", default="union", choices=["mapro", "operator", "union"]
-    )
+    parser.add_argument("--label-source", default="union", choices=["mapro", "operator", "union"])
     parser.add_argument("--model", default="hist_gb", choices=list(MODELS))
     parser.add_argument("--learning-rate", type=float, default=0.1)
     parser.add_argument("--max-leaf-nodes", type=int, default=31)
@@ -90,9 +88,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="etiqueta negativas las ventanas fuera del período registrado por la fuente",
     )
-    parser.add_argument(
-        "--self-test", action="store_true", help="corre sobre datos sintéticos"
-    )
+    parser.add_argument("--self-test", action="store_true", help="corre sobre datos sintéticos")
     return parser.parse_args(argv)
 
 
@@ -120,17 +116,9 @@ def main(argv: list[str] | None = None) -> int:
 
     resampled = signals.resample(args.resample_freq).mean()
     event_dates = select_events(events, args.label_source)
-    coverage = (
-        None
-        if args.ignore_label_coverage
-        else label_coverage(events, args.label_source)
-    )
-    windows = build_windows(
-        resampled, event_dates, window_days=args.window_days, coverage=coverage
-    )
-    X, y, as_of = build_feature_table(
-        windows, offline_power_threshold=args.offline_power_threshold
-    )
+    coverage = None if args.ignore_label_coverage else label_coverage(events, args.label_source)
+    windows = build_windows(resampled, event_dates, window_days=args.window_days, coverage=coverage)
+    X, y, as_of = build_feature_table(windows, offline_power_threshold=args.offline_power_threshold)
 
     if X.empty:
         print("sin ventanas válidas para esta configuración", file=sys.stderr)
@@ -160,9 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         min_samples_leaf=args.min_samples_leaf,
         l2=args.l2,
         max_bins=args.max_bins,
-        class_weight=None
-        if args.class_weight in ("", "none", "None")
-        else args.class_weight,
+        class_weight=None if args.class_weight in ("", "none", "None") else args.class_weight,
         seed=args.seed,
     )
     with threadpool_limits(limits=resolve_thread_limit()):

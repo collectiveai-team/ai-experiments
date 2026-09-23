@@ -22,20 +22,23 @@ if not report.target_reached:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from ai_experiments.cli_support import IaxError, invalid_input, not_found
-from ai_experiments.improve.rounds import RoundLog
+from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.loop import LoopReport
 from ai_experiments.loop import run_loop as _run_loop
 from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schema_errors import describe
-from ai_experiments.schemas import GoalSpec
+from ai_experiments.schemas import GoalSpec, TrialRecord
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
+
+if TYPE_CHECKING:
+    from ai_experiments.responses import CampaignSummary
 
 __all__ = [
     "IaxError",
@@ -84,14 +87,14 @@ def goal_from_yaml(path: str | Path) -> GoalSpec:
 # -- campaigns -----------------------------------------------------------------
 
 
-def start_campaign(goal: GoalSpec, *, runs_dir: RunsDir = None) -> dict[str, Any]:
+def start_campaign(goal: GoalSpec, *, runs_dir: RunsDir = None) -> CampaignSummary:
     """Create a campaign and submit its first round. Returns its report."""
     orchestrator = _orchestrator(runs_dir)
     state = orchestrator.start(goal)
     return summarize_campaign(state, goal)
 
 
-def advance_campaign(campaign_id: str, *, runs_dir: RunsDir = None) -> dict[str, Any]:
+def advance_campaign(campaign_id: str, *, runs_dir: RunsDir = None) -> CampaignSummary:
     """Run exactly one loop step: collect finished trials, then plan the next.
 
     This is the step `iax loop` repeats. Call it directly when the agent wants
@@ -104,7 +107,7 @@ def advance_campaign(campaign_id: str, *, runs_dir: RunsDir = None) -> dict[str,
     return summarize_campaign(state, goal)
 
 
-def campaign_report(campaign_id: str, *, runs_dir: RunsDir = None) -> dict[str, Any]:
+def campaign_report(campaign_id: str, *, runs_dir: RunsDir = None) -> CampaignSummary:
     """Where the campaign stands, without advancing it."""
     campaigns = CampaignStore(FilesystemRunStore(runs_dir).root)
     _require(campaigns, campaign_id)
@@ -114,7 +117,7 @@ def campaign_report(campaign_id: str, *, runs_dir: RunsDir = None) -> dict[str, 
 
 def campaign_rounds(
     campaign_id: str, limit: int | None = None, *, runs_dir: RunsDir = None
-) -> list[dict[str, Any]]:
+) -> list[RoundRecord]:
     """Why each round tried what it tried, oldest first.
 
     A campaign report says what happened. This says what the loop believed at
@@ -123,12 +126,12 @@ def campaign_rounds(
     campaigns = CampaignStore(FilesystemRunStore(runs_dir).root)
     _require(campaigns, campaign_id)
     log = RoundLog(campaigns.campaign_dir(campaign_id))
-    return [record.model_dump(mode="json") for record in log.read(limit)]
+    return log.read(limit)
 
 
-def list_campaigns(*, runs_dir: RunsDir = None) -> list[dict[str, Any]]:
+def list_campaigns(*, runs_dir: RunsDir = None) -> list[CampaignSummary]:
     campaigns = CampaignStore(FilesystemRunStore(runs_dir).root)
-    reports = []
+    reports: list[CampaignSummary] = []
     for campaign_id in campaigns.list_campaigns():
         state = campaigns.read_state(campaign_id)
         reports.append(summarize_campaign(state, campaigns.read_goal(campaign_id)))
@@ -141,7 +144,7 @@ def suggest_trial(
     note: str = "",
     *,
     runs_dir: RunsDir = None,
-) -> dict[str, Any]:
+) -> TrialRecord:
     """Queue one trial the agent chose itself; the next advance submits it.
 
     A suggestion is a proposal, not an override. Params outside the search
@@ -153,7 +156,7 @@ def suggest_trial(
         trial = orchestrator.suggest(campaign_id, params, note=note)
     except ValueError as exc:
         invalid_input(f"suggestion rejected: {exc}")
-    return trial.model_dump(mode="json")
+    return trial
 
 
 # -- the whole loop ------------------------------------------------------------

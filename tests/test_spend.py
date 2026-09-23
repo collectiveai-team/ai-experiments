@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from ai_experiments.orchestrator import trial_wall_hours
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.schemas import (
     CampaignState,
@@ -20,6 +19,7 @@ from ai_experiments.schemas import (
     WorkloadSpec,
     utc_now,
 )
+from ai_experiments.stopping import trial_wall_hours
 
 
 def test_wall_time_is_recorded_even_with_no_gpu():
@@ -27,6 +27,7 @@ def test_wall_time_is_recorded_even_with_no_gpu():
 
     hours = trial_wall_hours(started, started + timedelta(seconds=1800))
 
+    assert hours is not None
     assert abs(hours - 0.5) < 1e-9
 
 
@@ -54,5 +55,5 @@ def test_the_campaign_reports_what_it_actually_spent():
 
     summary = summarize_campaign(state, goal)
 
-    assert abs(summary["wall_hours"] - 0.125) < 1e-9
-    assert summary["gpu_hours"] == 0
+    assert abs(summary.wall_hours - 0.125) < 1e-9
+    assert summary.gpu_hours == 0

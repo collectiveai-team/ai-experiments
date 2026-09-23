@@ -60,7 +60,12 @@ class IaxError(Exception):
     def exit_code(self) -> int:
         return _EXIT_FOR_CODE.get(self.code, EXIT_NOT_FOUND)
 
-    def payload(self) -> dict[str, Any]:
+    def payload(self) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+        """Return the JSON error object documented at the top of this module.
+
+        It goes straight to ``json.dumps`` for an agent to parse, so the shape
+        is the CLI's wire contract rather than a type python callers build.
+        """
         payload: dict[str, Any] = {"error": self.message, "code": self.code}
         if self.details:
             payload["details"] = self.details

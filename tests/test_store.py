@@ -145,8 +145,11 @@ def test_listing_runs_survives_one_corrupt_run(tmp_path):
 
 
 def test_update_status_refuses_to_overwrite_a_corrupt_file(tmp_path):
-    """Merging onto a synthetic status would fabricate history and destroy the
-    evidence of what went wrong."""
+    """Guards against fabricated history.
+
+    Merging onto a synthetic status would fabricate history and destroy the evidence of
+    what went wrong.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     store.status_path(run_id).write_text(TORN_STATUS)
@@ -168,10 +171,11 @@ def test_update_status_refuses_when_there_is_no_status_yet(tmp_path):
 
 
 def test_update_status_quarantines_a_missing_run_directory(tmp_path):
-    """A missing status is quarantined as synthetic and refused the same way a
-    missing *file* is -- the invariant makes no distinction. Taking the
-    ``status.lock`` before ``read_status`` must not turn a gone run directory
-    into a raw ``FileNotFoundError`` that leaks the lock sidecar's existence.
+    """A missing status is quarantined as synthetic and refused the same way a missing *file* is.
+
+    The invariant makes no distinction. Taking the ``status.lock`` before
+    ``read_status`` must not turn a gone run directory into a raw
+    ``FileNotFoundError`` that leaks the lock sidecar's existence.
 
     Observed on the locked-but-unguarded code:
     ``FileNotFoundError: [Errno 2] No such file or directory:
@@ -195,8 +199,10 @@ def test_update_status_quarantines_a_missing_run_directory(tmp_path):
 
 
 def test_write_handle_refuses_to_clobber_an_existing_status(tmp_path):
-    """A handle carries no details, so overwriting would silently drop them --
-    this is how the Ray path lost its MLflow linkage."""
+    """A handle carries no details, so overwriting would silently drop them.
+
+    This is how the Ray path lost its MLflow linkage.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     store.update_status(run_id, details={"mlflow_run_id": "mlf_1"})
@@ -256,7 +262,7 @@ def test_concurrent_update_status_keeps_disjoint_details_fields(tmp_path):
     while True:
         try:
             worker_failures.append(failures.get_nowait())
-        except queue.Empty:
+        except queue.Empty:  # noqa: PERF203  # draining a queue needs the check each turn
             break
     assert worker_failures == []
     assert [worker.exitcode for worker in workers] == [0, 0]
@@ -302,15 +308,19 @@ def test_update_status_leaves_no_temp_files_behind(tmp_path):
 
 
 def test_a_failed_write_leaves_the_previous_status_intact(tmp_path):
-    """A crash mid-write must leave the old document readable, never a
-    truncated one -- and must not litter the run dir with temp files."""
+    """A crash mid-write must leave the old document readable, never a truncated one.
+
+    It must also not litter the run dir with temp files.
+    """
     store = _store(tmp_path)
     run_id = _submitted_run(store)
     before = store.status_path(run_id).read_text()
 
-    with patch("ai_experiments.store.filesystem.os.replace", side_effect=OSError("no")):
-        with pytest.raises(OSError):
-            store.update_status(run_id, status="running")
+    with (
+        patch("ai_experiments.store.filesystem.Path.replace", side_effect=OSError("no")),
+        pytest.raises(OSError, match=r"^no$"),
+    ):
+        store.update_status(run_id, status="running")
 
     assert store.status_path(run_id).read_text() == before
     assert list(store.run_dir(run_id).glob("*.tmp")) == []
@@ -327,8 +337,8 @@ def test_campaign_state_is_written_atomically(tmp_path):
     reloaded = campaigns.read_state(state.campaign_id)
     assert isinstance(reloaded, CampaignState)
     assert (
-        json.loads(
-            (campaigns.campaign_dir(state.campaign_id) / "state.json").read_text()
-        )["campaign_id"]
+        json.loads((campaigns.campaign_dir(state.campaign_id) / "state.json").read_text())[
+            "campaign_id"
+        ]
         == state.campaign_id
     )

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING
 
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -13,6 +13,9 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 MODELS = ("hist_gb", "logreg", "dummy")
 
@@ -41,9 +44,7 @@ def make_model(
         return lambda: make_pipeline(
             SimpleImputer(strategy="median"),
             StandardScaler(),
-            LogisticRegression(
-                max_iter=2000, class_weight=class_weight, random_state=seed
-            ),
+            LogisticRegression(max_iter=2000, class_weight=class_weight, random_state=seed),
         )
     if name == "dummy":
         return lambda: DummyClassifier(strategy="prior")

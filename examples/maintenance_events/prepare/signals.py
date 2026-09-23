@@ -50,29 +50,28 @@ def load_signals(raw_signals_dir: Path) -> pd.DataFrame:
             continue
         by_quarter[match.group("quarter")].append(parse_sppa_file(path))
 
-    quarters: list[pd.DataFrame] = []
-    for quarter in sorted(by_quarter):
-        frames = by_quarter[quarter]
-        wide = pd.concat(frames, axis=1)
-        wide = wide.loc[:, ~wide.columns.duplicated()]
-        renamed = wide.rename(columns=TAG_RENAMES)
-
-        for raw_tag, target in FALLBACK_TAGS.items():
-            if raw_tag not in wide.columns:
-                continue
-            if target in renamed.columns:
-                renamed[target] = renamed[target].fillna(wide[raw_tag])
-            else:
-                # El grupo principal no aportó la señal en este trimestre: la
-                # de GRUPO4 es todo lo que hay. Perderla sería peor que usarla.
-                renamed[target] = wide[raw_tag]
-
-        keep = [name for name in TAG_RENAMES.values() if name in renamed.columns]
-        quarters.append(renamed[keep])
-
+    quarters = [_merge_quarter(by_quarter[quarter]) for quarter in sorted(by_quarter)]
     if not quarters:
         raise FileNotFoundError(f"{raw_signals_dir}: ningún trimestral GRUPO*.csv")
 
     signals = pd.concat(quarters).sort_index()
     signals = signals[~signals.index.duplicated(keep="first")]
     return signals.reindex(columns=list(TAG_RENAMES.values()))
+
+
+def _merge_quarter(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Un trimestre: los grupos lado a lado, renombrados, con los tags de respaldo aplicados."""
+    wide = pd.concat(frames, axis=1)
+    wide = wide.loc[:, ~wide.columns.duplicated()]
+    renamed = wide.rename(columns=TAG_RENAMES)
+    for raw_tag, target in FALLBACK_TAGS.items():
+        if raw_tag not in wide.columns:
+            continue
+        if target in renamed.columns:
+            renamed[target] = renamed[target].fillna(wide[raw_tag])
+        else:
+            # El grupo principal no aportó la señal en este trimestre: la
+            # de GRUPO4 es todo lo que hay. Perderla sería peor que usarla.
+            renamed[target] = wide[raw_tag]
+    keep = [name for name in TAG_RENAMES.values() if name in renamed.columns]
+    return renamed[keep]

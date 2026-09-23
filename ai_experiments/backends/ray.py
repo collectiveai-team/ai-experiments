@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from ai_experiments.backends.base import ExperimentBackend
 from ai_experiments.failures import failure_message
@@ -19,7 +18,11 @@ from ai_experiments.schemas import (
     RunStatus,
     utc_now,
 )
+from ai_experiments.settings import get_settings
 from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_RAY_ADDRESS = "http://127.0.0.1:8265"
 
@@ -30,7 +33,7 @@ def resolve_ray_address(address: str | None = None) -> str:
         if not stripped:
             raise ValueError("Ray address must not be empty")
         return stripped
-    env_address = os.environ.get("RAY_ADDRESS")
+    env_address = get_settings().ray_address
     if env_address and env_address.strip():
         return env_address.strip()
     return DEFAULT_RAY_ADDRESS
@@ -59,17 +62,13 @@ class RayBackend(ExperimentBackend):
         try:
             from ray.job_submission import JobSubmissionClient
         except ImportError as exc:  # pragma: no cover - depends on optional ray extra
-            raise RuntimeError(
-                "Ray is not installed. Install ai-experiments[ray]."
-            ) from exc
+            raise RuntimeError("Ray is not installed. Install ai-experiments[ray].") from exc
         return JobSubmissionClient(self.address)
 
     def submit(self, manifest: ExperimentManifest) -> RunHandle:
         run_id, run_dir = self.store.create_run(manifest)
         status_path = self.store.status_path(run_id)
-        entrypoint = " ".join(
-            [manifest.workload.entrypoint, *manifest.workload.args]
-        ).strip()
+        entrypoint = " ".join([manifest.workload.entrypoint, *manifest.workload.args]).strip()
 
         # Establish the real status *first*. `begin_tracking` below records the
         # MLflow linkage via update_status, and the Ray job id is only known
@@ -99,9 +98,7 @@ class RayBackend(ExperimentBackend):
             client = self._client()
         except RuntimeError as exc:
             error = "Ray is not installed. Install ai-experiments[ray]."
-            self.store.update_status(
-                run_id, status="failed", error=error, completed_at=utc_now()
-            )
+            self.store.update_status(run_id, status="failed", error=error, completed_at=utc_now())
             raise RuntimeError(error) from exc
 
         from ai_experiments.tracking import begin_tracking
@@ -129,10 +126,7 @@ class RayBackend(ExperimentBackend):
             ray_status = client.get_job_status(status.external_id)
             mapped = _map_ray_status(ray_status)
             details = self._ray_details(run_id, client, status.external_id, ray_status)
-            if (
-                mapped in {"completed", "failed", "cancelled"}
-                and status.completed_at is None
-            ):
+            if mapped in {"completed", "failed", "cancelled"} and status.completed_at is None:
                 status = self.store.update_status(
                     run_id,
                     status=mapped,
@@ -140,9 +134,7 @@ class RayBackend(ExperimentBackend):
                     details=details,
                 )
             else:
-                status = self.store.update_status(
-                    run_id, status=mapped, details=details
-                )
+                status = self.store.update_status(run_id, status=mapped, details=details)
             if mapped == "failed" and not status.error:
                 # Ray's message can carry 20,000 characters of job log. It ends
                 # up in the planner's evidence block, so it gets the same tail
@@ -156,9 +148,19 @@ class RayBackend(ExperimentBackend):
         except Exception as exc:  # pragma: no cover - depends on live Ray cluster
             return self.store.update_status(run_id, error=str(exc))
 
-    def _ray_details(
+    def _ray_details(  # ast-grep-ignore: no-dict-return-annotation
         self, run_id: str, client: Any, external_id: str, ray_status: Any
     ) -> dict[str, Any]:
+        # An iax-invented vocabulary (ray_status/ray_address/ray_job_info/...),
+        # not Ray's own keys -- those live only inside the nested ray_job_info
+        # value (see _job_info_dict). This dict is consumed in-process, across
+        # a module boundary, by this function's own last line:
+        # classify_ray_condition (monitoring/ray_rules.py) reads ray_status,
+        # ray_message, ray_error_type, ray_log_tail and ray_job_info by string
+        # literal. The destination, RunStatus.details, is a genuinely
+        # free-form dict[str, Any] written by several unrelated producers
+        # (worker.py, tracking.py, backends/local.py), so typing one half of
+        # that hop buys little.
         details: dict[str, Any] = {
             "ray_status": _ray_status_text(ray_status),
             "ray_address": self.address,
@@ -187,9 +189,7 @@ class RayBackend(ExperimentBackend):
         details["ray_condition"] = classify_ray_condition(details)
         return details
 
-    def _sync_metrics_from_logs(
-        self, run_id: str, lines: list[str]
-    ) -> MetricPoint | None:
+    def _sync_metrics_from_logs(self, run_id: str, lines: list[str]) -> MetricPoint | None:
         """Append metric points newly seen in the job logs to the run store.
 
         Ray job logs carry no timestamps, so only points beyond the count
@@ -200,7 +200,7 @@ class RayBackend(ExperimentBackend):
         existing = self.store.read_metrics(run_id)
         last: MetricPoint | None = existing[-1] if existing else None
         for metric in parsed[len(existing) :]:
-            last = MetricPoint(step=metric["step"], values=metric["values"])
+            last = MetricPoint(step=metric.step, values=metric.values)
             self.store.append_metric(run_id, last)
         return last
 
@@ -253,9 +253,11 @@ def _safe_call(client: Any, method_name: str, *args: Any) -> Any:
         return None
 
 
-def _job_info_dict(job_info: Any) -> dict[str, Any]:
+def _job_info_dict(job_info: Any) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+    # Passes Ray's own job-info keys through into the free-form
+    # RunStatus.details blob; not a fixed schema iax defines.
     if job_info is None:
-        return {}
+        return {}  # ast-grep-ignore: no-dict-literal-return  # empty job-info, same shape as above
     if isinstance(job_info, dict):
         return {str(k): _jsonable(v) for k, v in job_info.items()}
     if hasattr(job_info, "model_dump"):
