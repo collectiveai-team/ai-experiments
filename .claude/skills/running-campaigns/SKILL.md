@@ -50,6 +50,10 @@ workload:
   entrypoint: "uv run train.py"
   args: ["--lr", "{lr}"]        # {param} placeholders substituted;
   working_dir: .                # params without placeholders appended as --name value
+  # Two phases, when the trainer must not score itself: with both set, these
+  # run instead of `entrypoint`, and `args` is appended to each of them.
+  # train: "python train.py --epochs 20"
+  # evaluate: "python evaluate.py"
 budget: { max_trials: 12, max_parallel: 2, max_hours: 8.0,
           max_gpu_hours: 100, gpu_hour_rate: 2.5 }   # gpu budget + $/gpu-h optional
 strategy: { name: adaptive, seed: 7 }     # grid | random | adaptive
@@ -64,12 +68,21 @@ before starting. The warnings are the ways a goal can be valid, run to
 completion and still settle nothing.
 
 Constraints that matter:
-- The workload **must** print `IAX_METRIC {"step": N, "<metric>": value}`
-  lines (or call `ai_experiments.report.report_metric`). The objective metric
-  name must match `objective.metric` — without it trials score `null`.
+- Only the `evaluate` phase's declared result scores a trial. It **must**
+  print exactly one `IAX_RESULT {"<metric>": value}` line (or call
+  `ai_experiments.report.report_result`); the name must match
+  `objective.metric`. A workload that never prints it scores `null` tagged
+  `no_result` — it does not fall back to the last `IAX_METRIC` line.
+- `train` may print progress via `IAX_METRIC {"step": N, ...}` lines (or
+  `report_metric`) — plotted and watched for a stuck/diverging run, but never
+  scored. A result printed from `train` is discarded with a warning: the
+  trainer is the code a strategy/agent tunes, so it may not declare the
+  number it is judged by.
 - `strategy: adaptive` needs ≥3 completed trials before it exploits; for tiny
   budgets (<4 trials) prefer `random` or `grid`.
-- The full params dict also reaches the workload as `IAX_PARAMS` (JSON env var).
+- The full params dict also reaches the workload as `IAX_PARAMS` (JSON env
+  var); params without a `{placeholder}` in `args` are appended as
+  `--name value` to **every** declared phase.
 
 ## Launch and drive
 

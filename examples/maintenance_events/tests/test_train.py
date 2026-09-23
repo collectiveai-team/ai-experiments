@@ -13,12 +13,20 @@ def _run(*args):
     )
 
 
-def _metrics(stdout):
+def _lines(stdout, prefix):
     return [
-        json.loads(line[len("IAX_METRIC ") :])
-        for line in stdout.splitlines()
-        if line.startswith("IAX_METRIC ")
+        json.loads(line[len(prefix) :]) for line in stdout.splitlines() if line.startswith(prefix)
     ]
+
+
+def _metrics(stdout):
+    """Progress lines: never scored."""
+    return _lines(stdout, "IAX_METRIC ")
+
+
+def _results(stdout):
+    """Parse the declared results: one per fold, the only lines that score."""
+    return _lines(stdout, "IAX_RESULT ")
 
 
 def test_the_objective_is_reported_once_per_fold():
@@ -30,7 +38,7 @@ def test_the_objective_is_reported_once_per_fold():
     no existe.
     """
     result = _run("--self-test", "--window-days", "60", "--n-folds", "3", "--model", "logreg")
-    per_fold = [p for p in _metrics(result.stdout) if "fold_n_test" in p]
+    per_fold = [p for p in _results(result.stdout) if "fold_n_test" in p]
     assert len(per_fold) >= 2
     assert any("pr_auc" in p for p in per_fold), "ningún fold reportó el objetivo"
     for point in per_fold:
@@ -236,9 +244,9 @@ def test_the_objective_and_its_baseline_are_both_reported(capsys):
     assert main(["--self-test", "--n-folds", "3"]) == 0
 
     points = [
-        json.loads(line.removeprefix("IAX_METRIC "))
+        json.loads(line.removeprefix("IAX_RESULT "))
         for line in capsys.readouterr().out.splitlines()
-        if line.startswith("IAX_METRIC ")
+        if line.startswith("IAX_RESULT ")
     ]
     scored = [p for p in points if goal["objective"]["metric"] in p]
     assert scored

@@ -19,7 +19,9 @@ TOY_SCRIPT = textwrap.dedent(
     parser = argparse.ArgumentParser()
     parser.add_argument("--x", type=float, required=True)
     args = parser.parse_args()
-    print("IAX_METRIC " + json.dumps({"step": 0, "loss": (args.x - 2.0) ** 2}))
+    loss = (args.x - 2.0) ** 2
+    print("IAX_METRIC " + json.dumps({"step": 0, "loss": loss}))
+    print("IAX_RESULT " + json.dumps({"loss": loss}))
     sys.stdout.flush()
     """
 )

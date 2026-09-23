@@ -292,7 +292,7 @@ def test_objective_never_reported_stops_the_campaign_early(tmp_path):
 
 
 def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
-    """No metrics at all is a different diagnosis from the wrong metric name."""
+    """No result at all is a different diagnosis from the wrong metric name."""
     orchestrator, backend = _orchestrator(tmp_path)
 
     def silent_inspect(run_id: str) -> RunStatus:
@@ -307,7 +307,7 @@ def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
 
     finished = [t for t in state.trials if t.status == "completed"]
     assert finished
-    assert all("no metrics" in (t.error or "") for t in finished)
+    assert all("no result" in (t.error or "") for t in finished)
 
 
 def test_exhausted_search_space_ends_the_campaign(tmp_path):

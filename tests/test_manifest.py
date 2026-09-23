@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ai_experiments.schemas import ExperimentManifest, WorkloadSpec
+from ai_experiments.schemas import DataSpec, ExperimentManifest, WorkloadSpec
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -117,3 +117,63 @@ def test_failure_message_without_output_is_just_the_prefix():
     from ai_experiments.failures import failure_message
 
     assert failure_message("Ray job failed", "") == "Ray job failed"
+
+
+def test_a_single_entrypoint_workload_runs_as_the_evaluate_phase():
+    workload = WorkloadSpec(entrypoint="python toy.py")
+
+    assert workload.phases() == [("evaluate", "python toy.py")]
+
+
+def test_a_two_phase_workload_runs_train_then_evaluate():
+    workload = WorkloadSpec(
+        entrypoint="python train.py",
+        train="python train.py",
+        evaluate="python evaluate.py",
+    )
+
+    assert workload.phases() == [
+        ("train", "python train.py"),
+        ("evaluate", "python evaluate.py"),
+    ]
+
+
+def test_a_phase_dropped_after_construction_is_not_run_silently():
+    workload = WorkloadSpec(
+        entrypoint="python x.py", train="python train.py", evaluate="python evaluate.py"
+    )
+
+    mutated = workload.model_copy(update={"evaluate": None})
+
+    with pytest.raises(ValueError, match="both are required"):
+        mutated.phases()
+
+
+def test_the_train_phase_never_receives_the_test_reference():
+    data = DataSpec(train="data/train", val="data/val", test="data/test")
+
+    env = data.env_for("train")
+
+    assert env == {"IAX_DATA_TRAIN": "data/train", "IAX_DATA_VAL": "data/val"}
+    assert "IAX_DATA_TEST" not in env
+
+
+def test_the_evaluate_phase_receives_the_test_reference():
+    data = DataSpec(train="data/train", val="data/val", test="data/test")
+
+    assert data.env_for("evaluate")["IAX_DATA_TEST"] == "data/test"
+
+
+def test_declaring_evaluate_without_train_is_rejected():
+    with pytest.raises(ValueError, match="train"):
+        WorkloadSpec(entrypoint="python x.py", evaluate="python evaluate.py")
+
+
+def test_declaring_train_without_evaluate_is_rejected():
+    with pytest.raises(ValueError, match="evaluate"):
+        WorkloadSpec(entrypoint="python x.py", train="python train.py")
+
+
+def test_declaring_test_data_without_an_evaluate_phase_is_rejected():
+    with pytest.raises(ValueError, match="evaluate"):
+        WorkloadSpec(entrypoint="python x.py", data=DataSpec(test="data/test"))

@@ -2,8 +2,9 @@
 
 The harness reads two things from a workload:
 
-1. ``IAX_METRIC {json}`` lines on stdout. Each line is one point; ``step`` is
-   optional but makes progress and plateau detection work.
+1. Stdout lines. ``IAX_METRIC {json}`` is one point on the progress curve;
+   ``step`` is optional but makes progress and plateau detection work.
+   ``IAX_RESULT {json}`` is the one declared result — only this is scored.
 2. The exit code. Zero means completed, anything else means failed.
 
 It hands the workload three environment variables:
@@ -26,6 +27,11 @@ def report(step: int, **metrics: float) -> None:
     print("IAX_METRIC " + json.dumps({"step": step, **metrics}), flush=True)
 
 
+def report_result(**values: float) -> None:
+    """Declare the one result the harness will score."""
+    print("IAX_RESULT " + json.dumps(values), flush=True)
+
+
 def main() -> None:
     params = json.loads(os.environ.get("IAX_PARAMS") or "{}")
     lr = float(params.get("lr", 0.01))
@@ -36,6 +42,8 @@ def main() -> None:
     for step in range(100):
         loss = max(loss - lr, 0.0)
         report(step, loss=loss)
+
+    report_result(loss=loss)
 
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")
     if artifacts:

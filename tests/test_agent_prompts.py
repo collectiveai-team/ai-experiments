@@ -86,6 +86,14 @@ def test_review_brief_asks_for_a_verdict():
     assert "change_goal" in brief
 
 
+def test_objective_block_describes_the_declared_result_contract():
+    """The prompt must tell the agent the truth about how objectives are scored."""
+    brief = round_brief(GOAL, _summary([]), max_trials=3)
+
+    assert "IAX_RESULT" in brief
+    assert 'IAX_METRIC {"step"' not in brief
+
+
 def test_the_brief_says_the_score_is_a_lift_when_it_is_one():
     """Tell the agent it is moving a lift, not a published PR-AUC.
 

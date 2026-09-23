@@ -3,7 +3,8 @@
 Contrato con iax: los parámetros llegan como ``--nombre-valor`` (las claves de
 ``search_space`` son identificadores de Python y ``build_trial_manifest`` las
 traduce a la grafía con guiones que argparse declara por convención), y las
-observaciones salen por stdout como líneas ``IAX_METRIC {json}``.
+observaciones salen por stdout como líneas ``IAX_RESULT {json}``, una por
+fold; el progreso y el resumen final van como ``IAX_METRIC``, que no puntúa.
 
 Cada fold es una observación del objetivo, no un paso hacia él: emite
 ``pr_auc`` junto a su ``baseline_pr_auc`` en la misma línea. La meta declara
@@ -46,7 +47,19 @@ from maintenance_events.windows import (
 
 
 def report_metric(**values: object) -> None:
+    """Progreso: se grafica y se vigila, nunca puntúa."""
     print("IAX_METRIC " + json.dumps(values))
+    sys.stdout.flush()
+
+
+def report_result(**values: object) -> None:
+    """Una observación del objetivo: un fold, con su tasa base en la misma línea.
+
+    Es el único canal que puntúa. ``objective.aggregate: mean`` promedia una
+    línea por fold y saca el error estándar; por eso cada fold es su propia
+    ``IAX_RESULT`` y no una fila más de progreso.
+    """
+    print("IAX_RESULT " + json.dumps(values))
     sys.stdout.flush()
 
 
@@ -157,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     for fold in folds:
-        report_metric(**fold.as_metric())
+        report_result(**fold.as_metric())
 
     # El bootstrap por bloques sobre las predicciones agrupadas, como
     # *diagnóstico*. Ninguna de sus claves es la del objetivo: medido sobre

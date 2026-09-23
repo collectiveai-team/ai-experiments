@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ai_experiments.planner.analysis import best_trial, extract_objective
+from ai_experiments.planner.analysis import ObjectiveReading, best_trial, extract_objective
 from ai_experiments.schemas import RunEvent, utc_now
 from ai_experiments.stopping import ACTIVE_TRIAL_STATES, trial_gpu_hours, trial_wall_hours
 
@@ -117,6 +117,7 @@ def _record_finish(
     trial.gpu_hours = trial_gpu_hours(goal, started, trial.completed_at)
     trial.wall_hours = trial_wall_hours(started, trial.completed_at)
     reading = extract_objective(run_store, run_id, goal.objective)
+    _warn_on_surplus_results(state, goal, campaign_store, run_store, trial, run_id, reading)
     trial.objective_value = reading.value
     trial.objective_stderr = reading.stderr
     trial.objective_observations = reading.n_observations
@@ -135,7 +136,7 @@ def _record_finish(
                 details={
                     "trial_id": trial.trial_id,
                     "objective_metric": goal.objective.metric,
-                    "observed_metrics": reading.observed_metrics,
+                    "declared_results": reading.declared_results,
                     "reason": reading.miss_reason,
                 },
             ),
@@ -149,6 +150,41 @@ def _record_finish(
                 "status": trial.status,
                 "objective_value": reading.value,
                 "params": trial.params,
+            },
+        ),
+    )
+
+
+def _warn_on_surplus_results(
+    state: CampaignState,
+    goal: GoalSpec,
+    campaign_store: CampaignStore,
+    run_store: FilesystemRunStore,
+    trial: TrialRecord,
+    run_id: str,
+    reading: ObjectiveReading,
+) -> None:
+    """Say so when a workload declared more results than its objective can use.
+
+    Under ``aggregate: mean`` or ``bootstrap`` every declared result is one
+    observation and several are the point. Under ``best`` the objective takes
+    one of them and the rest are a contract the workload did not read -- a
+    second declaration on the only channel that scores used to land in
+    silence, and this is where the goal is known well enough to tell the two
+    apart.
+    """
+    if goal.objective.aggregate != "best" or reading.n_observations < 2:
+        return
+    campaign_store.append_event(
+        state.campaign_id,
+        RunEvent(
+            level="warning",
+            message="more than one result declared under aggregate: best; only the best scored",
+            details={
+                "trial_id": trial.trial_id,
+                "run_id": run_id,
+                "results": len(run_store.read_results(run_id)),
+                "objective_metric": goal.objective.metric,
             },
         ),
     )

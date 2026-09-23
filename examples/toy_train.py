@@ -1,8 +1,11 @@
 """Toy training workload: minimizes (x - 2)^2 with noisy gradient steps.
 
-Demonstrates the metric contract: print ``IAX_METRIC {json}`` lines (or use
-ai_experiments.report.report_metric). Works on the local backend and on any
-Ray cluster — the harness extracts metrics from stdout either way.
+The trainer reports progress via ``IAX_METRIC {json}`` lines (or
+``ai_experiments.report.report_metric``), hands the trained model off through
+``$IAX_WORK_DIR``, but does not declare a result. Declaring the result (the
+final loss that actually scores the trial) is the evaluator's job
+(``examples/toy_evaluate.py``). Works on the local backend and on any Ray
+cluster — the harness extracts metrics and results from both phases' stdout.
 """
 
 from __future__ import annotations
@@ -36,17 +39,25 @@ def main() -> None:
         sys.stdout.flush()
         time.sleep(args.sleep)
 
-    # "Checkpoint": anything written to $IAX_ARTIFACTS_DIR is listed by
-    # `iax artifacts <run_id>` and downloadable from the dashboard.
+    # The trainer produces an artifact. It does not declare a result: the
+    # number it would be judged by is not its to report.
+    loss = (x - 2.0) ** 2
     # standalone example: stays dependency-free
+    work = Path(os.environ.get("IAX_WORK_DIR", "."))  # ast-grep-ignore: settings-module
+    with (work / "model.json").open("w") as fh:
+        json.dump({"x": x}, fh)
+
+    # Anything written to $IAX_ARTIFACTS_DIR is listed by `iax artifacts
+    # <run_id>` and downloadable from the dashboard.
     artifacts = os.environ.get("IAX_ARTIFACTS_DIR")  # ast-grep-ignore: settings-module
     if artifacts:
         with (Path(artifacts) / "model.json").open("w") as fh:
             json.dump({"x": x, "loss": loss}, fh)
 
     print(  # ast-grep-ignore: log-no-print  # example script, stdout is the artifact
-        f"final x={x:.4f} loss={(x - 2.0) ** 2:.6f}"
+        f"final x={x:.4f} loss={loss:.6f}"
     )
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     from ai_experiments.schemas import (
         CampaignState,
         GoalSpec,
-        MetricPoint,
         ObjectiveSpec,
+        ResultRecord,
         SuccessCriteria,
         TrialRecord,
     )
@@ -50,54 +50,71 @@ class ObjectiveReading(BaseModel):
     #: How many observations carried a usable value.
     n_observations: int = 0
     final_metrics: dict[str, float] = Field(default_factory=dict)
-    observed_metrics: list[str] = Field(default_factory=list)
-    miss_reason: Literal["no_metrics", "metric_absent", "not_finite", "baseline_absent"] | None = (
+    declared_results: list[str] = Field(default_factory=list)
+    miss_reason: Literal["no_result", "metric_absent", "not_finite", "baseline_absent"] | None = (
         None
     )
 
     def miss_message(self, metric: str) -> str | None:
         if self.miss_reason is None:
             return None
-        if self.miss_reason == "no_metrics":
+        if self.miss_reason == "no_result":
             return (
-                "no metrics reported: the workload printed no IAX_METRIC lines, "
+                "no result reported: the workload printed no IAX_RESULT line, "
                 f"so objective '{metric}' could not be scored"
             )
-        observed = ", ".join(self.observed_metrics) or "(none)"
+        declared = ", ".join(self.declared_results) or "(none)"
         if self.miss_reason == "metric_absent":
-            return f"objective metric '{metric}' was never reported; observed metrics: {observed}"
+            return (
+                f"objective metric '{metric}' is not in the declared result; declared: {declared}"
+            )
         if self.miss_reason == "baseline_absent":
             return (
-                f"objective metric '{metric}' was reported but its baseline "
+                f"objective metric '{metric}' was declared but its baseline never was, so the "
+                f"trial has no comparable score; declared: {declared}"
+            )
+        if self.miss_reason == "baseline_absent":
+            return (
+                f"objective metric '{metric}' was declared but its baseline "
                 f"never was, so the trial has no comparable score; "
-                f"observed metrics: {observed}"
+                f"declared: {declared}"
             )
         return (
-            f"objective metric '{metric}' was reported but never finite "
-            f"(NaN/inf only); observed metrics: {observed}"
+            f"objective metric '{metric}' was declared but never finite "
+            f"(NaN/inf only); declared: {declared}"
         )
 
 
 def extract_objective(
     store: FilesystemRunStore, run_id: str, objective: ObjectiveSpec
 ) -> ObjectiveReading:
-    """Read the run's objective value, its uncertainty, and why it is missing."""
-    metrics = store.read_metrics(run_id)
-    if not metrics:
-        return ObjectiveReading(miss_reason="no_metrics")
+    """Read the result the run declared, its uncertainty, and why there is none.
 
-    observed = sorted({name for point in metrics for name in point.values})
-    final = dict(metrics[-1].values)
-    if objective.metric not in observed:
+    Only ``IAX_RESULT`` scores. Aggregating a progress curve — the old
+    ``min(values)`` — rewarded whichever trial rolled the dice most times,
+    and rewarded a crashed run for one lucky step before it died. Each
+    declared result is one observation: a single evaluation prints one, a
+    fold or seed loop prints one per fold, and ``objective.aggregate`` says
+    how they become one score.
+    """
+    results = store.read_results(run_id)
+    if not results:
+        return ObjectiveReading(miss_reason="no_result")
+
+    final: dict[str, float] = {}
+    for record in results:
+        final.update(record.values)
+    observed = sorted(final)
+    if objective.metric not in final:
         return ObjectiveReading(
             final_metrics=final,
-            observed_metrics=observed,
+            declared_results=observed,
             miss_reason="metric_absent",
         )
 
-    values = list(_scored(metrics, objective))
+    values = list(_scored(results, objective))
     if not values:
-        # A baseline the workload never reported is its own failure: scoring
+        # A baseline the workload never declared is its own failure: scoring
         # the raw metric instead would rank this trial on a different scale
         # from the rest, which is the whole thing `baseline_metric` prevents.
         reason = (
@@ -107,7 +124,7 @@ def extract_objective(
         )
         return ObjectiveReading(
             final_metrics=final,
-            observed_metrics=observed,
+            declared_results=observed,
             miss_reason=reason,
         )
     value, stderr = _aggregate(values, objective)
@@ -116,7 +133,7 @@ def extract_objective(
         stderr=stderr,
         n_observations=len(values),
         final_metrics=final,
-        observed_metrics=observed,
+        declared_results=observed,
     )
 
 
@@ -145,21 +162,21 @@ def _aggregate(values: list[float], objective: ObjectiveSpec) -> tuple[float, fl
     return mean, spread / math.sqrt(len(values))
 
 
-def _scored(metrics: list[MetricPoint], objective: ObjectiveSpec) -> Iterator[float]:
-    """Every observation that carries a usable value of the objective.
+def _scored(results: list[ResultRecord], objective: ObjectiveSpec) -> Iterator[float]:
+    """Every declared result that carries a usable value of the objective.
 
-    With a baseline, the two metrics are paired *within one observation*.
+    With a baseline, the two metrics are paired *within one declared result*.
     Taking the best metric and the best baseline separately would produce a
     lift no single observation ever achieved.
     """
-    for point in metrics:
-        if objective.metric not in point.values:
+    for record in results:
+        if objective.metric not in record.values:
             continue
-        value = point.values[objective.metric]
+        value = record.values[objective.metric]
         if objective.baseline_metric is not None:
-            if objective.baseline_metric not in point.values:
+            if objective.baseline_metric not in record.values:
                 continue
-            value -= point.values[objective.baseline_metric]
+            value -= record.values[objective.baseline_metric]
         if math.isfinite(value):
             yield value
 

@@ -16,8 +16,13 @@ search_space:
   x0: { type: uniform, low: -5.0, high: 5.0 }
 
 workload:
+  # `entrypoint` is the single-phase fallback. With both `train` and `evaluate`
+  # declared, those two run instead and the entrypoint is unused.
   entrypoint: "uv run examples/toy_train.py"
-  args: ["--steps", "20", "--sleep", "0.2"]
+  # The trainer's flags live here, not in a top-level `args`: `args` is appended
+  # to every phase, so it would hand the trainer's flags to the evaluator too.
+  train: "uv run examples/toy_train.py --steps 20 --sleep 0.2"
+  evaluate: "uv run examples/toy_evaluate.py"
   working_dir: "."
 
 budget:

@@ -10,13 +10,30 @@ schema: `ai_experiments/schemas.py`. Full field reference: `reference/manifest.m
 
 ## Workflow
 
-1. **Gather the workload.** What command runs the training? Map it to `workload`:
-   `entrypoint` + `args`, the `working_dir` it must run from, and any `env`.
+1. **Gather the workload.** What command runs the training? Map it to
+   `workload`: `entrypoint` + `args` for one command, or `train:` + `evaluate:`
+   when the trainer and its scorer must stay separate — declaring both makes
+   `entrypoint` unused, and only `evaluate`'s declared result (`IAX_RESULT`)
+   scores. Either way, add the `working_dir` it must run from and any `env`.
+   `args` is appended to **every** phase you declare, not only `entrypoint` —
+   see `reference/manifest.md`.
 2. **Pick the backend.** `local` (default; runs as a detached subprocess) or `ray`
    (needs the `ai-experiments[ray]` extra and a reachable Ray dashboard / Jobs API).
    Ray address resolution is `backend_address` in the manifest, then `RAY_ADDRESS`,
    then `http://127.0.0.1:8265`. For remote Ray clusters, start the dashboard with
    `--dashboard-host 0.0.0.0` so the submitting machine can reach it.
+
+   The two backends do not enforce the phase split equally. On `local` it is
+   structural: train and evaluate are two separately supervised processes, and
+   the supervisor reading a train phase's stdout is the one that discards its
+   result. On `ray` one job runs both commands into one log stream, so the
+   harness reconstructs the phase from a per-run random token echoed by the
+   entrypoint — careful (an unmarked, mis-marked or wrongly-tokened result is
+   discarded) but defensive, not structural: the token lives in the job's
+   entrypoint string and a workload that reads its parent's command line can
+   recover it. When the workload is code an agent wrote rather than code a
+   person read, `local` is the backend whose guarantee does not rest on the
+   workload behaving.
 3. **Set resources and monitoring.** `resources.cpus`/`gpus`/`memory_gb`; a
    `monitoring` policy with `interval_seconds` (how often the scheduler checks) and
    `stuck_after_minutes` (how long without progress before flagging). See
@@ -28,11 +45,13 @@ schema: `ai_experiments/schemas.py`. Full field reference: `reference/manifest.m
    iax submit experiment.yaml --json
    ```
 
-   Both commands check that the entrypoint resolves and the `working_dir`
-   exists, and print `Warning:` lines on **stderr**; stdout stays parseable.
-   They are warnings because a Ray workload resolves its entrypoint on the
-   cluster, not here. Pass `--strict` to refuse instead of warn — use it when
-   the backend is `local`, where a warning is always a failure a second later.
+   Both commands check that the `working_dir` exists and that every command
+   `phases()` would actually run resolves — the single `entrypoint`, or both
+   `train` and `evaluate` when declared — and print `Warning:` lines on
+   **stderr**; stdout stays parseable. They are warnings because a Ray
+   workload resolves its commands on the cluster, not here. Pass `--strict`
+   to refuse instead of warn — use it when the backend is `local`, where a
+   warning is always a failure a second later.
 
 5. **Capture the run handle.** `submit --json` prints a `RunHandle`. Record
    `run_id` (everything downstream keys off it), `run_dir`, and `status_uri`. If you
@@ -64,6 +83,25 @@ monitoring:
 metadata:
   project_id: example
 ```
+
+Two-phase form — the trainer's own flags go in `train:`, not in a top-level
+`args`, because `args` is appended to every declared phase:
+
+```yaml
+experiment: demand_forecast_two_phase
+backend: local
+workload:
+  entrypoint: python3        # unused: train/evaluate run instead, but still required
+  train: "python3 -m ts_agents_lab.cli train configs/training.yaml"
+  evaluate: "python3 -m ts_agents_lab.cli evaluate configs/training.yaml"
+  working_dir: .
+resources:
+  cpus: 4
+  gpus: 1
+```
+
+Only `evaluate`'s declared result (`IAX_RESULT`) scores; a result printed
+from `train` is discarded with a warning.
 
 ## Reading exit codes
 

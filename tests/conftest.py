@@ -23,8 +23,8 @@ from ai_experiments.schemas import (
     DiagnosisReport,
     ExperimentManifest,
     GoalSpec,
-    MetricPoint,
     ObjectiveSpec,
+    ResultRecord,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -44,7 +44,7 @@ class FakeBackend(ExperimentBackend):
     """Runs 'complete' instantly.
 
     The objective is a deterministic function of the submitted params, recorded as a
-    metric on inspect.
+    declared result on inspect.
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class FakeBackend(ExperimentBackend):
             assert manifest is not None
             params = manifest.metadata["params"]
             value = self.objective_fn(params)
-            self.store.append_metric(run_id, MetricPoint(step=1, values={"loss": value}))
+            self.store.append_result(run_id, ResultRecord(values={"loss": value}))
             status = self.store.update_status(run_id, status="completed", completed_at=utc_now())
         return status
 

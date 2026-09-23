@@ -78,6 +78,8 @@ def main() -> None:
             json.dump({"loss": loss, "memory_gb": round(needed, 3)}, fh)
 
     print(f"final loss={loss:.6f} memory={needed:.2f}GB")
+    print("IAX_RESULT " + json.dumps({"loss": loss}))
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

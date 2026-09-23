@@ -229,6 +229,7 @@ def _real_goal_file(tmp_path):
         "params = json.loads(os.environ['IAX_PARAMS'])\n"
         "loss = (params['x'] - 2.0) ** 2\n"
         "print('IAX_METRIC ' + json.dumps({'step': 1, 'loss': loss}), flush=True)\n"
+        "print('IAX_RESULT ' + json.dumps({'loss': loss}), flush=True)\n"
     )
     goal = {
         "goal": "minimize (x-2)^2",

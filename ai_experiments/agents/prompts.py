@@ -38,16 +38,20 @@ REVIEW_CONTRACT = """Reply with one JSON object, last thing in your message:
   "verdict": "continue" | "stop" | "change_goal" | "needs_change",
   "reason": "one sentence",
   "observations": ["what the evidence actually shows"],
-  "suggested_changes": {"search_space": {}, "budget": {}},
+  "suggested_changes": {"search_space": {}},
   "change": {"title": "", "files": [], "acceptance": ""}
 }
 
 Use "stop" when further trials cannot reach the target, and "change_goal" when
-the search space or the budget is what blocks it.
+the search space is what blocks it. "search_space" is the only section a
+verdict can change: the budget is the ceiling the person running this campaign
+set, and a request to raise it is refused and recorded rather than applied. If
+the budget is what blocks the target, say so in "reason" and let them decide;
+you may redistribute effort inside it, but you may not widen it.
 
 Use "needs_change" only when no choice of parameters can help, because the
 defect is in the code — every trial failing on the same error, a workload that
-reports no metric, a harness that returns NaN at the edge of the space. It
+declares no result, a harness that returns NaN at the edge of the space. It
 stops the campaign and sends a ticket to a developer, so it costs more than a
 wrong "continue". Fill "change": point "files" at what the evidence names, and
 write "acceptance" as the single check that would prove the fix."""
@@ -92,20 +96,22 @@ def _objective_block(goal: GoalSpec) -> str:
     objective = goal.objective
     lines = [
         f"Objective: {objective.mode}imize `{objective.metric}`{target}. "
-        'The workload reports it on stdout as `IAX_METRIC {"step": n, '
-        f'"{objective.metric}": value}}`.'
+        "The workload declares it on stdout as "
+        f'`IAX_RESULT {{"{objective.metric}": value}}`, from its evaluate '
+        "phase. That declared result is the only thing scored; `IAX_METRIC` lines "
+        "are progress only and are never scored."
     ]
     if objective.baseline_metric:
         # Scores are lifts, not levels. An agent that does not know this
         # proposes whatever raises the base rate.
         lines.append(
             f"Scores are the lift `{objective.metric} - "
-            f"{objective.baseline_metric}`, paired within one observation, so "
+            f"{objective.baseline_metric}`, paired within one declared result, so "
             "a change that raises both is worth nothing."
         )
     if objective.aggregate == "mean":
         lines.append(
-            "A trial's score is averaged over all its observations, not taken "
+            "A trial's score is averaged over all its declared results, not taken "
             "from the best one, and carries a standard error; a difference "
             "smaller than that error is not evidence."
         )

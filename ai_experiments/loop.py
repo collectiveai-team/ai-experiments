@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
 from ai_experiments.monitoring.escalation import ChangeRequest, record_change_request
+from ai_experiments.monitoring.supervision import RunAction, SupervisionReport, supervise_once
 from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
 from ai_experiments.responses import (  # noqa: TC001  # LoopReport field types, resolved at class creation
@@ -35,7 +36,7 @@ from ai_experiments.responses import (  # noqa: TC001  # LoopReport field types,
     CampaignVerdict,
     SuccessReport,
 )
-from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec
+from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, RunEvent
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -68,6 +69,16 @@ class LoopReport(BaseModel):
     #: Trials still in flight when the loop returned. Non-empty means the
     #: campaign has unread work: resume it before you conclude anything.
     pending_trials: list[str] = Field(default_factory=list)
+    #: Everything supervision did while the loop was running -- kills, reaps,
+    #: escalations. A loop that killed a run and did not say so is a loop you
+    #: cannot audit in the morning.
+    supervision: list[RunAction] = Field(default_factory=list)
+    #: What supervision could not do, one line per failure -- a run whose
+    #: status would not read, a backend whose `diagnose()` raised. Empty
+    #: means every pass completed, never "nothing was checked": a loop that
+    #: supervised nothing all night and returned an empty list would be
+    #: indistinguishable from a healthy one.
+    supervision_errors: list[str] = Field(default_factory=list)
     #: Set when the loop stopped because the blocker is a defect, not the search.
     change_request: dict[str, Any] | None = None
     #: Always set by `_report`; optional only so a report can be constructed
@@ -121,6 +132,18 @@ class _LoopControls:
 
 
 @dataclass
+class _SupervisionLog:
+    """What supervision did and could not do across the loop's iterations."""
+
+    actions: list[RunAction] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    def record(self, report: SupervisionReport) -> None:
+        self.actions.extend(report.actions)
+        self.errors.extend(report.errors)
+
+
+@dataclass
 class _LoopOutcome:
     """Where a step of the loop left the campaign, and why it would stop.
 
@@ -165,7 +188,8 @@ def run_loop(
         on_state=on_state,
     )
     reviews: list[dict[str, Any]] = []
-    outcome = _advance_until_done(orchestrator, store, state, controls, reviews)
+    supervision = _SupervisionLog()
+    outcome = _advance_until_done(orchestrator, store, state, controls, reviews, supervision)
     state = outcome.state
 
     if outcome.loop_stop in {"max_rounds", "max_seconds"}:
@@ -175,7 +199,9 @@ def run_loop(
         state = orchestrator.reconcile(state.campaign_id)
 
     controls.notify(state)
-    return _report(orchestrator, state, outcome, reviews, elapsed=round(now() - started, 3))
+    return _report(
+        orchestrator, state, outcome, reviews, supervision, elapsed=round(now() - started, 3)
+    )
 
 
 def _advance_until_done(
@@ -184,13 +210,17 @@ def _advance_until_done(
     state: CampaignState,
     controls: _LoopControls,
     reviews: list[dict[str, Any]],
+    supervision: _SupervisionLog,
 ) -> _LoopOutcome:
     """Advance the campaign until it ends, a limit is hit, or a review stops it.
 
     This is the loop and nothing else: a round's decisions live in
-    `_act_on_review`, the caller's limits in `_LoopControls`.
+    `_act_on_review`, the caller's limits in `_LoopControls`. Every iteration
+    also supervises the runs the campaign is driving, through the same pass
+    the daemon uses, so a loop with no daemon behind it still kills a stuck run.
     """
     iterations = 0
+    reviewed_through = 0
     while state.status not in TERMINAL_STATUSES:
         controls.notify(state)
         reached = controls.limit_reached(state)
@@ -198,17 +228,30 @@ def _advance_until_done(
             return _LoopOutcome(state, reached)
 
         iterations += 1
-        rounds_before = state.rounds
         controls.pause(iterations)
-        state = orchestrator.advance(state.campaign_id)
+        # Close the cohort -- score what finished, evaluate the stop
+        # condition -- without admitting a new one. A review that runs after
+        # the next cohort is already submitted is reviewing something already
+        # running and already paid for; `admit=False` is what keeps the
+        # verdict able to actually stop something.
+        state = orchestrator.advance(state.campaign_id, admit=False)
+        supervision.record(supervise_once(store, _active_run_ids(state)))
+        if state.status in TERMINAL_STATUSES:
+            break
 
-        if state.rounds <= rounds_before or state.status in TERMINAL_STATUSES:
-            continue
-        outcome = _act_on_review(orchestrator, store, state, reviews)
-        state = outcome.state
-        if outcome.loop_stop is not None:
-            return outcome
+        if state.rounds > reviewed_through:
+            # One review per cohort, before the next one is admitted.
+            reviewed_through = state.rounds
+            outcome = _act_on_review(orchestrator, store, state, reviews)
+            state = outcome.state
+            if outcome.loop_stop is not None:
+                return outcome
+        state = orchestrator.advance(state.campaign_id)
     return _LoopOutcome(state, "campaign_finished")
+
+
+def _active_run_ids(state: CampaignState) -> list[str]:
+    return [t.run_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES and t.run_id]
 
 
 def _act_on_review(
@@ -241,6 +284,7 @@ def _report(
     state: CampaignState,
     outcome: _LoopOutcome,
     reviews: list[dict[str, Any]],
+    supervision: _SupervisionLog,
     *,
     elapsed: float,
 ) -> LoopReport:
@@ -260,6 +304,8 @@ def _report(
         elapsed_seconds=elapsed,
         loop_stop=outcome.loop_stop or "campaign_finished",
         pending_trials=pending,
+        supervision=supervision.actions,
+        supervision_errors=supervision.errors,
         change_request=change.model_dump(mode="json") if change is not None else None,
         objective=summary.objective,
         best=summary.best,
@@ -375,6 +421,12 @@ def _review_record(state: CampaignState, goal: GoalSpec, result: AgentResult) ->
     )
 
 
+#: What an accepted review may change on its own. `budget` is deliberately
+#: absent: a loop is an optimizer, and a ceiling it can move is not a ceiling.
+#: Redistributing within the budget is fine; raising it needs the user.
+APPLICABLE_KEYS = ("search_space",)
+
+
 def _apply_changes(
     orchestrator: CampaignOrchestrator,
     state: CampaignState,
@@ -383,15 +435,29 @@ def _apply_changes(
 ) -> None:
     """Merge an accepted review's changes into the goal.
 
-    Only the search space and the budget can move, and only through the same
-    validation `iax campaign edit` uses. An invalid suggestion is recorded and
-    dropped: the campaign continues under the goal it already has.
+    Only the search space can move (see `APPLICABLE_KEYS`), and only through
+    the same validation `iax campaign edit` uses. A change to anything else
+    is refused and recorded rather than silently dropped. An invalid
+    suggestion is separately recorded and dropped: the campaign continues
+    under the goal it already has.
     """
     changes = payload.get("suggested_changes")
-    if not isinstance(changes, dict):
+    if changes is None:
         return
+    if not isinstance(changes, dict):
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _malformed_change_event(changes),
+        )
+        return
+    refused = {key: value for key, value in changes.items() if key not in APPLICABLE_KEYS}
+    if refused:
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _refused_change_event(refused),
+        )
     data = goal.model_dump(mode="json")
-    for key in ("search_space", "budget"):
+    for key in APPLICABLE_KEYS:
         section = changes.get(key)
         if isinstance(section, dict) and section:
             data[key] = {**data[key], **section}
@@ -404,9 +470,34 @@ def _apply_changes(
         )
 
 
-def _rejected_change_event(error: str):
-    from ai_experiments.schemas import RunEvent
+def _refused_change_event(refused: dict[str, Any]) -> RunEvent:
+    keys = ", ".join(sorted(refused))
+    return RunEvent(
+        level="warning",
+        message=(
+            f"agent review asked to change {keys}; an accepted review may change "
+            f"only {', '.join(APPLICABLE_KEYS)} -- changing {keys} requires the user"
+        ),
+        details={"refused": refused},
+    )
 
+
+def _malformed_change_event(changes: object) -> RunEvent:
+    # `changes` came out of an agent's JSON payload, so a str/list/int/float/bool
+    # is already JSON-serializable as-is; anything else falls back to `repr()`
+    # so a value that is not can never break writing this event to the log.
+    safe_changes = changes if isinstance(changes, (str, int, float, bool, list)) else repr(changes)
+    return RunEvent(
+        level="warning",
+        message=(
+            "agent review's suggested_changes was not a mapping of section to "
+            "changes; keeping the current goal"
+        ),
+        details={"suggested_changes": safe_changes},
+    )
+
+
+def _rejected_change_event(error: str) -> RunEvent:
     return RunEvent(
         level="warning",
         message="agent review suggested an invalid goal change; keeping the current goal",

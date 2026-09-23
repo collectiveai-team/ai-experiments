@@ -43,6 +43,11 @@ def workload_warnings(
     Takes a manifest, a goal, or the workload itself: a campaign runs every
     trial from one `GoalSpec.workload`, so the same check answers for the
     whole campaign (#32).
+
+    Checks every command `phases()` would actually run, not just
+    `entrypoint`: for a two-phase workload the entrypoint is the one command
+    that never executes, so a typo in `evaluate:` would otherwise pass here
+    and surface only after a full training run.
     """
     workload = source if isinstance(source, WorkloadSpec) else source.workload
     warnings: list[str] = []
@@ -51,26 +56,49 @@ def workload_warnings(
         warnings.append(f"working_dir does not exist: {working_dir}")
 
     try:
-        argv = shlex.split(workload.entrypoint)
+        phases = workload.phases()
     except ValueError as exc:
-        return [*warnings, f"entrypoint is not a valid command line: {exc}"]
+        # phases() raises on a half-declared workload; this function only
+        # ever returns warnings, so that becomes one instead of a crash.
+        warnings.append(str(exc))
+        return warnings
+
+    # A single-entrypoint workload is `[("evaluate", entrypoint)]`; its
+    # messages must stay byte-identical to before this check existed, so the
+    # phase name is only prefixed once there is more than one to tell apart.
+    prefix = "{phase}: " if len(phases) > 1 else ""
+    for phase, command in phases:
+        found = _command_warnings(source, workload, command, working_dir)
+        warnings.extend(prefix.format(phase=phase) + warning for warning in found)
+    return warnings
+
+
+def _command_warnings(
+    source: ExperimentManifest | GoalSpec | WorkloadSpec,
+    workload: WorkloadSpec,
+    entrypoint: str,
+    working_dir: Path,
+) -> list[str]:
+    """Reasons this one command looks unable to start, or declares flags it does not take."""
+    try:
+        argv = shlex.split(entrypoint)
+    except ValueError as exc:
+        return [f"entrypoint is not a valid command line: {exc}"]
     if not argv:
-        return [*warnings, "entrypoint is empty"]
+        return ["entrypoint is empty"]
 
     program = argv[0]
     if _resolves(program, working_dir):
         # The args go into the probe too: `uv run` and `python -m` are
         # launchers, and `uv run --help` answers for uv, not for the workload
         # the campaign will actually start.
-        return warnings + _flag_warnings(source, [*argv, *workload.args], working_dir)
+        return _flag_warnings(source, [*argv, *workload.args], working_dir)
     if os.sep in program or program.startswith("."):
-        warnings.append(
+        return [
             f"entrypoint {program!r} is not an executable file "
             f"(resolved against working_dir {working_dir})"
-        )
-    else:
-        warnings.append(f"entrypoint {program!r} is not on PATH")
-    return warnings
+        ]
+    return [f"entrypoint {program!r} is not on PATH"]
 
 
 def _resolves(program: str, working_dir: Path) -> bool:

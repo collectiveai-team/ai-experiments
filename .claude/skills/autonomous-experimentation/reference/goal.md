@@ -16,9 +16,11 @@ objective:
   # baseline_metric: val_loss_baseline
 ```
 
-- `metric` must be **exactly** the key the workload prints in its
-  `IAX_METRIC` line. A mismatch is the single most common reason a campaign
-  produces trials that all score `null`.
+- `metric` must be **exactly** a key in the `IAX_RESULT` line the workload's
+  `evaluate` phase declares (`ai_experiments.report.report_result`, or print
+  the line directly) — never a key from an `IAX_METRIC` progress line, which
+  never scores. A workload that never prints `IAX_RESULT` scores `null`
+  tagged `no_result`; a name mismatch scores `null` tagged `metric_absent`.
 - `mode` is `min` or `max`. It decides what "best" means everywhere: the
   planner, the leaderboard, and the target check.
 - `target` is optional. With it, the campaign stops the moment a trial reaches
@@ -103,15 +105,26 @@ search_space:
 
 ```yaml
 workload:
+  # Single phase: the entrypoint runs and may declare the result.
   entrypoint: "uv run"
   args: ["train.py", "--lr", "{lr}"]   # {param} is substituted per trial
+  # Two phases: with both `train` and `evaluate` set, those two run instead
+  # and the entrypoint is unused. The trainer's flags live in the phase
+  # command, not in `args`: `args` is appended to every phase, so it would
+  # hand the trainer's flags to the evaluator too.
+  # train: "python train.py --epochs 20"
+  # evaluate: "python evaluate.py"
   working_dir: "."                     # relative paths resolve from here
   env: { CUDA_VISIBLE_DEVICES: "0" }
 ```
 
-Params without a `{placeholder}` in `args` are appended as `--name value`.
-Give the workload only the environment it needs: it runs untrusted code paths
-and its stdout is untrusted input.
+Params without a `{placeholder}` in `args` are appended as `--name value` —
+and `args` itself is appended to **every** declared phase, `train` and
+`evaluate` alike. Only `evaluate` may declare the result that scores the
+trial; `train` may only report progress (`IAX_METRIC`), and a result printed
+from `train` is discarded with a warning. Give the workload only the
+environment it needs: it runs untrusted code paths and its stdout is
+untrusted input.
 
 ## budget
 
@@ -159,7 +172,8 @@ agent:
   max_calls: 20            # cost ceiling for the campaign
 analysis:
   review_between_rounds: true    # a verdict after each round
-  apply_agent_changes: false     # true lets a verdict widen space or budget
+  apply_agent_changes: false     # true lets a verdict widen the search space;
+                                 # never the budget
 ```
 
 Every agent reply is validated against the search space before use. Out-of-
@@ -167,8 +181,13 @@ range and repeated params are dropped, and a crash, a timeout, an exhausted
 `max_calls`, or a reply without JSON costs the round to `strategy.fallback` —
 never the campaign. Transcripts land under `<campaign_dir>/agents/`.
 
-`apply_agent_changes` may widen `search_space` and `budget`. It can never
-change `objective.metric`: past values were measured against it.
+`apply_agent_changes` may widen `search_space`, and nothing else. It can never
+change `objective.metric` — past values were measured against it — and it can
+never change `budget`: a loop is an optimizer, and a ceiling it can raise is
+not a ceiling. A review may redistribute effort inside the budget and argue in
+its `reason` that the budget is what blocks the target, but raising it is the
+user's call. A suggested `budget` change is refused and appended to the
+campaign's events rather than applied.
 
 ## backend
 
@@ -183,9 +202,19 @@ backend_address: ray://head:10001    # an explicit cluster
 resources: { cpus: 8, gpus: 1 }      # per trial
 ```
 
-Use `local` to prove the workload reports its metric. Move to `ray` for
+Use `local` to prove the workload declares its result. Move to `ray` for
 anything with real parallelism. `resources` is per trial, and `max_parallel`
 times `resources` must fit the cluster.
+
+The choice is also a trust decision. "Only `evaluate` may declare a result" is
+structural on `local` — two separately supervised processes, and the supervisor
+that reads a train phase's stdout is the one that discards its result. On `ray`
+both commands share one job and one log stream, and the phase is reconstructed
+from a per-run random token the entrypoint echoes. That reconstruction discards
+anything it cannot attribute, but the token sits in the job's entrypoint string
+and is readable from the workload's parent command line, so on Ray the rule is
+a defence rather than a structure. For a campaign whose trial code an agent
+writes, `local` is the one that does not depend on the workload behaving.
 
 ## monitoring
 

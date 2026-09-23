@@ -35,15 +35,24 @@ it, along with `objective.aggregate`, `objective.baseline_metric` and the
 observation count — those four decisions cannot be made honestly once the
 results are in.
 
-The workload must already print its metric:
+The workload must already declare its result — the line(s) that score a
+trial, printed from its `evaluate` phase, one `IAX_RESULT` per observation
+(one line for a single evaluation; one per fold or seed under
+`objective.aggregate: mean`):
 
 ```python
-print('IAX_METRIC {"step": 12, "loss": 0.0734}')       # one line per observation
+print('IAX_RESULT {"loss": 0.0734}')                    # or:
+from ai_experiments.report import report_result
+report_result(loss=0.0734)
 ```
 
-If it does not, `iax new workload train.py` scaffolds one that does. A
-workload that reports nothing produces trials that score `null`, and no
-strategy can learn from them.
+`IAX_METRIC {"step": 12, "loss": 0.0734}` lines are progress: plotted, and
+used to catch a stuck or diverging run, but they never score. A workload that
+never prints `IAX_RESULT` produces trials that score `null` (tagged
+`no_result`) — it does not fall back to the last `IAX_METRIC` line. A result
+declared by a `train` phase is discarded with a warning; only `evaluate` may
+score. If the workload does not report yet, `iax new workload train.py`
+scaffolds one that does.
 
 ## 2. Write the goal, then validate it
 
@@ -105,8 +114,12 @@ Diagnose from the records, not from a guess:
 
 - **Every trial failed.** This is a workload bug, not a search problem. Read
   the error in `iax campaign trials`, fix the workload, start a new campaign.
-- **Every trial scored `null`.** The metric name in the goal does not match
-  the name the workload prints. Fix the goal.
+- **Every trial scored `null`, reason `no_result`.** The workload never
+  printed `IAX_RESULT` — or only its `train` phase did, and that phase's
+  result is discarded. Fix the workload's `evaluate` phase.
+- **Every trial scored `null`, reason `metric_absent`.** The workload
+  declares a result, but `objective.metric`'s name is not one of its keys.
+  Fix the goal or the `report_result` call so the names match.
 - **The best value sits at an edge of a range.** The optimum is probably
   outside it. Widen that range and resume.
 - **Values barely move across many trials.** The knob does not drive the
@@ -140,7 +153,8 @@ agent:
   max_calls: 20              # hard ceiling for the whole campaign
 analysis:
   review_between_rounds: true    # ask for a verdict after each round
-  apply_agent_changes: false     # true lets a verdict widen the space or budget
+  apply_agent_changes: false     # true lets a verdict widen the search space;
+                                 # the budget is never moved by a review
 ```
 
 The harness never trusts the reply: out-of-range and already-tried params are

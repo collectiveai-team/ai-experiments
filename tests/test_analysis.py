@@ -11,8 +11,8 @@ from ai_experiments.schemas import (
     CampaignState,
     ExperimentManifest,
     GoalSpec,
-    MetricPoint,
     ObjectiveSpec,
+    ResultRecord,
     SuccessCriteria,
     TrialRecord,
     WorkloadSpec,
@@ -27,8 +27,8 @@ def _run(tmp_path, points: list[dict[str, float]]):
             experiment="analysis", workload=WorkloadSpec(entrypoint="python train.py")
         )
     )
-    for step, values in enumerate(points):
-        store.append_metric(run_id, MetricPoint(step=step, values=values))
+    for values in points:
+        store.append_result(run_id, ResultRecord(values=values))
     return store, run_id
 
 

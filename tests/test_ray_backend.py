@@ -6,7 +6,12 @@ import pytest
 
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import BackendName, ExperimentManifest, TrackingSpec, WorkloadSpec
+from ai_experiments.schemas import (
+    BackendName,
+    ExperimentManifest,
+    TrackingSpec,
+    WorkloadSpec,
+)
 from ai_experiments.store import FilesystemRunStore
 
 
@@ -51,6 +56,15 @@ def _manifest(tmp_path) -> ExperimentManifest:
             working_dir=str(tmp_path),
         ),
     )
+
+
+def _token(backend: RayBackend, run_id: str) -> str:
+    """Read the per-run token `submit` mints and stores.
+
+    Tests need it to hand-craft log text the parser will accept as a genuine marker, the same way
+    real Ray job logs would carry it.
+    """
+    return str(backend.store.read_status(run_id).details["ray_phase_token"])
 
 
 def test_ray_pending_without_resource_pressure_is_quiet(tmp_path):
@@ -247,3 +261,31 @@ def test_ray_cancel_still_stops_a_running_job(tmp_path):
 
     assert client.stopped == ["ray-job-1"]
     assert store.read_status(handle.run_id).status == "cancelled"
+
+
+def test_an_argument_with_spaces_stays_one_argument(tmp_path):
+    captured = {}
+
+    class _Client:
+        def submit_job(self, **kwargs):
+            captured.update(kwargs)
+            return "raysubmit_1"
+
+    backend = RayBackend(
+        address="http://fake:8265",
+        store=FilesystemRunStore(tmp_path),
+        client_factory=lambda _address: _Client(),
+    )
+    manifest = ExperimentManifest(
+        experiment="e",
+        backend="ray",
+        workload=WorkloadSpec(
+            entrypoint="python train.py",
+            args=["--label", "hello world"],
+            working_dir=str(tmp_path),
+        ),
+    )
+
+    backend.submit(manifest)
+
+    assert "--label 'hello world'" in captured["entrypoint"]

@@ -25,7 +25,8 @@ already contain is a claim the campaign did not measure.
 
 ## 1. Decide what one observation is
 
-The workload prints one `IAX_METRIC` line per observation. What those lines
+The workload declares one `IAX_RESULT` line per observation (`IAX_METRIC` lines
+are progress and never score). What those lines
 *are* decides `objective.aggregate`, and nothing downstream can recover from
 getting it wrong:
 
