@@ -89,11 +89,15 @@ def parse_sppa_file(path: Path) -> pd.DataFrame:
             decimal = DECIMAL_BY_KEYWORD[header.group(1)]
             break
     if not columns:
-        raise SppaParseError(f"{path}: no se encontró la fila de columnas ';Tiempo;...;TagN;'")
+        raise SppaParseError(
+            f"{path}: no se encontró la fila de columnas ';Tiempo;...;TagN;'"
+        )
 
     unknown = sorted(set(columns.values()) - set(tags))
     if unknown:
-        raise SppaParseError(f"{path}: la fila de columnas nombra Tag{unknown} sin definición en la cabecera")
+        raise SppaParseError(
+            f"{path}: la fila de columnas nombra Tag{unknown} sin definición en la cabecera"
+        )
 
     order = sorted(columns.items())
     names = [tags[number] for _, number in order]
@@ -114,5 +118,7 @@ def parse_sppa_file(path: Path) -> pd.DataFrame:
     if not rows:
         raise SppaParseError(f"{path}: ninguna fila de datos")
 
-    frame = pd.DataFrame(rows, columns=names, index=pd.DatetimeIndex(timestamps, name="timestamp"))
+    frame = pd.DataFrame(
+        rows, columns=names, index=pd.DatetimeIndex(timestamps, name="timestamp")
+    )
     return frame.sort_index()

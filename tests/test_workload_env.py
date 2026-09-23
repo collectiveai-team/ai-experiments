@@ -8,7 +8,8 @@ from ai_experiments.worker import workload_env
 
 def _manifest(**workload) -> ExperimentManifest:
     return ExperimentManifest(
-        experiment="env", workload=WorkloadSpec(entrypoint="python train.py", **workload)
+        experiment="env",
+        workload=WorkloadSpec(entrypoint="python train.py", **workload),
     )
 
 
@@ -19,7 +20,9 @@ def test_the_harness_virtualenv_does_not_follow_the_workload():
     own environment resolves against the wrong interpreter, or at best
     prints the warning on every trial of every campaign.
     """
-    env = workload_env({"VIRTUAL_ENV": "/harness/.venv", "PATH": "/usr/bin"}, _manifest())
+    env = workload_env(
+        {"VIRTUAL_ENV": "/harness/.venv", "PATH": "/usr/bin"}, _manifest()
+    )
 
     assert "VIRTUAL_ENV" not in env
     assert env["PATH"] == "/usr/bin"

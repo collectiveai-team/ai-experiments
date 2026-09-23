@@ -226,9 +226,9 @@ def test_the_objective_and_its_baseline_are_both_reported(capsys):
     assert main(["--self-test", "--n-folds", "3"]) == 0
 
     points = [
-        json.loads(l.removeprefix("IAX_METRIC "))
-        for l in capsys.readouterr().out.splitlines()
-        if l.startswith("IAX_METRIC ")
+        json.loads(line.removeprefix("IAX_METRIC "))
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("IAX_METRIC ")
     ]
     scored = [p for p in points if goal["objective"]["metric"] in p]
     assert scored

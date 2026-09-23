@@ -33,8 +33,12 @@ def read_mapro_events(path: Path) -> pd.DataFrame:
     cleaning = raw[raw["cod_tipo_evento"].str.strip() == CLEANING_CODE]
     frame = pd.DataFrame(
         {
-            "date": pd.to_datetime(cleaning["fecha"], format="%d/%m/%Y %H:%M").dt.normalize(),
-            "duration_hours": pd.to_numeric(cleaning["Suma de duracion_hs"], errors="coerce"),
+            "date": pd.to_datetime(
+                cleaning["fecha"], format="%d/%m/%Y %H:%M"
+            ).dt.normalize(),
+            "duration_hours": pd.to_numeric(
+                cleaning["Suma de duracion_hs"], errors="coerce"
+            ),
         }
     )
     return frame.sort_values("date").reset_index(drop=True)
@@ -51,12 +55,20 @@ def read_operator_log(path: Path) -> pd.DataFrame:
         rows.append(
             {
                 "date": date.normalize(),
-                "buckets_left": pd.to_numeric(row.iloc[COL_BUCKETS_LEFT], errors="coerce"),
-                "buckets_right": pd.to_numeric(row.iloc[COL_BUCKETS_RIGHT], errors="coerce"),
+                "buckets_left": pd.to_numeric(
+                    row.iloc[COL_BUCKETS_LEFT], errors="coerce"
+                ),
+                "buckets_right": pd.to_numeric(
+                    row.iloc[COL_BUCKETS_RIGHT], errors="coerce"
+                ),
                 "scheduled": str(row.iloc[COL_MAPRO]).strip().upper() == "X",
             }
         )
-    return pd.DataFrame(rows, columns=["date", *OPERATOR_COLUMNS]).sort_values("date").reset_index(drop=True)
+    return (
+        pd.DataFrame(rows, columns=["date", *OPERATOR_COLUMNS])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
 
 
 def merge_events(mapro: pd.DataFrame, operator: pd.DataFrame) -> pd.DataFrame:

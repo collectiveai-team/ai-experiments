@@ -85,8 +85,12 @@ def test_perturbing_across_the_condition_drops_and_adds_the_dimension():
     rng = random.Random(1)
 
     moved = [
-        perturb(space, {"model": "hist_gb", "max_leaf_nodes": 31, "learning_rate": 0.1},
-                rng, scale=1.0)
+        perturb(
+            space,
+            {"model": "hist_gb", "max_leaf_nodes": 31, "learning_rate": 0.1},
+            rng,
+            scale=1.0,
+        )
         for _ in range(40)
     ]
 

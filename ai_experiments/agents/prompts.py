@@ -117,9 +117,7 @@ def _search_space_block(goal: GoalSpec) -> str:
         for name, spec in goal.search_space.items()
     }
     block = "Search space:\n" + json.dumps(space, indent=2)
-    conditional = sorted(
-        name for name, spec in goal.search_space.items() if spec.when
-    )
+    conditional = sorted(name for name, spec in goal.search_space.items() if spec.when)
     if conditional:
         block += (
             f"\n{', '.join(conditional)} carry a `when` condition: include each "
