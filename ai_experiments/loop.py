@@ -26,9 +26,10 @@ from ai_experiments.agents.contracts import AgentResult
 from ai_experiments.agents.prompts import review_brief
 from ai_experiments.agents.runner import AgentRunner
 from ai_experiments.improve.rounds import RoundLog, RoundRecord
-from ai_experiments.orchestrator import CampaignOrchestrator
+from ai_experiments.monitoring.supervision import RunAction, supervise_once
+from ai_experiments.orchestrator import ACTIVE_TRIAL_STATES, CampaignOrchestrator
 from ai_experiments.planner.analysis import summarize_campaign
-from ai_experiments.schemas import CampaignState, GoalSpec
+from ai_experiments.schemas import CampaignState, GoalSpec, RunEvent
 from ai_experiments.store import FilesystemRunStore
 
 TERMINAL_STATUSES = {"completed", "stopped", "failed"}
@@ -49,6 +50,19 @@ class LoopReport(BaseModel):
     agent_calls: int = 0
     elapsed_seconds: float = 0.0
     loop_stop: LoopStop = "campaign_finished"
+    #: Trials still in flight when the loop returned. Non-empty means the
+    #: campaign has unread work: resume it before you conclude anything.
+    pending_trials: list[str] = Field(default_factory=list)
+    #: Everything supervision did while the loop was running -- kills, reaps,
+    #: escalations. A loop that killed a run and did not say so is a loop you
+    #: cannot audit in the morning.
+    supervision: list[RunAction] = Field(default_factory=list)
+    #: What supervision could not do, one line per failure -- a run whose
+    #: status would not read, a backend whose `diagnose()` raised. Empty
+    #: means every pass completed, never "nothing was checked": a loop that
+    #: supervised nothing all night and returned an empty list would be
+    #: indistinguishable from a healthy one.
+    supervision_errors: list[str] = Field(default_factory=list)
     objective: dict[str, Any] = Field(default_factory=dict)
     best: dict[str, Any] | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -82,6 +96,8 @@ def run_loop(
         state = orchestrator.advance(campaign_id)
 
     reviews: list[dict[str, Any]] = []
+    supervision: list[RunAction] = []
+    supervision_errors: list[str] = []
     loop_stop = "campaign_finished"
     iterations = 0
 
@@ -96,21 +112,47 @@ def run_loop(
             break
 
         iterations += 1
-        rounds_before = state.rounds
         if interval_seconds > 0 and iterations > 1:
             sleep(interval_seconds)
+
+        # Close the cohort -- score what finished, evaluate the stop
+        # condition -- without admitting a new one. A review that runs after
+        # the next cohort is already submitted is reviewing something already
+        # running and already paid for; `admit=False` is what keeps the
+        # verdict able to actually stop something.
+        state = orchestrator.advance(state.campaign_id, admit=False)
+        pass_report = supervise_once(
+            store,
+            [
+                trial.run_id
+                for trial in state.trials
+                if trial.status in ACTIVE_TRIAL_STATES and trial.run_id
+            ],
+        )
+        supervision.extend(pass_report.actions)
+        supervision_errors.extend(pass_report.errors)
+
+        if state.status in TERMINAL_STATUSES:
+            break
+
+        verdict = _review(orchestrator, state, reviews)
+        if verdict == "stop":
+            state = orchestrator.stop(state.campaign_id, "agent_review_stop")
+            loop_stop = "agent_review_stop"
+            break
+
         state = orchestrator.advance(state.campaign_id)
 
-        if state.rounds > rounds_before and state.status not in TERMINAL_STATUSES:
-            verdict = _review(orchestrator, state, reviews)
-            if verdict == "stop":
-                state = orchestrator.stop(state.campaign_id, "agent_review_stop")
-                loop_stop = "agent_review_stop"
-                break
+    if loop_stop in {"max_rounds", "max_seconds"}:
+        # The last round was submitted and paid for. Leaving without reading it
+        # loses a finished trial and leaves the campaign claiming work in
+        # flight that nothing will ever collect.
+        state = orchestrator.reconcile(state.campaign_id)
 
     if on_state is not None:
         on_state(state)
 
+    pending = [t.trial_id for t in state.trials if t.status in ACTIVE_TRIAL_STATES]
     goal = orchestrator.campaign_store.read_goal(state.campaign_id)
     summary = summarize_campaign(state, goal)
     return LoopReport(
@@ -123,6 +165,9 @@ def run_loop(
         agent_calls=state.agent_calls,
         elapsed_seconds=round(now() - started, 3),
         loop_stop=loop_stop,
+        pending_trials=pending,
+        supervision=supervision,
+        supervision_errors=supervision_errors,
         objective=summary["objective"],
         best=summary["best"],
         history=summary["history"],
@@ -186,6 +231,12 @@ def _review_record(
     )
 
 
+#: What an accepted review may change on its own. `budget` is deliberately
+#: absent: a loop is an optimizer, and a ceiling it can move is not a ceiling.
+#: Redistributing within the budget is fine; raising it needs the user.
+APPLICABLE_KEYS = ("search_space",)
+
+
 def _apply_changes(
     orchestrator: CampaignOrchestrator,
     state: CampaignState,
@@ -194,15 +245,31 @@ def _apply_changes(
 ) -> None:
     """Merge an accepted review's changes into the goal.
 
-    Only the search space and the budget can move, and only through the same
-    validation `iax campaign edit` uses. An invalid suggestion is recorded and
-    dropped: the campaign continues under the goal it already has.
+    Only the search space can move (see `APPLICABLE_KEYS`), and only through
+    the same validation `iax campaign edit` uses. A change to anything else
+    is refused and recorded rather than silently dropped. An invalid
+    suggestion is separately recorded and dropped: the campaign continues
+    under the goal it already has.
     """
     changes = payload.get("suggested_changes")
-    if not isinstance(changes, dict):
+    if changes is None:
         return
+    if not isinstance(changes, dict):
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _malformed_change_event(changes),
+        )
+        return
+    refused = {
+        key: value for key, value in changes.items() if key not in APPLICABLE_KEYS
+    }
+    if refused:
+        orchestrator.campaign_store.append_event(
+            state.campaign_id,
+            _refused_change_event(refused),
+        )
     data = goal.model_dump(mode="json")
-    for key in ("search_space", "budget"):
+    for key in APPLICABLE_KEYS:
         section = changes.get(key)
         if isinstance(section, dict) and section:
             data[key] = {**data[key], **section}
@@ -215,9 +282,36 @@ def _apply_changes(
         )
 
 
-def _rejected_change_event(error: str):
-    from ai_experiments.schemas import RunEvent
+def _refused_change_event(refused: dict[str, Any]) -> RunEvent:
+    keys = ", ".join(sorted(refused))
+    return RunEvent(
+        level="warning",
+        message=(
+            f"agent review asked to change {keys}; an accepted review may change "
+            f"only {', '.join(APPLICABLE_KEYS)} -- changing {keys} requires the user"
+        ),
+        details={"refused": refused},
+    )
 
+
+def _malformed_change_event(changes: object) -> RunEvent:
+    # `changes` came out of an agent's JSON payload, so a str/list/int/float/bool
+    # is already JSON-serializable as-is; anything else falls back to `repr()`
+    # so a value that is not can never break writing this event to the log.
+    safe_changes = (
+        changes if isinstance(changes, (str, int, float, bool, list)) else repr(changes)
+    )
+    return RunEvent(
+        level="warning",
+        message=(
+            "agent review's suggested_changes was not a mapping of section to "
+            "changes; keeping the current goal"
+        ),
+        details={"suggested_changes": safe_changes},
+    )
+
+
+def _rejected_change_event(error: str) -> RunEvent:
     return RunEvent(
         level="warning",
         message="agent review suggested an invalid goal change; keeping the current goal",

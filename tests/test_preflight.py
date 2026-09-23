@@ -69,6 +69,66 @@ def test_a_relative_entrypoint_is_resolved_against_the_working_dir(tmp_path):
     assert workload_warnings(_manifest("./train.sh", str(tmp_path))) == []
 
 
+# -- I4: preflight must check every phase, not just `entrypoint` -----------
+
+
+def _two_phase_manifest(tmp_path, train: str, evaluate: str) -> ExperimentManifest:
+    return ExperimentManifest(
+        experiment="preflight",
+        workload=WorkloadSpec(
+            entrypoint=train,
+            train=train,
+            evaluate=evaluate,
+            working_dir=str(tmp_path),
+        ),
+    )
+
+
+def test_a_typo_in_evaluate_is_caught_even_though_entrypoint_is_train(tmp_path):
+    """`entrypoint` is the one command a two-phase workload never runs -- a
+    typo in `evaluate:` used to pass here silently and only surface after a
+    full training run."""
+    warnings = workload_warnings(
+        _two_phase_manifest(tmp_path, sys.executable, "definitely-not-a-binary")
+    )
+
+    assert warnings == ["evaluate: entrypoint 'definitely-not-a-binary' is not on PATH"]
+
+
+def test_every_failing_phase_is_reported_not_just_the_first(tmp_path):
+    warnings = workload_warnings(
+        _two_phase_manifest(tmp_path, "also-not-a-binary", "definitely-not-a-binary")
+    )
+
+    assert warnings == [
+        "train: entrypoint 'also-not-a-binary' is not on PATH",
+        "evaluate: entrypoint 'definitely-not-a-binary' is not on PATH",
+    ]
+
+
+def test_a_runnable_two_phase_workload_has_no_warnings(tmp_path):
+    assert (
+        workload_warnings(_two_phase_manifest(tmp_path, sys.executable, sys.executable))
+        == []
+    )
+
+
+def test_a_half_declared_workload_is_a_warning_not_a_crash(tmp_path):
+    """`phases()` raises on a workload declaring only one of train/evaluate;
+    the model validator normally blocks that at construction, but
+    `model_copy` and attribute assignment skip "after" validators (the
+    planner builds trial manifests with `model_copy`), so `phases()` re-checks
+    -- and this function only ever returns warnings, never raises."""
+    coherent = _two_phase_manifest(tmp_path, sys.executable, sys.executable)
+    half_declared = coherent.model_copy(
+        update={"workload": coherent.workload.model_copy(update={"evaluate": None})}
+    )
+
+    warnings = workload_warnings(half_declared)
+
+    assert any("both are required to run as two phases" in w for w in warnings)
+
+
 def test_validate_warns_but_still_succeeds(tmp_path):
     path = _manifest_file(tmp_path, "definitely-not-a-binary", str(tmp_path))
 

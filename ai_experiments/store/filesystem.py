@@ -13,6 +13,7 @@ from typing import Iterable, Iterator
 from ai_experiments.schemas import (
     ExperimentManifest,
     MetricPoint,
+    ResultRecord,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -313,6 +314,37 @@ class FilesystemRunStore:
     def read_metrics(self, run_id: str, tail: int | None = None) -> list[MetricPoint]:
         lines = _read_lines(self.metrics_path(run_id), tail)
         return [MetricPoint(**json.loads(line)) for line in lines]
+
+    def results_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "results.jsonl"
+
+    def append_result(self, run_id: str, record: ResultRecord) -> None:
+        """Append a declared result, and say so when it is not the first.
+
+        Every document tells a workload to print exactly one ``IAX_RESULT``
+        line, and the reader merges whatever it finds last-wins
+        (`planner.analysis.extract_objective`). A second declaration is a
+        broken contract on the only channel that scores, and it used to land
+        in silence. The warning is raised here, where the append happens, so
+        it lands on the run that caused it instead of on whoever reads it
+        later -- and so both backends get it from one place.
+        """
+        already = len(_read_lines(self.results_path(run_id), None))
+        with self.results_path(run_id).open("a") as fh:
+            fh.write(json.dumps(record.model_dump(mode="json")) + "\n")
+        if already:
+            self.append_event(
+                run_id,
+                RunEvent(
+                    level="warning",
+                    message="more than one result declared; the later keys win",
+                    details={"results": already + 1, "values": record.values},
+                ),
+            )
+
+    def read_results(self, run_id: str) -> list[ResultRecord]:
+        lines = _read_lines(self.results_path(run_id), None)
+        return [ResultRecord(**json.loads(line)) for line in lines]
 
     def artifacts_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"

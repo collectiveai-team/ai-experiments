@@ -51,7 +51,8 @@ Each run lives under `<runs_dir>/<run_id>/`:
 | `status.json` | Current `RunStatus` (status, exit_code, error, details, timestamps). |
 | `status.lock` | Harness bookkeeping for serialized status updates; ignore it when inspecting or summarizing a run. |
 | `events.jsonl` | One JSON `RunEvent` per line; what `iax logs` reads. |
-| `metrics.jsonl` | `MetricPoint`s parsed from the workload's `IAX_METRIC` stdout lines; what `iax metrics` reads. Present on both backends once the workload reports. |
+| `metrics.jsonl` | `MetricPoint`s parsed from the workload's `IAX_METRIC` stdout lines — progress, never the score; what `iax metrics` reads. Present on both backends once the workload reports. |
+| `results.jsonl` | `ResultRecord`s parsed from the workload's `IAX_RESULT` stdout line — the declared result, and the only thing that scores a trial. Only the `evaluate` phase's line lands here; one printed from `train` is discarded (a `warning` event) instead. Also surfaces at `status.details.result`. |
 | `escalation.json` | Escalation-ladder state (suspicious tick count, agent-call budget) written by the daemon. |
 | `cancel.requested` | Local backend only: created by `iax cancel` before it signals. Its presence is what lets the supervisor report a stop it was asked for as `cancelled`, and one it was not (a kernel OOM kill) as `failed`. |
 | `worker.log` | Local backend only: the *supervisor's* own stdout/stderr, including any traceback that killed it — `iax logs <run> --worker` prints it. The workload's output goes to `events.jsonl`. Ray run dirs lack it. |

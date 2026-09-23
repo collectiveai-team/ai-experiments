@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeVar, Union
+from typing import Annotated, Any, ClassVar, Literal, TypeVar, Union
 
 import yaml
 from pydantic import (
@@ -89,13 +89,92 @@ ACTIVE_RUN_STATES: frozenset[str] = frozenset({"submitted", "running"})
 BackendName = Literal["local", "ray"]
 
 
+class DataSpec(ConfigModel):
+    """Where the workload's data lives, by reference.
+
+    Guarantee: the train phase's environment never carries ``IAX_DATA_TEST``.
+    ``env_for`` only ever adds keys, so ``worker.py`` scrubs ``ENV_KEYS`` from
+    the *inherited* environment first -- otherwise a value already set on the
+    parent process (``iax daemon`` runs with whatever environment the
+    operator started it in) would pass through untouched. Not yet guaranteed:
+    ``IAX_RUN_DIR`` is exported to every phase, and its ``manifest.yaml``
+    names ``data.test`` literally, so a trainer that goes looking through its
+    own run directory still reaches it (closed by the la-tesis plan, Task 4,
+    not here).
+    """
+
+    #: Keys `env_for` may set. The scrub in `worker.py` reads this list
+    #: rather than naming the three keys again, so a new data reference
+    #: cannot drift out of sync with what gets scrubbed.
+    ENV_KEYS: ClassVar[tuple[str, ...]] = (
+        "IAX_DATA_TRAIN",
+        "IAX_DATA_VAL",
+        "IAX_DATA_TEST",
+    )
+
+    train: str | None = None
+    val: str | None = None
+    test: str | None = None
+
+    def env_for(self, phase: str) -> dict[str, str]:
+        env: dict[str, str] = {}
+        if self.train:
+            env["IAX_DATA_TRAIN"] = self.train
+        if self.val:
+            env["IAX_DATA_VAL"] = self.val
+        if phase == "evaluate" and self.test:
+            env["IAX_DATA_TEST"] = self.test
+        return env
+
+
 class WorkloadSpec(ConfigModel):
-    """Executable workload for a training experiment."""
+    """Executable workload for a training experiment.
+
+    A workload may declare one command (``entrypoint``) or two (``train`` and
+    ``evaluate``). Two is what lets the harness protect the evaluator: only
+    the evaluate phase may declare a result, and only it sees the test data.
+    """
 
     entrypoint: str
     args: list[str] = Field(default_factory=list)
     working_dir: str = "."
     env: dict[str, str] = Field(default_factory=dict)
+    train: str | None = None
+    evaluate: str | None = None
+    data: DataSpec = Field(default_factory=DataSpec)
+
+    @model_validator(mode="after")
+    def phases_are_coherent(self) -> WorkloadSpec:
+        if self.train and not self.evaluate:
+            raise ValueError(
+                "declaring 'train' requires 'evaluate': a train phase alone "
+                "would be ignored, and the entrypoint scored in its place"
+            )
+        if self.evaluate and not self.train:
+            raise ValueError(
+                "declaring 'evaluate' requires 'train': with only an evaluate "
+                "phase there is nothing for it to score"
+            )
+        if self.data.test and not self.evaluate:
+            raise ValueError(
+                "data.test requires an 'evaluate' phase: without one there is "
+                "no protected phase to receive the test reference"
+            )
+        return self
+
+    def phases(self) -> list[tuple[str, str]]:
+        # Re-checked here, not only in the validator: `model_copy(update=...)`
+        # and attribute assignment skip "after" validators, and the planner
+        # builds every trial manifest with model_copy. A half-declared
+        # workload must fail loudly here rather than quietly run one phase.
+        if self.train and self.evaluate:
+            return [("train", self.train), ("evaluate", self.evaluate)]
+        if self.train or self.evaluate:
+            raise ValueError(
+                "workload declares only one of 'train'/'evaluate'; both are "
+                "required to run as two phases"
+            )
+        return [("evaluate", self.entrypoint)]
 
 
 class ResourceSpec(ConfigModel):
@@ -243,6 +322,18 @@ class MetricPoint(BaseModel):
 
     timestamp: datetime = Field(default_factory=utc_now)
     step: int | None = None
+    values: dict[str, float] = Field(default_factory=dict)
+
+
+class ResultRecord(BaseModel):
+    """The evaluation result of a run: the number that may be scored.
+
+    Separate from :class:`MetricPoint` on purpose. A metric is a point on a
+    curve and picking its best value is a biased estimator; a result is what
+    the protected evaluator declared, and there is at most one that counts.
+    """
+
+    timestamp: datetime = Field(default_factory=utc_now)
     values: dict[str, float] = Field(default_factory=dict)
 
 
@@ -399,8 +490,12 @@ class AnalysisSpec(ConfigModel):
     #: agent can end a campaign it judges hopeless instead of burning the
     #: whole budget on it.
     review_between_rounds: bool = False
-    #: Let an accepted review widen the search space or the budget on its own.
-    #: Off by default: a loop that rewrites its own goal unasked is a surprise.
+    #: Let an accepted review widen the search space on its own. Off by
+    #: default: a loop that rewrites its own goal unasked is a surprise. The
+    #: search space is the only section a review can change -- see
+    #: ``loop.APPLICABLE_KEYS``. A review may redistribute effort within the
+    #: budget, but raising the budget is the user's call: a ceiling the
+    #: optimizer can move is not a ceiling.
     apply_agent_changes: bool = False
 
 

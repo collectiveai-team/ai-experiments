@@ -37,11 +37,15 @@ REVIEW_CONTRACT = """Reply with one JSON object, last thing in your message:
   "verdict": "continue" | "stop" | "change_goal",
   "reason": "one sentence",
   "observations": ["what the evidence actually shows"],
-  "suggested_changes": {"search_space": {}, "budget": {}}
+  "suggested_changes": {"search_space": {}}
 }
 
 Use "stop" when further trials cannot reach the target, and "change_goal" when
-the search space or the budget is what blocks it."""
+the search space is what blocks it. "search_space" is the only section a
+verdict can change: the budget is the ceiling the person running this campaign
+set, and a request to raise it is refused and recorded rather than applied. If
+the budget is what blocks the target, say so in "reason" and let them decide;
+you may redistribute effort inside it, but you may not widen it."""
 
 
 def round_brief(goal: GoalSpec, summary: dict[str, Any], max_trials: int) -> str:
@@ -82,8 +86,10 @@ def _objective_block(goal: GoalSpec) -> str:
     )
     return (
         f"Objective: {goal.objective.mode}imize `{goal.objective.metric}`{target}. "
-        'The workload reports it on stdout as `IAX_METRIC {"step": n, '
-        f'"{goal.objective.metric}": value}}`.'
+        "The workload declares it on stdout as "
+        f'`IAX_RESULT {{"{goal.objective.metric}": value}}`, from its evaluate '
+        "phase. That declared result is the only thing scored; `IAX_METRIC` lines "
+        "are progress only and are never scored."
     )
 
 

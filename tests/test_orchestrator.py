@@ -14,6 +14,7 @@ from ai_experiments.schemas import (
     GoalSpec,
     MetricPoint,
     ObjectiveSpec,
+    ResultRecord,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -27,7 +28,7 @@ from ai_experiments.store.campaign import CampaignStore
 
 class FakeBackend(ExperimentBackend):
     """Runs 'complete' instantly; the objective is a deterministic function
-    of the submitted params, recorded as a metric on inspect."""
+    of the submitted params, recorded as a declared result on inspect."""
 
     def __init__(
         self,
@@ -59,9 +60,7 @@ class FakeBackend(ExperimentBackend):
             assert manifest is not None
             params = manifest.metadata["params"]
             value = self.objective_fn(params)
-            self.store.append_metric(
-                run_id, MetricPoint(step=1, values={"loss": value})
-            )
+            self.store.append_result(run_id, ResultRecord(values={"loss": value}))
             status = self.store.update_status(
                 run_id, status="completed", completed_at=utc_now()
             )
@@ -362,7 +361,7 @@ def test_objective_never_reported_stops_the_campaign_early(tmp_path):
 
 
 def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
-    """No metrics at all is a different diagnosis from the wrong metric name."""
+    """No result at all is a different diagnosis from the wrong metric name."""
     orchestrator, backend = _orchestrator(tmp_path)
 
     def silent_inspect(run_id: str) -> RunStatus:
@@ -379,7 +378,7 @@ def test_workload_reporting_nothing_is_distinguished_from_a_typo(tmp_path):
 
     finished = [t for t in state.trials if t.status == "completed"]
     assert finished
-    assert all("no metrics" in (t.error or "") for t in finished)
+    assert all("no result" in (t.error or "") for t in finished)
 
 
 def test_exhausted_search_space_ends_the_campaign(tmp_path):

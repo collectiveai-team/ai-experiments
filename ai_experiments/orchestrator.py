@@ -256,7 +256,17 @@ class CampaignOrchestrator:
 
     # -- the loop step ---------------------------------------------------------
 
-    def advance(self, campaign_id: str) -> CampaignState:
+    def advance(self, campaign_id: str, admit: bool = True) -> CampaignState:
+        """Move the campaign one step.
+
+        With ``admit=False`` the campaign refreshes active trials, scores
+        whatever just finished, evaluates the stop condition and updates the
+        best trial -- but does not call `_fill_capacity`, so it submits
+        nothing and `state.rounds` does not advance. That is what lets a
+        caller close a cohort and review it before paying for the next one,
+        instead of only being able to review a cohort that is already
+        running.
+        """
         self.last_decision = None
         self.last_submit_errors = []
         state = self.campaign_store.read_state(campaign_id)
@@ -275,6 +285,12 @@ class CampaignOrchestrator:
 
         if finished_now:
             self._record_evaluation(state, goal, finished_now)
+
+        if not admit:
+            if finished_now and goal.analysis.agent_review:
+                self._request_agent_review(state, goal)
+            self.campaign_store.write_state(state)
+            return state
 
         submitted = self._fill_capacity(state, goal, backend)
         if submitted:
@@ -313,6 +329,36 @@ class CampaignOrchestrator:
         if finished_now and goal.analysis.agent_review:
             self._request_agent_review(state, goal)
 
+        self.campaign_store.write_state(state)
+        return state
+
+    def reconcile(self, campaign_id: str) -> CampaignState:
+        """Collect what already finished, and plan nothing new.
+
+        `iax loop --max-rounds` stops between rounds, while the trials of the
+        round it just paid for may already have finished. `advance` would
+        submit another round; doing nothing leaves those trials `submitted`
+        forever and throws away work that ran. This reads their results, and
+        finishes the campaign when they turn out to have met the target.
+        """
+        self.last_decision = None
+        self.last_submit_errors = []
+        state = self.campaign_store.read_state(campaign_id)
+        if state.status in {"completed", "stopped", "failed", "paused"}:
+            return state
+        goal = self.campaign_store.read_goal(campaign_id)
+        backend = self._backend_factory(goal)
+
+        self._recover_lost_trials(state, backend)
+        finished_now = self._refresh_trials(state, goal, backend)
+        self._update_best(state, goal)
+
+        stop_reason = self._stop_reason(state, goal)
+        if stop_reason:
+            return self._finish(state, goal, backend, stop_reason)
+
+        if finished_now:
+            self._record_evaluation(state, goal, finished_now)
         self.campaign_store.write_state(state)
         return state
 
@@ -484,7 +530,7 @@ class CampaignOrchestrator:
                             details={
                                 "trial_id": trial.trial_id,
                                 "objective_metric": goal.objective.metric,
-                                "observed_metrics": reading.observed_metrics,
+                                "declared_results": reading.declared_results,
                                 "reason": reading.miss_reason,
                             },
                         ),

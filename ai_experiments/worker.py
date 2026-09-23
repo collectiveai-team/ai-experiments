@@ -20,10 +20,12 @@ from ai_experiments.procs import (
     identity_supported,
     process_identity,
 )
-from ai_experiments.report import parse_metric_line
+from ai_experiments.report import parse_metric_line, parse_result_line
 from ai_experiments.schemas import (
+    DataSpec,
     ExperimentManifest,
     MetricPoint,
+    ResultRecord,
     RunEvent,
     load_stored,
     utc_now,
@@ -40,9 +42,20 @@ NON_TERMINAL_STATES = {"submitted", "running", "unknown"}
 class _Supervisor:
     """Runs one workload process, streaming logs/metrics into the run store."""
 
-    def __init__(self, store: FilesystemRunStore, run_id: str) -> None:
+    def __init__(
+        self,
+        store: FilesystemRunStore,
+        run_id: str,
+        phase: str = "evaluate",
+        final: bool = True,
+    ) -> None:
         self.store = store
         self.run_id = run_id
+        self.phase = phase
+        # With two phases only the last may declare the run `completed`; a
+        # failing phase still writes `failed`/`cancelled` immediately,
+        # because a broken phase ends the run regardless of which one it was.
+        self.final = final
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._cancelled = False
@@ -90,40 +103,91 @@ class _Supervisor:
             raise RuntimeError(f"working_dir does not exist: {working_dir}")
         return working_dir
 
-    def run(self) -> None:
+    def _route_declared_result(self, values: dict[str, float]) -> None:
+        """Keep or discard the result this phase declared, and say which.
+
+        Lifted out of `run` so the rule that decides *which phase may score*
+        has a seam of its own: `run` pumps a stream, and the guarantee this
+        branch carries should not be something a reader has to find inside
+        that pump (CES-8, and CES-110 -- `run` measured 32 with it inline).
+        Behaviour is unchanged; only its address is.
+        """
+        if self.phase == "train":
+            # The trainer is the code an agent may rewrite. Letting it
+            # declare the number it is judged by would make the metric
+            # the cheapest thing in the search space to optimize.
+            self.store.append_event(
+                self.run_id,
+                RunEvent(
+                    level="warning",
+                    message="result reported from the train phase; discarded",
+                    details={"values": values},
+                ),
+            )
+            return
+        self.store.append_result(self.run_id, ResultRecord(values=values))
+        self._update_status(details={"result": values})
+
+    def run(self, command: str | None = None, work_dir: Path | None = None) -> int:
         run_dir = self.store.run_dir(self.run_id)
         manifest = load_stored(ExperimentManifest, run_dir / "manifest.yaml")
 
-        command = [*shlex.split(manifest.workload.entrypoint), *manifest.workload.args]
+        # `command` is this phase's own command from `WorkloadSpec.phases()`;
+        # a caller running a single-entrypoint workload leaves it unset and
+        # gets the entrypoint. `args` is shared by every phase (the planner
+        # injects trial parameters through it), so it is appended regardless
+        # of which command ran.
+        entrypoint = command if command is not None else manifest.workload.entrypoint
+        cmd = [*shlex.split(entrypoint), *manifest.workload.args]
         working_dir = self._working_dir(manifest)
         env = os.environ.copy()
+        # env_for only ever adds keys, so it cannot take one away: scrub the
+        # inherited environment first, or a value already set on the parent
+        # process (iax daemon runs with whatever environment the operator
+        # started it in) would reach the train phase untouched.
+        for key in DataSpec.ENV_KEYS:
+            env.pop(key, None)
+        # `workload.env` (IAX_PARAMS included) is shared by every phase too,
+        # so it is merged into each phase's environment rather than only the
+        # single-entrypoint path's.
         env.update(manifest.workload.env)
+        env.update(manifest.workload.data.env_for(self.phase))
+        env["IAX_PHASE"] = self.phase
         env["IAX_RUN_ID"] = self.run_id
         env["IAX_RUN_DIR"] = str(run_dir)
         artifacts_dir = run_dir / "artifacts"
         artifacts_dir.mkdir(exist_ok=True)
         env["IAX_ARTIFACTS_DIR"] = str(artifacts_dir)
+        if work_dir is not None:
+            # The only handoff channel between train and evaluate: not the
+            # cwd, which a later variant-copy phase will no longer share.
+            env["IAX_WORK_DIR"] = str(work_dir)
 
         # MLflow handoff: workloads that import mlflow attach to the run the
         # harness created at submit time.
-        details = self.store.read_status(self.run_id).details
-        if details.get("mlflow_run_id"):
-            env["MLFLOW_RUN_ID"] = str(details["mlflow_run_id"])
-            env["MLFLOW_TRACKING_URI"] = str(details.get("mlflow_tracking_uri", ""))
+        status = self.store.read_status(self.run_id)
+        if status.details.get("mlflow_run_id"):
+            env["MLFLOW_RUN_ID"] = str(status.details["mlflow_run_id"])
+            env["MLFLOW_TRACKING_URI"] = str(
+                status.details.get("mlflow_tracking_uri", "")
+            )
 
         self._update_status(
             status="running",
-            started_at=utc_now(),
+            # started_at is the *run's* start, not this phase's: monitoring
+            # measures the timeout from it, so overwriting it on the second
+            # phase would give a two-phase run roughly double its budget.
+            started_at=status.started_at or utc_now(),
             details={"heartbeat_at": utc_now().isoformat()},
         )
         self.store.append_event(
             self.run_id,
-            RunEvent(message="workload started", details={"command": command}),
+            RunEvent(message="workload started", details={"command": cmd}),
         )
 
         signal.signal(signal.SIGTERM, self._handle_sigterm)
         self.process = subprocess.Popen(
-            command,
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=working_dir,
@@ -167,6 +231,11 @@ class _Supervisor:
             line = _overwrite(raw)
             if not line:
                 continue
+            result = parse_result_line(line)
+            if result is not None:
+                self._route_declared_result(result)
+                continue
+
             metric = parse_metric_line(line)
             if metric is not None:
                 point = MetricPoint(step=metric["step"], values=metric["values"])
@@ -184,11 +253,44 @@ class _Supervisor:
 
         exit_code = self.process.wait()
         self._stop.set()
+        if not self.final:
+            # No child process exists for this handler to terminate between
+            # phases, so a SIGTERM landing in that gap would otherwise be
+            # silently absorbed (self.process.poll() is not None, nothing
+            # happens) and the next phase would start anyway. Restoring the
+            # default action lets a bare SIGTERM here kill the supervisor.
+            # The window between `process.wait()` returning and the next
+            # phase's own `signal.signal(...)` call is microseconds wide and
+            # cannot be hit deterministically without a test-only seam in
+            # this hot path, so this line is accepted untested (ledger:
+            # task-8 fix round 3).
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
         if exit_code == 0:
-            self._update_status(
-                status="completed", exit_code=exit_code, completed_at=utc_now()
-            )
-            self.store.append_event(self.run_id, RunEvent(message="workload completed"))
+            if self._cancel_requested():
+                # Exit 0 does not undo a stop request: a workload that traps
+                # SIGTERM and shuts down cleanly must still be recorded as
+                # cancelled, not completed.
+                self._update_status(
+                    status="cancelled",
+                    exit_code=exit_code,
+                    completed_at=utc_now(),
+                    error="workload exited after cancellation was requested",
+                )
+                self.store.append_event(
+                    self.run_id,
+                    RunEvent(level="warning", message="workload stopped as requested"),
+                )
+            else:
+                if self.final:
+                    # With two phases only the last may declare the run
+                    # completed; a non-final phase that exits 0 just hands
+                    # off to the next one, so it leaves status alone here.
+                    self._update_status(
+                        status="completed", exit_code=exit_code, completed_at=utc_now()
+                    )
+                self.store.append_event(
+                    self.run_id, RunEvent(message="workload completed")
+                )
         elif exit_code < 0 and self._cancel_requested():
             self._update_status(
                 status="cancelled",
@@ -240,6 +342,7 @@ class _Supervisor:
                     details={"exit_code": exit_code},
                 ),
             )
+        return exit_code
 
 
 def _overwrite(raw: str) -> str:
@@ -299,11 +402,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--runs-dir", required=True)
+    parser.add_argument("--phase", default="evaluate", choices=["train", "evaluate"])
     args = parser.parse_args()
 
     store = FilesystemRunStore(args.runs_dir)
     try:
-        _Supervisor(store, args.run_id).run()
+        raise SystemExit(_Supervisor(store, args.run_id, phase=args.phase).run())
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)  # keep the evidence in worker.log
         report_supervisor_failure(store, args.run_id, exc)

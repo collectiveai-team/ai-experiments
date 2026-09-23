@@ -25,6 +25,8 @@ from ai_experiments.schemas import (
     CampaignState,
     ExperimentManifest,
     GoalSpec,
+    MetricPoint,
+    ResultRecord,
     RunHandle,
     WorkloadSpec,
 )
@@ -332,3 +334,21 @@ def test_campaign_state_is_written_atomically(tmp_path):
         )["campaign_id"]
         == state.campaign_id
     )
+
+
+def test_results_live_in_their_own_channel(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id, _ = store.create_run(_manifest())
+
+    store.append_metric(run_id, MetricPoint(step=1, values={"loss": 0.5}))
+    store.append_result(run_id, ResultRecord(values={"test_acc": 0.9}))
+
+    assert [p.values for p in store.read_metrics(run_id)] == [{"loss": 0.5}]
+    assert [r.values for r in store.read_results(run_id)] == [{"test_acc": 0.9}]
+
+
+def test_reading_results_of_a_run_that_reported_none(tmp_path):
+    store = FilesystemRunStore(tmp_path)
+    run_id, _ = store.create_run(_manifest())
+
+    assert store.read_results(run_id) == []

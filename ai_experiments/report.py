@@ -1,17 +1,22 @@
-"""Workload-side metric reporting.
+"""Workload-side metric and result reporting.
 
 Workloads import this module (or just print the line themselves) to report
-training metrics to the harness::
+training metrics and evaluation results to the harness::
 
-    from ai_experiments.report import report_metric
+    from ai_experiments.report import report_metric, report_result
 
     report_metric(step=epoch, loss=loss, val_loss=val_loss)
+    report_result(test_acc=0.95)
 
-The metric travels as a single stdout line — ``IAX_METRIC {json}`` — which
-works identically for the local backend (the worker tails stdout) and for Ray
-clusters with no shared filesystem (the harness extracts the lines from the
-job logs). Workloads need no other dependency on the harness; printing the
-line directly is a supported contract.
+Two channels carry data: the metric channel ``IAX_METRIC {json}`` carries
+progress points (step + values) during training; the result channel
+``IAX_RESULT {json}`` carries the final evaluation result (values only,
+no step). Only the result channel is scored.
+
+Both channels work identically for the local backend (the worker tails stdout)
+and for Ray clusters with no shared filesystem (the harness extracts the lines
+from the job logs). Workloads need no other dependency on the harness;
+printing the lines directly is a supported contract.
 """
 
 from __future__ import annotations
@@ -24,6 +29,26 @@ from pathlib import Path
 from typing import Any
 
 METRIC_PREFIX = "IAX_METRIC "
+RESULT_PREFIX = "IAX_RESULT "
+
+
+def _coerce_numeric_values(payload: dict) -> dict[str, float]:
+    """Extract numeric values from a payload dict, coercing types and handling non-finite values.
+
+    Skips boolean values, converts int/float to float, and parses string
+    representations of non-finite floats (nan, inf, -inf, infinity, -infinity).
+    """
+    values: dict[str, float] = {}
+    for key, value in payload.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            values[str(key)] = float(value)
+        elif isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
+                values[str(key)] = float(lowered.replace("infinity", "inf"))
+    return values
 
 
 def artifacts_dir() -> Path | None:
@@ -51,6 +76,16 @@ def report_metric(step: int | None = None, **values: float) -> None:
     sys.stdout.flush()
 
 
+def report_result(**values: float) -> None:
+    """Print the one evaluation result the harness will score.
+
+    Only the ``evaluate`` phase may call this. Progress belongs in
+    :func:`report_metric`, which never scores.
+    """
+    sys.stdout.write(RESULT_PREFIX + json.dumps(dict(values)) + "\n")
+    sys.stdout.flush()
+
+
 def parse_metric_line(line: str) -> dict[str, Any] | None:
     """Parse an ``IAX_METRIC {...}`` stdout line into step + numeric values.
 
@@ -75,19 +110,32 @@ def parse_metric_line(line: str) -> dict[str, Any] | None:
     if isinstance(step_raw, (int, float)) and not isinstance(step_raw, bool):
         step = int(step_raw)
 
-    values: dict[str, float] = {}
-    for key, value in payload.items():
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            values[str(key)] = float(value)
-        elif isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"nan", "inf", "-inf", "infinity", "-infinity"}:
-                values[str(key)] = float(lowered.replace("infinity", "inf"))
+    values = _coerce_numeric_values(payload)
     if not values and step is None:
         return None
     return {"step": step, "values": values}
+
+
+def parse_result_line(line: str) -> dict[str, float] | None:
+    """Parse an ``IAX_RESULT {...}`` line into numeric values, or None.
+
+    A result has no step: it is the answer, not a point on a curve.
+    """
+    stripped = line.strip()
+    idx = stripped.find(RESULT_PREFIX.strip())
+    if idx == -1:
+        return None
+    raw = stripped[idx + len(RESULT_PREFIX.strip()) :].strip()
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload.pop("step", None)
+
+    values = _coerce_numeric_values(payload)
+    return values or None
 
 
 def is_finite(value: float) -> bool:
