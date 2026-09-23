@@ -17,13 +17,16 @@ import json
 import shlex
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from ai_experiments.schemas import EscalationPolicy, MonitorDecision, RunEvent, utc_now
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ai_experiments.store import FilesystemRunStore
 
 EscalationAction = Literal["none", "invoke_agent", "budget_exhausted", "cooling_down"]
 
@@ -56,9 +59,7 @@ class EscalationLadder:
         return EscalationState(**json.loads(path.read_text()))
 
     def _write_state(self, run_id: str, state: EscalationState) -> None:
-        self._state_path(run_id).write_text(
-            json.dumps(state.model_dump(mode="json"), indent=2)
-        )
+        self._state_path(run_id).write_text(json.dumps(state.model_dump(mode="json"), indent=2))
 
     def observe(
         self,
@@ -227,19 +228,24 @@ def list_escalations(store: FilesystemRunStore) -> list[EscalationItem]:
     escalations_dir = store.root / "_escalations"
     if not escalations_dir.exists():
         return []
-    items: list[EscalationItem] = []
-    for path in sorted(escalations_dir.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text())
-            if path.name.startswith(CHANGE_PREFIX):
-                items.append(ChangeRequest(**payload))
-            elif path.name.startswith(CAMPAIGN_PREFIX):
-                items.append(CampaignReview(**payload))
-            else:
-                items.append(EscalationRequest(**payload))
-        except (json.JSONDecodeError, ValidationError, OSError):
-            continue
-    return items
+    read = (_read_item(path) for path in sorted(escalations_dir.glob("*.json")))
+    return [item for item in read if item is not None]
+
+
+def _read_item(path: Path) -> EscalationItem | None:
+    """Parse one inbox file, or None when it is unreadable or malformed."""
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        if path.name.startswith(CHANGE_PREFIX):
+            return ChangeRequest(**payload)
+        if path.name.startswith(CAMPAIGN_PREFIX):
+            return CampaignReview(**payload)
+        return EscalationRequest(**payload)
+    except ValidationError:
+        return None
 
 
 def record_change_request(store: FilesystemRunStore, request: ChangeRequest) -> Path:
@@ -268,9 +274,7 @@ def list_campaign_reviews(store: FilesystemRunStore) -> list[CampaignReview]:
     return [i for i in list_escalations(store) if isinstance(i, CampaignReview)]
 
 
-def _in_cooldown(
-    last_call: datetime | None, policy: EscalationPolicy, now: datetime
-) -> bool:
+def _in_cooldown(last_call: datetime | None, policy: EscalationPolicy, now: datetime) -> bool:
     if last_call is None:
         return False
     if last_call.tzinfo is None:
@@ -281,7 +285,7 @@ def _in_cooldown(
 def _run_agent_command(
     store: FilesystemRunStore, run_id: str, policy: EscalationPolicy
 ) -> AgentVerdict:
-    assert policy.agent_command is not None
+    assert policy.agent_command is not None  # noqa: S101  # type narrowing, not a runtime check
     # Plain token replacement, not str.format: agent prompts legitimately
     # contain literal braces (JSON examples) that format() would reject.
     rendered = policy.agent_command.replace("{run_id}", run_id).replace(
@@ -289,16 +293,15 @@ def _run_agent_command(
     )
     command = shlex.split(rendered)
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # user-configured agent_command, this is the product
             command,
             capture_output=True,
             text=True,
             timeout=policy.agent_timeout_seconds,
+            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return AgentVerdict(
-            verdict="inconclusive", reason=f"agent command failed: {exc}"
-        )
+        return AgentVerdict(verdict="inconclusive", reason=f"agent command failed: {exc}")
 
     output = result.stdout.strip()
     try:

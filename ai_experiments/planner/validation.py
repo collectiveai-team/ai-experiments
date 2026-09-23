@@ -29,7 +29,7 @@ class ParamValidationError(ValueError):
         super().__init__("; ".join(violations))
 
 
-def validate_params(
+def validate_params(  # ast-grep-ignore: no-dict-return-annotation
     space: dict[str, ParamSpec], params: dict[str, Any]
 ) -> dict[str, Any]:
     """Return `params` coerced to the space's types, or raise.
@@ -37,6 +37,11 @@ def validate_params(
     Missing keys are rejected too: a partial assignment silently inherits the
     workload's own defaults for the rest, which makes the trial's recorded
     params a lie about what ran.
+
+    The keys are the user's own search-space parameter names, so there is no
+    class to return: a parameter assignment is a mapping by construction, the
+    same shape `planner.search_space.sample` and `perturb` produce and the same
+    shape `TrialRecord.params` stores.
     """
     violations: list[str] = []
     unknown = sorted(set(params) - set(space))

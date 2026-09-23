@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -70,10 +71,11 @@ class LocalBackend(ExperimentBackend):
         ]
         log_path = run_dir / "worker.log"
         log_file = log_path.open("a")
-        env = os.environ.copy()
+        # child-process env propagation, not config
+        env = os.environ.copy()  # ast-grep-ignore: settings-module
         package_root = Path(__file__).resolve().parents[2]
         env["PYTHONPATH"] = f"{package_root}:{env.get('PYTHONPATH', '')}"
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # noqa: S603  # sys.executable + our own worker module
             cmd,
             stdout=log_file,
             stderr=subprocess.STDOUT,
@@ -81,9 +83,7 @@ class LocalBackend(ExperimentBackend):
             env=env,
             start_new_session=True,
         )
-        self.store.update_status(
-            run_id, pid=process.pid, details={"log_path": str(log_path)}
-        )
+        self.store.update_status(run_id, pid=process.pid, details={"log_path": str(log_path)})
         self.store.append_event(
             run_id,
             RunEvent(message="local supervisor started", details={"pid": process.pid}),
@@ -109,19 +109,22 @@ class LocalBackend(ExperimentBackend):
         # signal may beat any bookkeeping that follows it.
         self.store.request_cancel(run_id)
         if status.pid:
-            try:
+            # A supervisor that is already gone is fine: the status write below stands.
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(status.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # supervisor already gone; the status write below stands
             self.store.append_event(run_id, RunEvent(message="local run cancelled"))
         self.store.update_status(run_id, status="cancelled", completed_at=utc_now())
 
-    def reap(self, run_id: str) -> dict[str, object]:
+    def reap(self, run_id: str) -> dict[str, object]:  # ast-grep-ignore: no-dict-return-annotation
         """Terminate a workload whose supervisor died, if it is still running.
 
         Nothing else can: the supervisor is the workload's parent and the only
         process that would have noticed. Its recorded pid is the sole handle
         on an orphan that is still holding a GPU.
+
+        Returns ``procs.terminate_workload``'s report unchanged -- a raw
+        mapping because it is persisted verbatim as this run's event
+        ``details`` (see :func:`ai_experiments.procs._report`).
         """
         status = self.store.read_status(run_id)
         report = terminate_workload(

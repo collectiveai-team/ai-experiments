@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 
 from ai_experiments.agents import AgentResult, StubAgentRunner
-from ai_experiments.orchestrator import AGENT_STOP_REASON, CampaignOrchestrator
+from ai_experiments.orchestrator import CampaignOrchestrator
 from ai_experiments.schemas import GoalSpec
+from ai_experiments.stopping import AGENT_STOP_REASON
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
-from tests.test_orchestrator import FakeBackend
+from tests.conftest import FakeBackend
 
 
 def _agent_goal(**overrides) -> GoalSpec:
@@ -87,7 +88,7 @@ def test_the_brief_grows_with_the_evidence(tmp_path):
 
 def test_a_dead_agent_still_produces_a_finished_campaign(tmp_path):
     runner = StubAgentRunner([AgentResult(error="agent command could not run")])
-    orchestrator, backend, _ = _harness(tmp_path, runner)
+    orchestrator, _backend, _ = _harness(tmp_path, runner)
 
     state = _drive(orchestrator, orchestrator.start(_agent_goal()))
 
@@ -108,9 +109,7 @@ def test_an_out_of_range_proposal_never_reaches_the_backend(tmp_path):
 
 
 def test_the_agent_can_end_the_campaign(tmp_path):
-    runner = StubAgentRunner(
-        [{"stop": True, "rationale": "the workload ignores x entirely"}]
-    )
+    runner = StubAgentRunner([{"stop": True, "rationale": "the workload ignores x entirely"}])
     orchestrator, _, _ = _harness(tmp_path, runner)
 
     state = _drive(orchestrator, orchestrator.start(_agent_goal()))
@@ -150,9 +149,7 @@ def test_the_agents_reasoning_lands_in_the_campaign_events(tmp_path):
 
     events = [
         json.loads(line)
-        for line in (
-            CampaignStore(store.root).campaign_dir(state.campaign_id) / "events.jsonl"
-        )
+        for line in (CampaignStore(store.root).campaign_dir(state.campaign_id) / "events.jsonl")
         .read_text()
         .splitlines()
     ]

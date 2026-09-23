@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
-from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
-from ai_experiments.store import FilesystemRunStore
+from ai_experiments.schemas import (
+    BestTrialSummary,
+    BudgetSummary,
+    CampaignHistoryEntry,
+    CampaignSummary,
+)
+
+if TYPE_CHECKING:
+    from ai_experiments.schemas import CampaignState, GoalSpec, ObjectiveSpec, TrialRecord
+    from ai_experiments.store import FilesystemRunStore
 
 
 class ObjectiveReading(BaseModel):
@@ -36,10 +44,7 @@ class ObjectiveReading(BaseModel):
             )
         observed = ", ".join(self.observed_metrics) or "(none)"
         if self.miss_reason == "metric_absent":
-            return (
-                f"objective metric '{metric}' was never reported; "
-                f"observed metrics: {observed}"
-            )
+            return f"objective metric '{metric}' was never reported; observed metrics: {observed}"
         return (
             f"objective metric '{metric}' was reported but never finite "
             f"(NaN/inf only); observed metrics: {observed}"
@@ -66,8 +71,7 @@ def extract_objective(
     values = [
         point.values[objective.metric]
         for point in metrics
-        if objective.metric in point.values
-        and math.isfinite(point.values[objective.metric])
+        if objective.metric in point.values and math.isfinite(point.values[objective.metric])
     ]
     if not values:
         return ObjectiveReading(
@@ -86,7 +90,7 @@ def is_improvement(candidate: float, incumbent: float | None, mode: str) -> bool
 
 
 def best_of(trials: list[TrialRecord], mode: str) -> TrialRecord | None:
-    """The best *completed* trial.
+    """Return the best *completed* trial.
 
     A crashed trial can report a good value moments before it dies — an OOM
     kill mid-epoch, a diverging run that prints one lucky step. Letting such a
@@ -103,44 +107,54 @@ def best_of(trials: list[TrialRecord], mode: str) -> TrialRecord | None:
     ]
     if not scored:
         return None
-    key = (
-        (lambda t: -t.objective_value)
-        if mode == "max"
-        else (lambda t: t.objective_value)
-    )  # type: ignore[operator]
-    return min(scored, key=key)  # type: ignore[arg-type]
+
+    def _key(trial: TrialRecord) -> float:
+        # scored is filtered above to non-None, finite objective_value; cast makes
+        # that already-proven invariant visible to the type checker.
+        value = cast("float", trial.objective_value)
+        return -value if mode == "max" else value
+
+    return min(scored, key=_key)
 
 
 def best_trial(state: CampaignState, mode: str) -> TrialRecord | None:
     return best_of(state.trials, mode)
 
 
-def trial_history(trials: list[TrialRecord]) -> list[dict[str, Any]]:
+def trial_history(trials: list[TrialRecord]) -> list[CampaignHistoryEntry]:
     """Every trial an agent can learn from: scored ones and failures alike."""
     return [
-        {
-            "trial_id": t.trial_id,
-            "status": t.status,
-            "objective_value": t.objective_value,
-            "params": t.params,
-            "error": t.error,
-        }
+        CampaignHistoryEntry(
+            trial_id=t.trial_id,
+            status=t.status,
+            objective_value=t.objective_value,
+            params=t.params,
+            error=t.error,
+        )
         for t in trials
         if t.objective_value is not None or t.error is not None
     ]
 
 
-def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any]:
-    """The evidence block an agent plans from, without a CampaignState.
+def summarize_trials(  # ast-grep-ignore: no-dict-return-annotation
+    trials: list[TrialRecord], goal: GoalSpec
+) -> dict[str, Any]:
+    """Return the evidence block an agent plans from, without a CampaignState.
 
     A strategy sees trials, not campaigns. This is the same history and best
     trial that ``summarize_campaign`` reports, so the agent and the dashboard
     never disagree about what happened.
+
+    Serialised on purpose: this is the prompt boundary. Its only consumer is
+    ``agents.prompts.round_brief``, whose other caller hands it
+    ``summarize_campaign(...).model_dump(mode="json")`` — one shape of evidence
+    for both briefs. Typing one side and not the other would split that
+    contract, so both stay JSON-shaped until the pair is typed together.
     """
     best = best_of(trials, goal.objective.mode)
-    return {
+    return {  # ast-grep-ignore: no-dict-literal-return  # prompt boundary, see the docstring
         "trials_total": len(trials),
-        "history": trial_history(trials),
+        "history": [entry.model_dump(mode="json") for entry in trial_history(trials)],
         "best": (
             {
                 "trial_id": best.trial_id,
@@ -154,51 +168,46 @@ def summarize_trials(trials: list[TrialRecord], goal: GoalSpec) -> dict[str, Any
     }
 
 
-def summarize_campaign(state: CampaignState, goal: GoalSpec) -> dict[str, Any]:
+def summarize_campaign(state: CampaignState, goal: GoalSpec) -> CampaignSummary:
     by_status: dict[str, int] = {}
     for trial in state.trials:
         by_status[trial.status] = by_status.get(trial.status, 0) + 1
     best = best_trial(state, goal.objective.mode)
     history = trial_history(state.trials)
     gpu_hours = sum(t.gpu_hours or 0.0 for t in state.trials)
-    cost = (
-        gpu_hours * goal.budget.gpu_hour_rate
-        if goal.budget.gpu_hour_rate is not None
-        else None
-    )
-    return {
-        "campaign_id": state.campaign_id,
-        "name": state.name,
-        "goal": state.goal,
-        "status": state.status,
-        "stop_reason": state.stop_reason,
-        "created_at": state.created_at.isoformat(),
-        "last_advanced_at": state.updated_at.isoformat(),
-        "gpu_hours": round(gpu_hours, 4),
-        "estimated_cost": round(cost, 2) if cost is not None else None,
-        "budget": {
-            "max_trials": goal.budget.max_trials,
-            "max_gpu_hours": goal.budget.max_gpu_hours,
-            "gpu_hour_rate": goal.budget.gpu_hour_rate,
-        },
-        "objective": {
-            "metric": goal.objective.metric,
-            "mode": goal.objective.mode,
-            "target": goal.objective.target,
-        },
-        "rounds": state.rounds,
-        "agent_calls": state.agent_calls,
-        "trials_by_status": by_status,
-        "trials_total": len(state.trials),
-        "best": (
-            {
-                "trial_id": best.trial_id,
-                "run_id": best.run_id,
-                "objective_value": best.objective_value,
-                "params": best.params,
-            }
+    cost = gpu_hours * goal.budget.gpu_hour_rate if goal.budget.gpu_hour_rate is not None else None
+    return CampaignSummary(
+        campaign_id=state.campaign_id,
+        name=state.name,
+        goal=state.goal,
+        status=state.status,
+        stop_reason=state.stop_reason,
+        created_at=state.created_at.isoformat(),
+        last_advanced_at=state.updated_at.isoformat(),
+        gpu_hours=round(gpu_hours, 4),
+        estimated_cost=round(cost, 2) if cost is not None else None,
+        budget=BudgetSummary(
+            max_trials=goal.budget.max_trials,
+            max_gpu_hours=goal.budget.max_gpu_hours,
+            gpu_hour_rate=goal.budget.gpu_hour_rate,
+        ),
+        # copy, don't alias: `budget` above is a fresh BudgetSummary, and a summary that
+        # shared the goal's ObjectiveSpec instance would let a mutation of either reach the
+        # other. pydantic v2 stores the instance as-is, so the copy has to be explicit.
+        objective=goal.objective.model_copy(),
+        rounds=state.rounds,
+        agent_calls=state.agent_calls,
+        trials_by_status=by_status,
+        trials_total=len(state.trials),
+        best=(
+            BestTrialSummary(
+                trial_id=best.trial_id,
+                run_id=best.run_id,
+                objective_value=best.objective_value,
+                params=best.params,
+            )
             if best
             else None
         ),
-        "history": history,
-    }
+        history=history,
+    )

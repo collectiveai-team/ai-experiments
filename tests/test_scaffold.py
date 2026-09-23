@@ -49,9 +49,7 @@ def test_goal_template_validates_against_the_schema(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["manifest", "goal"])
-def test_template_entrypoint_resolves_without_the_harness_venv(
-    tmp_path, kind, monkeypatch
-):
+def test_template_entrypoint_resolves_without_the_harness_venv(tmp_path, kind, monkeypatch):
     """A template that validates but cannot spawn is still a broken scaffold.
 
     `entrypoint: python` passed every check here and then failed at the first
@@ -88,7 +86,7 @@ def test_workload_template_runs_and_reports_metrics(tmp_path):
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603  # fixed argv, test fixture
         [sys.executable, str(path)],
         capture_output=True,
         text=True,
@@ -98,12 +96,11 @@ def test_workload_template_runs_and_reports_metrics(tmp_path):
             "IAX_ARTIFACTS_DIR": str(artifacts),
         },
         timeout=60,
+        check=False,
     )
 
     assert result.returncode == 0
-    metric_lines = [
-        line for line in result.stdout.splitlines() if line.startswith("IAX_METRIC ")
-    ]
+    metric_lines = [line for line in result.stdout.splitlines() if line.startswith("IAX_METRIC ")]
     assert len(metric_lines) == 100
     assert (artifacts / "result.json").exists()
 
@@ -116,12 +113,13 @@ def test_workload_template_reads_the_params_the_harness_injects(tmp_path):
     def final_loss(lr: str) -> float:
         import json
 
-        out = subprocess.run(
+        out = subprocess.run(  # noqa: S603  # fixed argv, test fixture
             [sys.executable, str(path)],
             capture_output=True,
             text=True,
             env={"PATH": "/usr/bin:/bin", "IAX_PARAMS": f'{{"lr": {lr}}}'},
             timeout=60,
+            check=False,
         ).stdout
         last = [ln for ln in out.splitlines() if ln.startswith("IAX_METRIC ")][-1]
         return json.loads(last[len("IAX_METRIC ") :])["loss"]
@@ -224,9 +222,12 @@ def test_the_scaffolded_goal_and_workload_reach_their_target(tmp_path):
     goal.workload.entrypoint = sys.executable
     goal.workload.args = ["train.py"]
 
-    report = run_loop(
-        goal, runs_dir=tmp_path / "runs", interval_seconds=0, max_seconds=180
-    )
+    report = run_loop(goal, runs_dir=tmp_path / "runs", interval_seconds=0, max_seconds=180)
 
     assert report.target_reached, report.stop_reason
-    assert report.best["objective_value"] <= goal.objective.target
+    assert report.best is not None
+    best_value = report.best.objective_value
+    target = goal.objective.target
+    assert best_value is not None
+    assert target is not None
+    assert best_value <= target

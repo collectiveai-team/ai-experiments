@@ -21,7 +21,7 @@ SPACE = {
 
 
 def test_sample_respects_bounds():
-    rng = random.Random(7)
+    rng = random.Random(7)  # noqa: S311  # test fixture, not security
     for _ in range(50):
         params = sample(SPACE, rng)
         assert 1e-5 <= params["lr"] <= 1e-1
@@ -31,7 +31,9 @@ def test_sample_respects_bounds():
 
 
 def test_sample_is_deterministic_per_seed():
-    assert sample(SPACE, random.Random(3)) == sample(SPACE, random.Random(3))
+    seed_a = random.Random(3)  # noqa: S311  # test fixture, not security
+    seed_b = random.Random(3)  # noqa: S311  # test fixture, not security
+    assert sample(SPACE, seed_a) == sample(SPACE, seed_b)
 
 
 def test_grid_covers_product():
@@ -42,11 +44,12 @@ def test_grid_covers_product():
     assert len(points) == 3 * 3 * 3 * 2
     assert len({params_key(p) for p in points}) == len(points)
     lrs = sorted({p["lr"] for p in points})
-    assert lrs[0] == pytest.approx(1e-5) and lrs[-1] == pytest.approx(1e-1)
+    assert lrs[0] == pytest.approx(1e-5)
+    assert lrs[-1] == pytest.approx(1e-1)
 
 
 def test_perturb_stays_in_bounds_and_near_base():
-    rng = random.Random(11)
+    rng = random.Random(11)  # noqa: S311  # test fixture, not security
     base = {"lr": 1e-3, "dropout": 0.25, "layers": 2, "optimizer": "adam"}
     for _ in range(100):
         neighbor = perturb(SPACE, base, rng, scale=0.2)

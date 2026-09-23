@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from ai_experiments.backends.base import ExperimentBackend
+from typing import TYPE_CHECKING
+
 from ai_experiments.backends.local import LocalBackend
 from ai_experiments.backends.ray import RayBackend
-from ai_experiments.schemas import BackendName
-from ai_experiments.store import FilesystemRunStore
+
+if TYPE_CHECKING:
+    from ai_experiments.backends.base import ExperimentBackend
+    from ai_experiments.schemas import BackendName
+    from ai_experiments.store import FilesystemRunStore
 
 
 def get_backend(
@@ -20,8 +24,11 @@ def get_backend(
 
 
 def backend_for_run(store: FilesystemRunStore, run_id: str) -> ExperimentBackend:
-    """Backend for an existing run, recovering the Ray address it was
-    submitted with (manifest `backend_address` → RAY_ADDRESS env → default)."""
+    """Backend for an existing run.
+
+    Recovers the Ray address it was submitted with (manifest `backend_address` →
+    RAY_ADDRESS env → default).
+    """
     status = store.read_status(run_id)
     address: str | None = None
     if status.backend == "ray":

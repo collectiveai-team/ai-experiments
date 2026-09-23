@@ -7,6 +7,7 @@ from ai_experiments.monitoring.escalation import (
     EscalationLadder,
     escalate,
     list_escalations,
+    list_run_escalations,
 )
 from ai_experiments.schemas import (
     EscalationPolicy,
@@ -67,17 +68,13 @@ def test_cooldown_blocks_back_to_back_agent_calls(tmp_path):
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "cooling_down"
 
     later = utc_now() + timedelta(minutes=31)
-    assert (
-        ladder.observe(run_id, _suspicious(run_id), policy, now=later) == "invoke_agent"
-    )
+    assert ladder.observe(run_id, _suspicious(run_id), policy, now=later) == "invoke_agent"
 
 
 def test_budget_caps_agent_calls(tmp_path):
     store, run_id = _setup(tmp_path)
     ladder = EscalationLadder(store)
-    policy = EscalationPolicy(
-        after_suspicious_ticks=1, cooldown_minutes=0, max_agent_calls=2
-    )
+    policy = EscalationPolicy(after_suspicious_ticks=1, cooldown_minutes=0, max_agent_calls=2)
 
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "invoke_agent"
     assert ladder.observe(run_id, _suspicious(run_id), policy) == "invoke_agent"
@@ -90,7 +87,7 @@ def test_escalate_without_agent_command_writes_request_file(tmp_path):
     verdict = escalate(store, _suspicious(run_id), EscalationPolicy())
 
     assert verdict is None
-    requests = list_escalations(store)
+    requests = list_run_escalations(store)
     assert [r.run_id for r in requests] == [run_id]
     assert requests[0].decision.reasons == ["no_metric_progress"]
 
@@ -109,9 +106,7 @@ def test_escalate_runs_agent_command_and_parses_verdict(tmp_path):
 
 def test_escalate_handles_non_json_agent_output(tmp_path):
     store, run_id = _setup(tmp_path)
-    policy = EscalationPolicy(
-        agent_command=f"{sys.executable} -c 'print(\"thinking...\")'"
-    )
+    policy = EscalationPolicy(agent_command=f"{sys.executable} -c 'print(\"thinking...\")'")
 
     verdict = escalate(store, _suspicious(run_id), policy)
 
@@ -120,9 +115,11 @@ def test_escalate_handles_non_json_agent_output(tmp_path):
 
 
 def test_campaign_review_does_not_break_the_escalation_inbox(tmp_path):
-    """A campaign review file has no run_id and no decision. Parsing every
-    *.json as an EscalationRequest crashed `iax escalations` permanently from
-    the first agent-review round on (#4)."""
+    """A campaign review file has no run_id and no decision.
+
+    Parsing every *.json as an EscalationRequest crashed `iax escalations`
+    permanently from the first agent-review round on (#4).
+    """
     import json
 
     store, run_id = _setup(tmp_path)

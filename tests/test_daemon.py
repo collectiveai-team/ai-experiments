@@ -31,7 +31,7 @@ def _running_run(
         monitoring=monitoring,
     )
     run_id, run_dir = store.create_run(manifest)
-    base = {
+    base: dict[str, object] = {
         "started_at": utc_now() - timedelta(minutes=10),
         "details": {"heartbeat_at": utc_now().isoformat()},
     }
@@ -51,9 +51,7 @@ def _running_run(
 
 def test_daemon_auto_kills_timed_out_run(tmp_path):
     store = _store(tmp_path)
-    run_id = _running_run(
-        store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None
-    )
+    run_id = _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None)
 
     report = MonitorDaemon(store).tick()
 
@@ -65,9 +63,7 @@ def test_daemon_auto_kills_timed_out_run(tmp_path):
 
 def test_daemon_escalates_fatal_without_auto_kill(tmp_path):
     store = _store(tmp_path)
-    run_id = _running_run(
-        store, MonitorPolicy(timeout_seconds=60, auto_kill=False), pid=None
-    )
+    run_id = _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=False), pid=None)
 
     report = MonitorDaemon(store).tick()
 
@@ -81,9 +77,7 @@ def test_daemon_reaps_dead_worker(tmp_path):
     store = _store(tmp_path)
     run_id = _running_run(store, MonitorPolicy(), pid=99999)
 
-    with patch(
-        "ai_experiments.monitoring.rules._default_pid_alive", return_value=False
-    ):
+    with patch("ai_experiments.monitoring.rules._default_pid_alive", return_value=False):
         report = MonitorDaemon(store).tick()
 
     actions = {a.run_id: a for a in report.actions}
@@ -96,9 +90,7 @@ def test_daemon_escalates_suspicious_run_after_ladder_threshold(tmp_path):
     stale_heartbeat = (utc_now() - timedelta(minutes=20)).isoformat()
     run_id = _running_run(
         store,
-        MonitorPolicy(
-            escalation=EscalationPolicy(after_suspicious_ticks=2, cooldown_minutes=0)
-        ),
+        MonitorPolicy(escalation=EscalationPolicy(after_suspicious_ticks=2, cooldown_minutes=0)),
         pid=None,
         details={"heartbeat_at": stale_heartbeat},
     )
@@ -112,9 +104,7 @@ def test_daemon_escalates_suspicious_run_after_ladder_threshold(tmp_path):
     assert (store.root / "_escalations" / f"{run_id}.json").exists()
 
 
-def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
-    from test_orchestrator import FakeBackend, _goal
-
+def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path, fake_backend_factory, goal_factory):
     from ai_experiments.notify import read_notifications
     from ai_experiments.orchestrator import CampaignOrchestrator
     from ai_experiments.store.campaign import CampaignStore
@@ -122,12 +112,12 @@ def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
     store = _store(tmp_path)
     _running_run(store, MonitorPolicy(timeout_seconds=60, auto_kill=True), pid=None)
 
-    backend = FakeBackend(store)
+    backend = fake_backend_factory(store)
     backend.objective_fn = lambda p: 0.0
     orchestrator = CampaignOrchestrator(
         store, CampaignStore(store.root), backend_factory=lambda goal: backend
     )
-    goal = _goal()
+    goal = goal_factory()
     goal.objective.target = 0.5  # every fake trial hits the target
     orchestrator.start(goal)
 
@@ -140,8 +130,10 @@ def test_daemon_notifies_on_kill_and_campaign_finish(tmp_path):
 
 
 def test_daemon_keeps_supervising_when_one_run_is_corrupt(tmp_path):
-    """One truncated status.json used to kill the tick -- and with it,
-    supervision of every other run."""
+    """Regression guard: one truncated status.json used to kill the tick.
+
+    And with it, supervision of every other run.
+    """
     store = _store(tmp_path)
     healthy = _running_run(store, MonitorPolicy(), pid=None)
     corrupt = _running_run(store, MonitorPolicy(), pid=None)

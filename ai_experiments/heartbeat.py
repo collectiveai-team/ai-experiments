@@ -55,7 +55,7 @@ def write_heartbeat(root: str | Path, beat: Heartbeat) -> None:
 
 
 def read_heartbeat(root: str | Path) -> Heartbeat | None:
-    """The last tick recorded in this store, or None if no daemon ever ticked."""
+    """Return the last tick recorded in this store, or None if no daemon ever ticked."""
     path = heartbeat_path(root)
     try:
         return Heartbeat(**json.loads(path.read_text()))
@@ -63,9 +63,7 @@ def read_heartbeat(root: str | Path) -> Heartbeat | None:
         return None
 
 
-def daemon_warning(
-    root: str | Path, stale_after: timedelta = STALE_AFTER
-) -> str | None:
+def daemon_warning(root: str | Path, stale_after: timedelta = STALE_AFTER) -> str | None:
     """One line to print when work is waiting on a daemon that is not ticking.
 
     Callers pass this only when the store actually holds something a daemon

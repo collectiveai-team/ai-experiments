@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING
 
+from ai_experiments.config_loading import load_stored
 from ai_experiments.schemas import (
     CampaignState,
     GoalSpec,
     RunEvent,
-    load_stored,
     utc_now,
 )
 from ai_experiments.store.filesystem import atomic_write_text
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class CampaignStore:

@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from ai_experiments.planner.search_space import grid_points, params_key, perturb, sample
-from ai_experiments.schemas import GoalSpec, TrialRecord
+
+if TYPE_CHECKING:
+    from ai_experiments.schemas import GoalSpec, TrialRecord
 
 MAX_SAMPLE_ATTEMPTS = 50
 
 
 class Strategy(Protocol):
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         """Return up to `count` new parameter assignments given trial history."""
         ...
 
@@ -65,19 +65,13 @@ def _fresh_samples(
 
 
 class RandomStrategy:
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         rng = _rng(goal, trials)
-        return _fresh_samples(
-            goal, trials, count, lambda: sample(goal.search_space, rng)
-        )
+        return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
 
 
 class GridStrategy:
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         seen = _seen_keys(trials)
         remaining = [
             params
@@ -98,29 +92,27 @@ class AdaptiveStrategy:
 
     WARMUP_RESULTS = 3
 
-    def plan(
-        self, goal: GoalSpec, trials: list[TrialRecord], count: int
-    ) -> list[dict[str, Any]]:
+    def plan(self, goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
         rng = _rng(goal, trials)
         scored = [
-            t
-            for t in trials
-            if t.objective_value is not None and math.isfinite(t.objective_value)
+            t for t in trials if t.objective_value is not None and math.isfinite(t.objective_value)
         ]
         if len(scored) < self.WARMUP_RESULTS:
-            return _fresh_samples(
-                goal, trials, count, lambda: sample(goal.search_space, rng)
-            )
+            return _fresh_samples(goal, trials, count, lambda: sample(goal.search_space, rng))
 
         reverse = goal.objective.mode == "max"
-        ranked = sorted(
-            scored,
-            key=lambda t: t.objective_value,
-            reverse=reverse,  # type: ignore[arg-type, return-value]
-        )
+
+        def _objective(trial: TrialRecord) -> float:
+            # scored is filtered above to non-None, finite objective_value; cast makes
+            # that already-proven invariant visible to the type checker.
+            return cast("float", trial.objective_value)
+
+        ranked = sorted(scored, key=_objective, reverse=reverse)
         top = ranked[: max(goal.strategy.top_k, 1)]
 
-        def draw() -> dict[str, Any]:
+        def draw() -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
+            # A sampled hyperparameter assignment; the keys are the user's own
+            # search-space parameter names (goal.search_space), not a fixed schema.
             if rng.random() < goal.strategy.exploration:
                 return sample(goal.search_space, rng)
             anchor = rng.choice(top)

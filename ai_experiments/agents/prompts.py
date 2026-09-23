@@ -9,9 +9,10 @@ and ignored; agents reason better when they are allowed to think first.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ai_experiments.schemas import GoalSpec
+if TYPE_CHECKING:
+    from ai_experiments.schemas import GoalSpec
 
 PLANNER_CONTRACT = """Reply with one JSON object, last thing in your message:
 
@@ -119,7 +120,8 @@ def _evidence_block(summary: dict[str, Any]) -> str:
     for entry in history:
         value = entry.get("objective_value")
         scored = f"{value:.6g}" if isinstance(value, (int, float)) else "no value"
-        line = f"- {entry.get('trial_id')} [{entry.get('status')}] {scored} {json.dumps(entry.get('params', {}))}"
+        params = json.dumps(entry.get("params", {}))
+        line = f"- {entry.get('trial_id')} [{entry.get('status')}] {scored} {params}"
         if entry.get("error"):
             line += f" -- error: {entry['error']}"
         lines.append(line)

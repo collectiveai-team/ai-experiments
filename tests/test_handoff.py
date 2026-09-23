@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from typer.testing import CliRunner
 
@@ -20,11 +20,18 @@ from ai_experiments.handoff import hand_off, plan_handoff, render_issue
 from ai_experiments.monitoring.escalation import ChangeRequest, record_change_request
 from ai_experiments.store import FilesystemRunStore
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 runner = CliRunner()
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    subprocess.run(  # noqa: S603  # fixed argv, test fixture driving a real git repo
+        ["git", "-C", str(repo), *args],  # noqa: S607  # git is expected on PATH
+        check=True,
+        capture_output=True,
+    )
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -40,7 +47,7 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _flow(tmp_path: Path) -> tuple[list[str], Path]:
-    """A stand-in for orq-lite: records every call, never spends a token."""
+    """Stand in for orq-lite: record every call, never spend a token."""
     log = tmp_path / "flow-calls.jsonl"
     script = tmp_path / "flow.py"
     script.write_text(
@@ -85,16 +92,16 @@ def test_the_fix_gets_its_own_experimentation_branch(tmp_path):
 
     assert result.status == "launched"
     assert result.plan.branch == "exp/camp_abc123-deadbeef1234"
-    branches = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", result.plan.branch],
+    branches = subprocess.run(  # noqa: S603  # fixed argv, test fixture driving a real git repo
+        ["git", "-C", str(repo), "branch", "--list", result.plan.branch],  # noqa: S607  # git on PATH
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     assert result.plan.branch in branches
     # The original checkout is untouched: the campaign's branch stays measurable.
-    head = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+    head = subprocess.run(  # noqa: S603  # fixed argv, test fixture driving a real git repo
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607  # git on PATH
         capture_output=True,
         text=True,
         check=True,
@@ -183,7 +190,8 @@ def test_the_issue_tells_the_reader_to_check_the_evidence(tmp_path):
 
     issue = render_issue(ticket, plan_handoff(store, ticket))
 
-    assert "`t001`" in issue and "`run_1`" in issue
+    assert "`t001`" in issue
+    assert "`run_1`" in issue
     assert "an empty window returns an empty batch" in issue
     assert "Read the runs before you trust the diagnosis" in issue
     assert "exp/camp_abc123-deadbeef1234" in issue

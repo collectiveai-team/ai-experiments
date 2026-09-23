@@ -25,9 +25,7 @@ def test_valid_params_round_trip():
 
 
 def test_integer_valued_float_is_coerced():
-    result = validate_params(
-        SPACE, {"lr": 1e-3, "layers": 2.0, "opt": "sgd", "dropout": 0.0}
-    )
+    result = validate_params(SPACE, {"lr": 1e-3, "layers": 2.0, "opt": "sgd", "dropout": 0.0})
     assert result["layers"] == 2
     assert isinstance(result["layers"], int)
 
@@ -53,16 +51,12 @@ def test_out_of_range_values_are_rejected():
 
 def test_choice_outside_the_set_is_rejected():
     with pytest.raises(ParamValidationError, match="not one of"):
-        validate_params(
-            SPACE, {"lr": 1e-3, "layers": 2, "opt": "rmsprop", "dropout": 0.1}
-        )
+        validate_params(SPACE, {"lr": 1e-3, "layers": 2, "opt": "rmsprop", "dropout": 0.1})
 
 
 def test_non_integer_layers_is_rejected():
     with pytest.raises(ParamValidationError, match="not an integer"):
-        validate_params(
-            SPACE, {"lr": 1e-3, "layers": 2.5, "opt": "adam", "dropout": 0.1}
-        )
+        validate_params(SPACE, {"lr": 1e-3, "layers": 2.5, "opt": "adam", "dropout": 0.1})
 
 
 def test_every_violation_is_reported_at_once():

@@ -26,7 +26,7 @@ MLFLOW_URI = "http://127.0.0.1:5000"
 
 def _reachable(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310  # localhost fixture
             return resp.status == 200
     except (urllib.error.URLError, OSError):
         return False
@@ -48,9 +48,7 @@ def mlflow_uri() -> str:
     # The client library matters as much as the server: without it
     # begin_tracking degrades to a warning event and records no linkage, so
     # every assertion here would fail rather than skip.
-    pytest.importorskip(
-        "mlflow", reason="needs the mlflow extra: uv sync --extra mlflow"
-    )
+    pytest.importorskip("mlflow", reason="needs the mlflow extra: uv sync --extra mlflow")
     if not _reachable(f"{MLFLOW_URI}/health"):
         pytest.skip(
             f"no MLflow server at {MLFLOW_URI} -- "
@@ -67,11 +65,13 @@ def mlflow_api(mlflow_uri: str):
     harness writes with would hide a broken write.
     """
 
-    def _get(path: str, **params: str) -> dict:
+    def _get(path: str, **params: str) -> dict:  # ast-grep-ignore: no-dict-return-annotation
+        # Returns the real MLflow REST API's JSON payload verbatim; the shape
+        # is MLflow's, not ours, so modeling it would drift from the real API.
         url = f"{mlflow_uri}/api/2.0/mlflow/{path}"
         if params:
             url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310  # localhost fixture
             return json.loads(resp.read())
 
     return _get

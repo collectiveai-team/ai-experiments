@@ -16,26 +16,31 @@ from __future__ import annotations
 
 import json
 import platform
+import shutil
 import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
-from typing import Any
 
-from ai_experiments.schemas import utc_now
+from ai_experiments.core.logger import get_logger
+from ai_experiments.schemas import ReproContext, utc_now
+
+log = get_logger(__name__)
 
 GIT_TIMEOUT = 10
 MAX_DIFF_BYTES = 512_000
+_GIT = shutil.which("git") or "git"
 
 
 def _git(args: list[str], cwd: Path) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = subprocess.run(  # noqa: S603  # fixed argv built from constants, no user input
+            [_GIT, *args],
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -44,26 +49,26 @@ def _git(args: list[str], cwd: Path) -> str | None:
     return result.stdout.strip()
 
 
-def capture_repro(run_dir: Path, working_dir: str | Path) -> dict[str, Any]:
+def capture_repro(run_dir: Path, working_dir: str | Path) -> ReproContext:
     """Write the repro bundle into ``run_dir/repro/``; returns the context."""
     repro_dir = run_dir / "repro"
     repro_dir.mkdir(parents=True, exist_ok=True)
     cwd = Path(working_dir).resolve()
 
     sha = _git(["rev-parse", "HEAD"], cwd)
-    context: dict[str, Any] = {
-        "captured_at": utc_now().isoformat(),
-        "git_sha": sha,
-        "git_branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) if sha else None,
-        "git_dirty": None,
-        "python": sys.version.split()[0],
-        "platform": platform.platform(),
-        "working_dir": str(cwd),
-    }
+    context = ReproContext(
+        captured_at=utc_now().isoformat(),
+        git_sha=sha,
+        git_branch=_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd) if sha else None,
+        git_dirty=None,
+        python=sys.version.split()[0],
+        platform=platform.platform(),
+        working_dir=str(cwd),
+    )
 
     if sha is not None:
         status = _git(["status", "--porcelain"], cwd)
-        context["git_dirty"] = bool(status)
+        context.git_dirty = bool(status)
         if status:
             diff = _git(["diff", "HEAD"], cwd) or ""
             (repro_dir / "diff.patch").write_text(diff[:MAX_DIFF_BYTES])
@@ -75,18 +80,21 @@ def capture_repro(run_dir: Path, working_dir: str | Path) -> dict[str, Any]:
             if dist.metadata["Name"]
         )
         (repro_dir / "environment.txt").write_text("\n".join(lines) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        # A distribution's metadata can be malformed in ways we can't enumerate up front (bad
+        # encoding, missing fields, a broken finder); the write itself can also hit OSError.
+        # Losing this must not cost the context.json write below (git SHA for `iax rerun`).
+        log.debug("repro_environment_capture_failed", error=str(exc))
 
-    (repro_dir / "context.json").write_text(json.dumps(context, indent=2))
+    (repro_dir / "context.json").write_text(json.dumps(context.model_dump(mode="json"), indent=2))
     return context
 
 
-def read_repro(run_dir: Path) -> dict[str, Any] | None:
+def read_repro(run_dir: Path) -> ReproContext | None:
     path = run_dir / "repro" / "context.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return ReproContext.model_validate_json(path.read_text())
 
 
 def current_git_sha(working_dir: str | Path) -> str | None:

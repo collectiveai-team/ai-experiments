@@ -53,7 +53,8 @@ def test_a_tick_that_did_nothing_still_leaves_proof_it_ran(tmp_path):
 
     report = MonitorDaemon(store).tick()
 
-    assert report.actions == [] and report.errors == []
+    assert report.actions == []
+    assert report.errors == []
     beat = read_heartbeat(store.root)
     assert beat is not None
     assert beat.ticks == 1
@@ -98,9 +99,7 @@ def test_no_daemon_at_all_is_reported_as_such(tmp_path):
 
 
 def test_a_stale_heartbeat_names_its_age_and_the_fix(tmp_path):
-    write_heartbeat(
-        tmp_path, Heartbeat(timestamp=utc_now() - timedelta(minutes=45), pid=4242)
-    )
+    write_heartbeat(tmp_path, Heartbeat(timestamp=utc_now() - timedelta(minutes=45), pid=4242))
 
     warning = daemon_warning(tmp_path)
 

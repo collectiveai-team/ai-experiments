@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
-import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_experiments.schemas import (
     ChoiceParam,
@@ -15,9 +14,19 @@ from ai_experiments.schemas import (
     UniformParam,
 )
 
+if TYPE_CHECKING:
+    import random
 
-def sample(space: dict[str, ParamSpec], rng: random.Random) -> dict[str, Any]:
-    """Draw one random parameter assignment."""
+
+def sample(  # ast-grep-ignore: no-dict-return-annotation
+    space: dict[str, ParamSpec], rng: random.Random
+) -> dict[str, Any]:
+    """Draw one random parameter assignment.
+
+    Keys are the user's own search-space parameter names (from `space`), not
+    a fixed schema -- a sampled hyperparameter assignment, one value per
+    parameter the goal's search space defines.
+    """
     return {name: _sample_param(spec, rng) for name, spec in space.items()}
 
 
@@ -33,13 +42,11 @@ def _sample_param(spec: ParamSpec, rng: random.Random) -> Any:
     raise TypeError(f"unsupported param spec: {spec!r}")
 
 
-def grid_points(
-    space: dict[str, ParamSpec], resolution: int = 4
-) -> list[dict[str, Any]]:
+def grid_points(space: dict[str, ParamSpec], resolution: int = 4) -> list[dict[str, Any]]:
     """Expand the space into a full grid (continuous params get `resolution` steps)."""
     names = sorted(space)
     axes = [_grid_axis(space[name], resolution) for name in names]
-    return [dict(zip(names, combo)) for combo in itertools.product(*axes)]
+    return [dict(zip(names, combo, strict=False)) for combo in itertools.product(*axes)]
 
 
 def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
@@ -49,9 +56,7 @@ def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
         span = spec.high - spec.low
         if span < resolution:
             return list(range(spec.low, spec.high + 1))
-        return sorted(
-            {spec.low + round(i * span / (resolution - 1)) for i in range(resolution)}
-        )
+        return sorted({spec.low + round(i * span / (resolution - 1)) for i in range(resolution)})
     if isinstance(spec, UniformParam):
         step = (spec.high - spec.low) / (resolution - 1)
         return [spec.low + i * step for i in range(resolution)]
@@ -62,14 +67,18 @@ def _grid_axis(spec: ParamSpec, resolution: int) -> list[Any]:
     raise TypeError(f"unsupported param spec: {spec!r}")
 
 
-def perturb(
+def perturb(  # ast-grep-ignore: no-dict-return-annotation
     space: dict[str, ParamSpec],
     base: dict[str, Any],
     rng: random.Random,
     scale: float = 0.2,
 ) -> dict[str, Any]:
-    """Sample a neighbor of `base`: gaussian moves for numeric params (log-space
-    for loguniform), a re-draw with probability `scale` for choices."""
+    """Sample a neighbor of `base`.
+
+    Gaussian moves for numeric params (log-space for loguniform), a re-draw with
+    probability `scale` for choices. Keys are the user's own search-space
+    parameter names, not a fixed schema.
+    """
     result: dict[str, Any] = {}
     for name, spec in space.items():
         value = base.get(name)
@@ -80,9 +89,7 @@ def perturb(
     return result
 
 
-def _perturb_param(
-    spec: ParamSpec, value: Any, rng: random.Random, scale: float
-) -> Any:
+def _perturb_param(spec: ParamSpec, value: Any, rng: random.Random, scale: float) -> Any:
     if isinstance(spec, ChoiceParam):
         if len(spec.values) > 1 and rng.random() < scale:
             return rng.choice([v for v in spec.values if v != value])

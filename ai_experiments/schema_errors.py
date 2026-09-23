@@ -13,9 +13,12 @@ budget.max_trails: unknown field; known fields: gpu_hour_rate, max_gpu_hours, ..
 from __future__ import annotations
 
 import difflib
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    from pydantic_core import ErrorDetails
 
 #: Below this ratio a "did you mean" is a guess, not a correction.
 _SIMILAR_ENOUGH = 0.6
@@ -26,7 +29,7 @@ def describe(model: type[BaseModel], error: ValidationError) -> str:
     return "; ".join(_describe_one(model, item) for item in error.errors())
 
 
-def _describe_one(model: type[BaseModel], item: dict[str, Any]) -> str:
+def _describe_one(model: type[BaseModel], item: ErrorDetails) -> str:
     location = item["loc"]
     where = ".".join(str(part) for part in location) or "<root>"
     if item["type"] != "extra_forbidden":

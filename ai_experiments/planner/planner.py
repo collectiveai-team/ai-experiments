@@ -9,9 +9,7 @@ from ai_experiments.planner.strategies import get_strategy
 from ai_experiments.schemas import ExperimentManifest, GoalSpec, TrialRecord
 
 
-def plan_next_params(
-    goal: GoalSpec, trials: list[TrialRecord], count: int
-) -> list[dict[str, Any]]:
+def plan_next_params(goal: GoalSpec, trials: list[TrialRecord], count: int) -> list[dict[str, Any]]:
     if count <= 0:
         return []
     return get_strategy(goal.strategy.name).plan(goal, trials, count)

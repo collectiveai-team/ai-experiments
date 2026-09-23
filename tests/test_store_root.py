@@ -95,9 +95,7 @@ def _manifest(project):
     return path
 
 
-def test_a_run_submitted_from_the_root_is_visible_from_a_subdirectory(
-    tmp_path, monkeypatch
-):
+def test_a_run_submitted_from_the_root_is_visible_from_a_subdirectory(tmp_path, monkeypatch):
     """The bug, end to end: submit here, ask over there, get the same run."""
     project = _project(tmp_path)
     manifest = _manifest(project)
@@ -117,7 +115,8 @@ def test_a_run_submitted_from_the_root_is_visible_from_a_subdirectory(
             break
         time.sleep(0.1)
 
-    assert status is not None and status["status"] == "completed"
+    assert status is not None
+    assert status["status"] == "completed"
     assert run_id in runner.invoke(app, ["runs"]).stdout
 
 

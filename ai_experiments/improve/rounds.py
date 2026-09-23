@@ -18,7 +18,7 @@ rewriting an earlier one (CONVENTIONS.md §4).
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime  # noqa: TC003  # pydantic resolves this field at runtime
 from pathlib import Path
 from typing import Any, Literal
 

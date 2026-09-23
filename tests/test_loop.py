@@ -17,10 +17,10 @@ from ai_experiments.agents import StubAgentRunner
 from ai_experiments.cli import app
 from ai_experiments.loop import run_loop
 from ai_experiments.orchestrator import CampaignOrchestrator
-from ai_experiments.schemas import GoalSpec
+from ai_experiments.schemas import GoalSpec, UniformParam
 from ai_experiments.store import FilesystemRunStore
 from ai_experiments.store.campaign import CampaignStore
-from tests.test_orchestrator import FakeBackend
+from tests.conftest import FakeBackend
 
 runner = CliRunner()
 
@@ -59,7 +59,8 @@ def test_the_loop_reaches_the_target_and_says_so(tmp_path):
     assert report.target_reached
     assert report.stop_reason == "target_reached"
     assert report.best is not None
-    assert report.best["objective_value"] <= 0.01
+    assert report.best.objective_value is not None
+    assert report.best.objective_value <= 0.01
     assert report.rounds >= 1
     assert report.history
 
@@ -79,9 +80,7 @@ def test_the_loop_does_not_claim_success_when_the_budget_runs_out(tmp_path):
 def test_max_rounds_stops_the_loop_without_stopping_the_campaign(tmp_path):
     orchestrator, store = _harness(tmp_path)
 
-    report = run_loop(
-        _goal(), store, orchestrator=orchestrator, max_rounds=2, interval_seconds=0
-    )
+    report = run_loop(_goal(), store, orchestrator=orchestrator, max_rounds=2, interval_seconds=0)
 
     assert report.loop_stop == "max_rounds"
     assert report.rounds <= 2
@@ -91,9 +90,7 @@ def test_max_rounds_stops_the_loop_without_stopping_the_campaign(tmp_path):
 
 def test_a_stopped_loop_resumes_where_it_left_off(tmp_path):
     orchestrator, store = _harness(tmp_path)
-    first = run_loop(
-        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
-    )
+    first = run_loop(_goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0)
 
     second = run_loop(
         _goal(),
@@ -165,9 +162,7 @@ def test_an_accepted_review_can_widen_the_search_space(tmp_path):
                 "verdict": "change_goal",
                 "reason": "the optimum is outside the current bounds",
                 "suggested_changes": {
-                    "search_space": {
-                        "x": {"type": "uniform", "low": -50.0, "high": 50.0}
-                    }
+                    "search_space": {"x": {"type": "uniform", "low": -50.0, "high": 50.0}}
                 },
             }
         ]
@@ -181,7 +176,9 @@ def test_an_accepted_review_can_widen_the_search_space(tmp_path):
     report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
 
     edited = CampaignStore(store.root).read_goal(report.campaign_id)
-    assert edited.search_space["x"].high == 50.0
+    param = edited.search_space["x"]
+    assert isinstance(param, UniformParam)
+    assert param.high == 50.0
 
 
 def test_a_review_cannot_change_the_objective_metric(tmp_path):
@@ -203,9 +200,7 @@ def test_a_review_cannot_change_the_objective_metric(tmp_path):
 
     report = run_loop(goal, store, orchestrator=orchestrator, interval_seconds=0)
 
-    assert CampaignStore(store.root).read_goal(report.campaign_id).objective.metric == (
-        "loss"
-    )
+    assert CampaignStore(store.root).read_goal(report.campaign_id).objective.metric == ("loss")
 
 
 def test_reviews_are_recorded_as_round_records(tmp_path):
@@ -221,11 +216,10 @@ def test_reviews_are_recorded_as_round_records(tmp_path):
         interval_seconds=0,
     )
 
-    records = RoundLog(
-        CampaignStore(store.root).campaign_dir(report.campaign_id)
-    ).read()
+    records = RoundLog(CampaignStore(store.root).campaign_dir(report.campaign_id)).read()
     reviews = [r for r in records if r.stage == "review"]
-    assert reviews and reviews[0].outcome["verdict"] == "continue"
+    assert reviews
+    assert reviews[0].outcome["verdict"] == "continue"
 
 
 def _real_goal_file(tmp_path):
@@ -325,9 +319,7 @@ def test_max_rounds_collects_the_round_it_already_paid_for(tmp_path):
     orchestrator, store = _harness(tmp_path)
     goal = _goal(objective={"metric": "loss", "mode": "min", "target": 1e-12})
 
-    report = run_loop(
-        goal, store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
-    )
+    report = run_loop(goal, store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0)
 
     state = CampaignStore(store.root).read_state(report.campaign_id)
     assert state.trials
@@ -351,9 +343,7 @@ def test_the_report_names_the_trials_it_could_not_collect(tmp_path):
         backend_factory=lambda goal: SlowBackend(store),
     )
 
-    report = run_loop(
-        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
-    )
+    report = run_loop(_goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0)
 
     assert report.loop_stop == "max_rounds"
     assert report.pending_trials
@@ -364,10 +354,8 @@ def test_reconcile_finishes_a_campaign_whose_last_trial_met_the_target(tmp_path)
     """The target can be met by the very round the limit interrupted."""
     orchestrator, store = _harness(tmp_path)
 
-    run_loop(
-        _goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0
-    )
-    campaign_id = CampaignStore(store.root).list_campaigns()[0]
+    run_loop(_goal(), store, orchestrator=orchestrator, max_rounds=1, interval_seconds=0)
+    campaign_id = next(iter(CampaignStore(store.root).list_campaigns()))
     state = orchestrator.reconcile(campaign_id)
 
     assert state.status in {"running", "completed"}

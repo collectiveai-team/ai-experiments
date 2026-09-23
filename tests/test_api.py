@@ -8,6 +8,7 @@ traceback from three modules down.
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 import pytest
 import yaml
@@ -15,7 +16,7 @@ import yaml
 from ai_experiments import api
 
 
-def _goal_dict(tmp_path) -> dict:
+def _goal_dict(tmp_path) -> dict[str, Any]:  # ast-grep-ignore: no-dict-return-annotation
     script = tmp_path / "train.py"
     script.write_text(
         "import json, os\n"
@@ -23,7 +24,9 @@ def _goal_dict(tmp_path) -> dict:
         "loss = (params['x'] - 2.0) ** 2\n"
         "print('IAX_METRIC ' + json.dumps({'step': 1, 'loss': loss}), flush=True)\n"
     )
-    return {
+    # The untyped payload an agent would hand api.goal_from_dict; typing it here
+    # would test the model instead of the parsing this exercises.
+    return {  # ast-grep-ignore: no-dict-literal-return
         "goal": "minimize (x-2)^2",
         "name": "api",
         "objective": {"metric": "loss", "mode": "min", "target": 0.25},
@@ -68,10 +71,10 @@ def test_start_then_advance_drives_the_same_campaign(tmp_path):
     goal = api.goal_from_dict(_goal_dict(tmp_path))
 
     started = api.start_campaign(goal, runs_dir=runs)
-    advanced = api.advance_campaign(started["campaign_id"], runs_dir=runs)
+    advanced = api.advance_campaign(started.campaign_id, runs_dir=runs)
 
-    assert advanced["campaign_id"] == started["campaign_id"]
-    assert advanced["trials_total"] >= started["trials_total"]
+    assert advanced.campaign_id == started.campaign_id
+    assert advanced.trials_total >= started.trials_total
 
 
 def test_every_lookup_of_an_unknown_campaign_says_not_found(tmp_path):
@@ -96,7 +99,7 @@ def test_a_suggestion_outside_the_search_space_is_rejected(tmp_path):
     started = api.start_campaign(goal, runs_dir=runs)
 
     with pytest.raises(api.IaxError) as caught:
-        api.suggest_trial(started["campaign_id"], {"x": 99.0}, runs_dir=runs)
+        api.suggest_trial(started.campaign_id, {"x": 99.0}, runs_dir=runs)
 
     assert caught.value.code == "invalid_input"
 
@@ -107,11 +110,11 @@ def test_an_accepted_suggestion_is_queued_for_the_next_round(tmp_path):
     started = api.start_campaign(goal, runs_dir=runs)
 
     trial = api.suggest_trial(
-        started["campaign_id"], {"x": 2.0}, note="the analytic optimum", runs_dir=runs
+        started.campaign_id, {"x": 2.0}, note="the analytic optimum", runs_dir=runs
     )
 
-    assert trial["source"] == "agent"
-    assert trial["params"] == {"x": 2.0}
+    assert trial.source == "agent"
+    assert trial.params == {"x": 2.0}
 
 
 def test_campaign_rounds_explain_what_the_loop_believed(tmp_path):
@@ -119,11 +122,11 @@ def test_campaign_rounds_explain_what_the_loop_believed(tmp_path):
     goal = api.goal_from_dict(_goal_dict(tmp_path))
     started = api.start_campaign(goal, runs_dir=runs)
 
-    records = api.campaign_rounds(started["campaign_id"], runs_dir=runs)
+    records = api.campaign_rounds(started.campaign_id, runs_dir=runs)
 
     assert records
-    assert records[0]["stage"] == "propose"
-    assert records[0]["trial_ids"]
+    assert records[0].stage == "propose"
+    assert records[0].trial_ids
 
 
 def test_list_campaigns_reports_each_one(tmp_path):
@@ -132,20 +135,20 @@ def test_list_campaigns_reports_each_one(tmp_path):
     first = api.start_campaign(goal, runs_dir=runs)
     second = api.start_campaign(goal, runs_dir=runs)
 
-    ids = {report["campaign_id"] for report in api.list_campaigns(runs_dir=runs)}
+    ids = {report.campaign_id for report in api.list_campaigns(runs_dir=runs)}
 
-    assert {first["campaign_id"], second["campaign_id"]} <= ids
+    assert {first.campaign_id, second.campaign_id} <= ids
 
 
 def test_run_loop_reaches_the_target_from_python(tmp_path):
     goal = api.goal_from_dict(_goal_dict(tmp_path))
 
-    report = api.run_loop(
-        goal, runs_dir=tmp_path / "runs", interval_seconds=0, max_seconds=120
-    )
+    report = api.run_loop(goal, runs_dir=tmp_path / "runs", interval_seconds=0, max_seconds=120)
 
     assert report.target_reached
-    assert report.best["objective_value"] <= 0.25
+    assert report.best is not None
+    assert report.best.objective_value is not None
+    assert report.best.objective_value <= 0.25
 
 
 def test_run_loop_resumes_a_campaign_it_bounded_earlier(tmp_path):
